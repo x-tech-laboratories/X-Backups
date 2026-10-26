@@ -81,7 +81,7 @@ adapted where a task changes a contract.
    `sh -c` when the repository has no host. It enforces a timeout by killing the process, takes
    optional stdin (task 6), and returns a `CmdResult`. It uses the system's `known_hosts`. Reference:
    `../X-Monitor/x_monitor/core/connectors/ssh_connector.py`.
-9. [ ] **Storage.** `server/store.ts` on `node:sqlite` (built into Node 24) keeps repository state,
+9. [x] **Storage.** `server/store.ts` on `node:sqlite` (built into Node 24) keeps repository state,
    events, and jobs (unit name, kind, state, exit code, journal cursor), with the database in
    `X_BACKUPS_STATE_DIR`. It implements whatever store interfaces tasks 1 and 4 leave.
 10. [ ] **Poll loop.** `server/poller.ts` polls each repository at startup and then on its
@@ -150,7 +150,18 @@ adapted where a task changes a contract.
 
 ## Apps to review for features
 
-Not reviewed yet.
+Reviewed from READMEs only, so thin. Borg Backup Server is the richest: dashboard charts, job queue
+with live progress, logs, cancel and retry, and overdue / never-succeeded / failed alerts. Borg UI
+and BorgWarehouse add a repository grid with staleness per repository. The views to copy, in order:
+
+1. Repository grid: status, last archive age against `max_age`, size, archive count, last check.
+2. Overdue and missed-run flags per repository and per timer.
+3. Job history: kind, outcome, duration, start, with expandable and live output.
+4. Size over time: original, compressed and deduplicated, plus the dedup ratio.
+5. Archive count over time, and per-archive deduplicated size (new data) bars.
+6. Check and canary pass/fail strip.
+7. Sources: paths per repository, and diff counts between two archives.
+8. Schedules: timer, last trigger, next elapse, last result, missed.
 
 | App | Source | Docs / site |
 | --- | --- | --- |

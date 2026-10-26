@@ -36,6 +36,8 @@ npm run build && npm start
 
 The API asks for a login, checked against the hash in the file `X_BACKUPS_PASSWORD_HASH_FILE` names.
 `npm run hash-password -- <file>` asks for the password and writes that file, readable only by you.
+State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `state/` by default.
+
 `/api/health` stays open, so X-Monitor can poll it without logging in.
 
 ## Licence

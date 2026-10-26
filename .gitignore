@@ -9,6 +9,7 @@ dist/
 .env
 .env.*
 password.hash
+state/
 
 # Claude Code
 .claude/
