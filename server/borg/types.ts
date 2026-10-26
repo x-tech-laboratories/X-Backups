@@ -5,8 +5,10 @@ import type { ArchiveEntry, RepositoryInfo } from "./parsing.ts";
 
 // ── Commands and their results ───────────────────────────────────────────────
 
+// One call, which the runner stops once it has run for timeout seconds.
 export interface Command {
   text: string;
+  timeout: number | null;
 }
 
 export interface CmdResult {
@@ -20,13 +22,14 @@ export function cmd_result(exit_code: number, stdout: string, stderr: string): C
 }
 
 export class ActionPlan {
-  command: string;
+  // Run one after another, each answered by one result in the same order.
+  commands: string[];
   timeout: number | null;
   // A detached plan is followed to its end by whoever runs it, so a restart never kills it.
   detached: boolean;
 
-  constructor(command: string, options: { timeout?: number | null; detached?: boolean } = {}) {
-    this.command = command;
+  constructor(commands: string[], options: { timeout?: number | null; detached?: boolean } = {}) {
+    this.commands = commands;
     this.timeout = options.timeout ?? null;
     this.detached = options.detached ?? false;
   }

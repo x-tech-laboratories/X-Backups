@@ -1,7 +1,7 @@
 // One borg repository watched and driven over a shell on its host.
 //
-// Each poll runs `borg list --json`, plus `borg info --json` when collect_stats is on, as one framed command so the
-// calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
+// Each poll runs `borg list --json`, plus `borg info --json` when collect_stats is on, each as its own command; they run
+// one after another so the calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
 // failed; an unreachable host, a missing borg, an unreadable repo, a lock borg gave up on, or unparseable output is
 // unavailable. Optional extras are a restore canary, check freshness read from systemd units or tracked per kind, and
 // actions that back up, browse, restore, diff, check, compact, prune, delete and purge, the last ones as detached jobs.
@@ -13,18 +13,17 @@ import {
   merge_unit, observed_unit, parse_check_units, type CheckState,
 } from "./checks.ts";
 import { launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
-import { KILL_GRACE_SECONDS, format_age, format_duration, parse_duration } from "./durations.ts";
+import { format_age, format_duration, parse_duration } from "./durations.ts";
 import {
   LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, format_size, is_object, parse_listing,
   type ArchiveEntry, type ListingEntry,
 } from "./parsing.ts";
 import {
-  CUT_SHORT, POLL_BASE_DIR_VAR, POLL_DEADLINE_VAR, POLL_LEFT_FN, POLL_RC_VAR, STEP_MARK, archive_member, as_list,
-  failure_hint, frame_line, list_unavailable, preflight_script, redact, shell_quote, skip_reason, split_poll,
-  ssh_endpoint, then_steps, with_preflight, wrap_job,
+  BASE_DIR_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script, redact,
+  shell_quote, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job,
 } from "./shell.ts";
 import {
-  ActionPlan, CollectResult, cmd_result, empty_state, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
+  ActionPlan, CollectResult, empty_state, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
   type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
 } from "./types.ts";
 
@@ -308,27 +307,18 @@ export class BorgRepository {
     if (persistent_cache && this.cache_dir) {
       env.push("BORG_BASE_DIR=" + shell_quote(this.cache_dir));
     } else {
-      env.push(`BORG_BASE_DIR="$${POLL_BASE_DIR_VAR}"`);
+      env.push(`BORG_BASE_DIR="$${BASE_DIR_VAR}"`);
     }
     return env;
   }
 
-  private build(args: string[], options: { persistent_cache?: boolean; bounded?: boolean; wrapped?: boolean } = {}): string {
+  private build(args: string[], options: { persistent_cache?: boolean } = {}): string {
     const persistent_cache = options.persistent_cache ?? false;
     const prefix = this.require_sudo ? ["sudo", "-n"] : [];
-    const env = this.env_prefix(persistent_cache);
-    // Polls only, since a job must outlive the poll; after env, because sudo takes the first non-assignment as the command.
-    const deadline = options.bounded ? this.poll_deadline() : [];
-    const command = [...prefix, ...env, ...deadline, ...args.map(shell_quote)].join(" ");
-    if (!(options.wrapped ?? true) || (persistent_cache && this.cache_dir)) return command;
+    const command = [...prefix, ...this.env_prefix(persistent_cache), ...args.map(shell_quote)].join(" ");
+    if (persistent_cache && this.cache_dir) return command;
     // The trap keeps the throwaway folder throwaway, since borg builds a full chunks cache in it every poll.
-    return `${POLL_BASE_DIR_VAR}=$(mktemp -d); trap 'rm -rf "$${POLL_BASE_DIR_VAR}"' EXIT; ${command}`;
-  }
-
-  // Bounds a poll call by what is left of the whole poll's deadline.
-  private poll_deadline(): string[] {
-    if (!this.timeout || this.timeout <= 0) return [];
-    return ["timeout", "-k", String(KILL_GRACE_SECONDS), `"$(${POLL_LEFT_FN})"`];
+    return `${BASE_DIR_VAR}=$(mktemp -d); trap 'rm -rf "$${BASE_DIR_VAR}"' EXIT; ${command}`;
   }
 
   // The named calls this poll makes, in the order they run.
@@ -341,65 +331,8 @@ export class BorgRepository {
     return calls;
   }
 
-  poll_command(): string {
-    return this.sequence_command(this.poll_plan().map(([, command]) => command));
-  }
-
-  // Runs calls one after another under one deadline and frames each one's output; live prints stdout as it is written.
-  sequence_command(calls: string[], options: { limits?: Record<number, number>; filters?: Record<number, string>; live?: boolean } = {}): string {
-    const base = `$${POLL_BASE_DIR_VAR}`;
-    const parts = [
-      `${POLL_BASE_DIR_VAR}=$(mktemp -d)`,
-      `trap 'rm -rf "${base}"' EXIT`,
-    ];
-    if (this.timeout && this.timeout > 0) {
-      // One deadline for the whole poll, so calls in sequence cannot outlast the interval.
-      parts.push(`${POLL_DEADLINE_VAR}=$(( $(date +%s) + ${Math.trunc(this.timeout)} ))`);
-      parts.push(
-        `${POLL_LEFT_FN}() { __x_backups_left=$(( ${POLL_DEADLINE_VAR} - $(date +%s) )); ` +
-        `[ "$__x_backups_left" -lt 1 ] && __x_backups_left=1; printf %s "$__x_backups_left"; }`,
-      );
-    }
-    calls.forEach((call, index) => {
-      const limit = options.limits?.[index];
-      const filter = options.filters?.[index];
-      if (options.live) {
-        parts.push(...BorgRepository.live_call(index, call, limit, filter));
-        return;
-      }
-      parts.push(`${call} >"${base}/${index}.out" 2>"${base}/${index}.err"; ${POLL_RC_VAR}=$?`);
-      for (const stream of ["out", "err"]) {
-        // The closing newline keeps output with no trailing one from running into the next marker.
-        parts.push(`printf '%s\\n' "${frame_line(index, stream, `$${POLL_RC_VAR}`)}"`);
-        const stream_limit = stream === "out" ? limit : undefined;
-        const keep = stream === "out" ? filter : undefined;
-        const reader = keep ? `${keep} "${base}/${index}.${stream}"` : `cat "${base}/${index}.${stream}"`;
-        parts.push(stream_limit ? `${reader} | head -n ${Math.trunc(stream_limit)}` : reader);
-        parts.push("printf '\\n'");
-      }
-    });
-    return parts.join("; ");
-  }
-
-  // One call of a live sequence: its stdout as it comes, then its stderr under a frame carrying its exit code.
-  private static live_call(index: number, call: string, limit: number | undefined, keep: string | undefined): string[] {
-    const base = `$${POLL_BASE_DIR_VAR}`;
-    let reader = keep ? ` | ${keep}` : "";
-    // awk keeps reading past the limit, so the call never dies of a closed pipe.
-    reader += limit ? ` | awk 'NR <= ${Math.trunc(limit)}'` : "";
-    return [
-      `printf '%s\\n' "${frame_line(index, "out", "-")}"`,
-      `{ ${call} 2>"${base}/${index}.err"; echo $? >"${base}/${index}.rc"; }${reader}`,
-      `${POLL_RC_VAR}=$(cat "${base}/${index}.rc")`,
-      "printf '\\n'",
-      `printf '%s\\n' "${frame_line(index, "err", `$${POLL_RC_VAR}`)}"`,
-      `cat "${base}/${index}.err"`,
-      "printf '\\n'",
-    ];
-  }
-
-  private read_options(): { persistent_cache: boolean; bounded: boolean; wrapped: boolean } {
-    return { persistent_cache: this.cache_dir_configured, bounded: true, wrapped: false };
+  private read_options(): { persistent_cache: boolean } {
+    return { persistent_cache: this.cache_dir_configured };
   }
 
   list_command(): string {
@@ -449,11 +382,12 @@ export class BorgRepository {
     const job = this.running_job();
     // parse() must read results the way they were asked for, even if a job starts or ends mid-cycle.
     this.polling_job = job;
-    if (job !== null) return [{ text: poll_command(job.workdir!, job.pid!, job.output_seq) }];
+    const timeout = this.timeout || null;
+    if (job !== null) return [{ text: poll_command(job.workdir!, job.pid!, job.output_seq), timeout }];
     if (!this.repo) return [];
     const plan = this.poll_plan();
     this.poll_calls = plan.map(([name]) => name);
-    return [{ text: this.sequence_command(plan.map(([, command]) => command)) }];
+    return plan.map(([, text]) => ({ text, timeout }));
   }
 
   private running_job(): JobRecord | null {
@@ -468,10 +402,8 @@ export class BorgRepository {
 
     if (!this.repo) return CollectResult.failed("No 'repo' configured for borg monitor");
 
-    // One command carried the whole poll, so its transcript is unpacked before the calls are read.
     const names = this.poll_calls.length > 0 ? this.poll_calls : (this.collect_stats ? ["list", "info"] : ["list"]);
-    const split = split_poll(results[0], names.length);
-    const by_name = new Map(names.map((name, index) => [name, split[index]]));
+    const by_name = new Map(names.map((name, index) => [name, results[index]]));
     const list_result = by_name.get("list")!;
     const { stdout, stderr, exit_code } = list_result;
     const logs: LogEntry[] = [[`Running: ${redact(this.list_command())}`, "INFO"]];
@@ -600,7 +532,7 @@ export class BorgRepository {
   // The verdict of a restore check that ran, or null when none ran or it reached no verdict.
   private read_canary(by_name: Map<string, CmdResult>, logs: LogEntry[]): CanaryRecord | null {
     if (!by_name.has("canary")) return null;
-    const [verdict, detail] = canary_verdict(by_name.get("canary")!, by_name.get("canary_live") ?? cmd_result(1, "", CUT_SHORT));
+    const [verdict, detail] = canary_verdict(by_name.get("canary")!, by_name.get("canary_live")!);
     if (verdict === null) {
       logs.push([`Restore check skipped: ${detail}`, "WARNING"]);
       return null;
@@ -780,12 +712,14 @@ export class BorgRepository {
     }
   }
 
-  interpret_action(action_id: string, result: CmdResult, params: ActionParams = {}): ActionOutcome {
+  // Reads the results of a plan's commands, one per command in the same order.
+  interpret_action(action_id: string, results: CmdResult[], params: ActionParams = {}): ActionOutcome {
+    const [result] = results;
     switch (action_id) {
       case "prune_preview":
         return this.interpret_prune_preview(result);
       case "verify_restore":
-        return this.interpret_verify_restore(result);
+        return this.interpret_verify_restore(results);
       case "browse_archive":
         return this.interpret_browse(result, params);
       case "break_lock":
@@ -820,19 +754,14 @@ export class BorgRepository {
     return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: false });
   }
 
-  // A single framed borg call as an action, bounded like a poll.
+  // A single borg call as an action, bounded like a poll, with its stdout filtered and cut to the first lines.
   private run_one(call: string, limit?: number, keep?: string): ActionPlan {
-    const command = this.sequence_command([call], {
-      limits: limit ? { 0: limit } : undefined,
-      filters: keep ? { 0: keep } : undefined,
-    });
-    return new ActionPlan(command, { timeout: this.timeout || null });
+    return new ActionPlan([capped(call, limit, keep)], { timeout: this.timeout || null });
   }
 
-  // Framed borg calls as a detached action whose output reaches its log as it is written.
+  // Borg calls as a detached action whose output reaches its log as it is written, the first one cut to the first lines.
   private run_detached(calls: string[], limit?: number): ActionPlan {
-    const command = this.sequence_command(calls, { limits: limit ? { 0: limit } : undefined, live: true });
-    return new ActionPlan(command, { detached: true });
+    return new ActionPlan(calls.map((call, index) => index === 0 ? capped(call, limit) : call), { detached: true });
   }
 
   // Launches the command as a detached job; interpret_action records the pid it prints.
@@ -840,7 +769,7 @@ export class BorgRepository {
     const workdir = workdir_for(`${this.id}-${now_seconds()}`);
     const wrapped = wrap_job(command, this.job_wrappers(kind), this.job_lock);
     this.pending_launch = { kind, redacted: redact(wrapped), workdir, started };
-    return new ActionPlan(with_preflight(this.preflight(), launch_command(wrapped, workdir)));
+    return new ActionPlan([with_preflight(this.preflight(), launch_command(wrapped, workdir))]);
   }
 
   // The argv every job runs under: the shared job lock, the sleep inhibitor, then the lowered priority.
@@ -899,8 +828,7 @@ export class BorgRepository {
     return this.run_one(this.prune_preview_command());
   }
 
-  private interpret_prune_preview(result: CmdResult): CollectResult {
-    const [call] = split_poll(result, 1);
+  private interpret_prune_preview(call: CmdResult): CollectResult {
     const text = [call.stdout, call.stderr].filter(Boolean).join("\n");
     if (call.exit_code !== 0) {
       const hint = failure_hint(text);
@@ -938,8 +866,8 @@ export class BorgRepository {
     return this.run_detached(this.canary_calls(archive).map(([, command]) => command));
   }
 
-  private interpret_verify_restore(result: CmdResult): CollectResult {
-    const [canary, canary_live] = split_poll(result, 2);
+  private interpret_verify_restore(results: CmdResult[]): CollectResult {
+    const [canary, canary_live] = results;
     const by_name = new Map([["canary", canary], ["canary_live", canary_live]]);
     const logs: LogEntry[] = [];
     const record = this.read_canary(by_name, logs);
@@ -974,8 +902,7 @@ export class BorgRepository {
     return this.run_one(this.build(args, this.read_options()), this.browse_limit + 1, children_filter(member));
   }
 
-  private interpret_browse(result: CmdResult, params: ActionParams): CollectResult {
-    const [call] = split_poll(result, 1);
+  private interpret_browse(call: CmdResult, params: ActionParams): CollectResult {
     if (call.exit_code !== 0) {
       const detail = (call.stderr || call.stdout).trim();
       const hint = failure_hint(detail);
@@ -1120,11 +1047,10 @@ export class BorgRepository {
     if (!this.allow_delete) return BorgRepository.refused("Breaking locks is off for this monitor — set allow_delete: true to enable it");
     const refusal = this.job_refusal("break the lock");
     if (refusal) return refusal;
-    return this.run_one(this.build([this.borg_bin, "break-lock", this.repo!], { persistent_cache: true, bounded: true, wrapped: false }));
+    return this.run_one(this.build([this.borg_bin, "break-lock", this.repo!], { persistent_cache: true }));
   }
 
-  private interpret_break_lock(result: CmdResult): CollectResult {
-    const [call] = split_poll(result, 1);
+  private interpret_break_lock(call: CmdResult): CollectResult {
     if (call.exit_code !== 0) {
       return BorgRepository.refused(`borg break-lock failed (exit ${call.exit_code}): ${(call.stderr || call.stdout).trim().slice(0, 300)}`);
     }
@@ -1151,8 +1077,7 @@ export class BorgRepository {
     return this.run_detached([call], this.browse_limit + 1);
   }
 
-  private interpret_diff(result: CmdResult, params: ActionParams): CollectResult {
-    const [call] = split_poll(result, 1);
+  private interpret_diff(call: CmdResult, params: ActionParams): CollectResult {
     if (call.exit_code !== 0) {
       const detail = (call.stderr || call.stdout).trim();
       const hint = failure_hint(detail);
@@ -1304,6 +1229,15 @@ export function progress_from_lines(lines: string[]): string | null {
     if (record.path) summary += ` — ${record.path}`;
   }
   return summary;
+}
+
+// ── Output caps ──────────────────────────────────────────────────────────────
+
+// The call with its stdout kept by the filter and cut to the first limit lines, or the call alone when it needs neither.
+function capped(call: string, limit?: number, keep?: string): string {
+  // awk keeps reading past the limit where head would stop, so the call never dies of a closed pipe.
+  const readers = [...(keep ? [keep] : []), ...(limit ? [`awk 'NR <= ${Math.trunc(limit)}'`] : [])];
+  return readers.length > 0 ? piped(call, readers.join(" | ")) : call;
 }
 
 // ── Stats readers ────────────────────────────────────────────────────────────

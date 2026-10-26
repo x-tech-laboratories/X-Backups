@@ -1,21 +1,15 @@
-// Shell plumbing shared by every borg call: framing several calls into one command, reading them back apart, and naming what went wrong.
-
-import { cmd_result, type CmdResult } from "./types.ts";
+// Shell plumbing shared by every borg call: quoting, piping output while keeping the call's status, and naming what went wrong.
 
 // ── Names the generated shell uses ───────────────────────────────────────────
 
-export const POLL_BASE_DIR_VAR = "__x_backups_poll_base";
-export const POLL_DEADLINE_VAR = "__x_backups_poll_end";
-export const POLL_LEFT_FN = "__x_backups_poll_left";
-export const POLL_RC_VAR = "__x_backups_poll_rc";
+export const BASE_DIR_VAR = "__x_backups_base";
+const CALL_RC_VAR = "__x_backups_call_rc";
 const JOB_RC_VAR = "__x_backups_job_rc";
 const STEP_RC_VAR = "__x_backups_step_rc";
 const SKIP_VAR = "__x_backups_skip";
 const SKIP_MARK = "__XBACKUPS_SKIP__ ";
 // A job prints this before each step, and the line is its progress until borg reports its own.
 export const STEP_MARK = "==> ";
-const FRAME = "__XBACKUPS_BORG__";
-export const CUT_SHORT = "no output: the poll ended before this call ran";
 // Only characters a hostname or an IP address can hold may reach a shell probe.
 const safe_host = /^[A-Za-z0-9.:_-]+$/;
 
@@ -39,61 +33,12 @@ export function redact(command: string): string {
   return command.replace(/(BORG_PASS(?:PHRASE|COMMAND)=)('(?:[^']|'\\'')*'|"[^"]*"|\S+)/g, "$1*****");
 }
 
-// ── Framed sequences ─────────────────────────────────────────────────────────
+// ── Pipes ────────────────────────────────────────────────────────────────────
 
-// The marker that separates one call's captured output from the next.
-export function frame_line(index: number, stream: string, code: number | string): string {
-  return `${FRAME} ${index} ${stream} ${code}`;
-}
-
-// Splits a framed transcript back into one result per call.
-export function split_poll(result: CmdResult, count: number): CmdResult[] {
-  const streams = new Map<number, Map<string, string>>();
-  const codes = new Map<number, number>();
-  let key: [index: number, stream: string] | null = null;
-  let buffer: string[] = [];
-
-  const flush = (): void => {
-    if (key === null) return;
-    if (!streams.has(key[0])) streams.set(key[0], new Map());
-    streams.get(key[0])!.set(key[1], buffer.join("\n").trim());
-  };
-
-  for (const line of split_lines_of(result.stdout)) {
-    if (!line.startsWith(FRAME + " ")) {
-      buffer.push(line);
-      continue;
-    }
-    flush();
-    buffer = [];
-    const fields = line.split(/\s+/).filter((field) => field !== "");
-    // A live call's stdout frame comes before it ends, so its code is "-" and the stderr frame carries the real one.
-    const index = parse_int(fields[1]);
-    const code = fields[3] === "-" ? null : parse_int(fields[3]);
-    if (index === null || fields[2] === undefined || (fields[3] !== "-" && code === null)) {
-      key = null;
-      continue;
-    }
-    key = [index, fields[2]];
-    if (code !== null) codes.set(index, code);
-  }
-  flush();
-
-  // No frame at all means the shell or sudo failed before the first call, so the whole transcript is that failure.
-  if (codes.size === 0) {
-    return [result, ...Array.from({ length: count - 1 }, () => cmd_result(result.exit_code, "", result.stderr))];
-  }
-
-  const results: CmdResult[] = [];
-  for (let index = 0; index < count; index++) {
-    if (!codes.has(index)) {
-      results.push(cmd_result(result.exit_code || 1, "", CUT_SHORT));
-      continue;
-    }
-    const captured = streams.get(index) ?? new Map<string, string>();
-    results.push(cmd_result(codes.get(index)!, captured.get("out") ?? "", captured.get("err") ?? ""));
-  }
-  return results;
+// Pipes a call's stdout through the reader and exits with the call's own status, which a plain pipe would replace with
+// the reader's. The status travels on fd 3 while the reader's output goes out on fd 4.
+export function piped(call: string, reader: string): string {
+  return `{ { { ${call}; echo $? >&3; } | ${reader} >&4; } 3>&1 | (read -r ${CALL_RC_VAR}; exit "$${CALL_RC_VAR}"); } 4>&1`;
 }
 
 // ── Reading failures ─────────────────────────────────────────────────────────
@@ -232,9 +177,4 @@ export function split_lines_of(text: string | null | undefined): string[] {
   const lines = text.split(/\r\n|\r|\n/);
   if (lines[lines.length - 1] === "") lines.pop();
   return lines;
-}
-
-function parse_int(text: string | undefined): number | null {
-  if (text === undefined || !/^[+-]?\d+$/.test(text)) return null;
-  return Number(text);
 }

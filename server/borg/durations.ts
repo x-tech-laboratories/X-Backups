@@ -2,9 +2,6 @@
 
 // ── Units ────────────────────────────────────────────────────────────────────
 
-// Seconds a timed-out command gets to exit before it is killed outright.
-export const KILL_GRACE_SECONDS = 5;
-
 const parse_units: Record<string, number> = {
   w: 7 * 24 * 3600,
   d: 24 * 3600,

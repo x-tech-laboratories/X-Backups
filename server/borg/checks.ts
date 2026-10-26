@@ -1,6 +1,6 @@
 // The restore canary verdict and the check units' journal, read and folded into one record per unit.
 
-import { CUT_SHORT, list_unavailable, shell_quote, split_lines_of } from "./shell.ts";
+import { list_unavailable, shell_quote, split_lines_of } from "./shell.ts";
 import type { CmdResult } from "./types.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ export function canary_verdict(extracted: CmdResult, live: CmdResult): [verdict:
     if (detail.includes("never matched")) {
       return [false, "the canary is not in the newest archive — is it inside the backup set?"];
     }
-    if (detail === CUT_SHORT || list_unavailable(extracted.exit_code, detail)) {
+    if (list_unavailable(extracted.exit_code, detail)) {
       return [null, `could not extract the canary: ${detail.slice(0, 200)}`];
     }
     return [false, `extracting the canary failed (exit ${extracted.exit_code}): ${detail.slice(0, 200)}`];

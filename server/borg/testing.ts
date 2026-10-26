@@ -95,9 +95,9 @@ export class Harness {
   }
 
   // Runs one cycle, answering each command with the fake runner, and records what it reports.
-  run_cycle(fake_run?: (command: Command) => CmdResult): CollectResult {
+  run_cycle(fake_run?: (command: Command, index: number) => CmdResult): CollectResult {
     const commands = this.repository.commands();
-    const results = commands.map((command) => fake_run ? fake_run(command) : cmd_result(0, "", ""));
+    const results = commands.map((command, index) => fake_run ? fake_run(command, index) : cmd_result(0, "", ""));
     const result = this.repository.parse(results);
     this.apply(result);
     return result;
