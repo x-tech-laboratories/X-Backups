@@ -5,6 +5,7 @@ A web platform for managing borg backups, part of X-Tech Laboratories.
 ## Layout
 
 - `server/` — the Fastify API, written in TypeScript and run directly by Node 24.
+- `server/borg/` — one borg repository: the shell commands it runs, how their output is read, and its actions.
 - `web/` — the browser page, built by Vite into `dist/`.
 
 ## Development

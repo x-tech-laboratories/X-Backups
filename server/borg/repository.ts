@@ -1,0 +1,1517 @@
+// One borg repository watched and driven over a shell on its host.
+//
+// Each poll runs `borg list --json`, plus `borg info --json` when collect_stats is on, as one framed command so the
+// calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
+// failed; an unreachable host, a missing borg, an unreadable repo, a lock borg gave up on, or unparseable output is
+// unavailable. Optional extras are a restore canary, check freshness read from systemd units or tracked per kind, and
+// actions that back up, browse, restore, diff, check, compact, prune, delete and purge, the last ones as detached jobs.
+
+import { readFileSync } from "node:fs";
+
+import {
+  CHECK_KINDS, TRACKED_CHECKS, canary_verdict, check_job_kind, check_unit_script, covered_by_check_job,
+  merge_unit, observed_unit, parse_check_units, type CheckState,
+} from "./checks.ts";
+import { launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
+import { KILL_GRACE_SECONDS, format_age, format_duration, parse_duration } from "./durations.ts";
+import {
+  LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, format_size, is_object, parse_listing,
+  type ArchiveEntry, type ListingEntry, type RepositoryInfo,
+} from "./parsing.ts";
+import {
+  CUT_SHORT, POLL_BASE_DIR_VAR, POLL_DEADLINE_VAR, POLL_LEFT_FN, POLL_RC_VAR, STEP_MARK, archive_member, as_list,
+  failure_hint, frame_line, list_unavailable, preflight_script, redact, shell_quote, skip_reason, split_poll,
+  ssh_endpoint, then_steps, with_preflight, wrap_job,
+} from "./shell.ts";
+import {
+  ActionPlan, CollectResult, cmd_result, type CmdResult, type Command, type JobRecord, type JobStore, type LogEntry,
+  type MetricReader, type MonitorStatus,
+} from "./types.ts";
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+
+const KEEP_OPTIONS = [
+  "keep_within", "keep_last", "keep_secondly", "keep_minutely", "keep_hourly",
+  "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly",
+] as const;
+
+type KeepOption = typeof KEEP_OPTIONS[number];
+
+export interface BorgConfig extends Partial<Record<KeepOption, number | string>> {
+  id?: string;
+  timeout?: number | string;
+  repo?: string;
+  max_age?: number | string;
+  passphrase?: string;
+  passphrase_file?: string;
+  passphrase_command?: string;
+  borg_bin?: string;
+  lock_wait?: number | string;
+  require_sudo?: boolean;
+  list_archives?: number;
+  collect_stats?: boolean;
+  ssh_key?: string;
+  rsh?: string;
+  source_paths?: string | string[];
+  exclude?: string | string[];
+  exclude_from?: string;
+  exclude_caches?: boolean;
+  exclude_if_present?: string | string[];
+  one_file_system?: boolean;
+  compression?: string;
+  archive_prefix?: string;
+  cache_dir?: string;
+  backup_lock_wait?: number | string;
+  canary_path?: string;
+  canary_interval?: number | string;
+  check_units?: string | string[];
+  check_max_age?: number | string;
+  restore_dir?: string;
+  browse_limit?: number;
+  prune_match?: string;
+  allow_delete?: boolean;
+  check_verify_data?: boolean;
+  allow_purge?: boolean;
+  purge_match?: string;
+  prune_after_backup?: boolean;
+  compact_after_backup?: boolean;
+  skip_when_unreachable?: boolean;
+  skip_while_active?: string | string[];
+  job_nice?: number | string;
+  job_io_idle?: boolean;
+  inhibit_sleep?: boolean;
+  job_lock?: string;
+  check_kinds?: Record<string, number | string>;
+}
+
+// Actions that start a detached job, whose launch prints the pid that interpret_action records.
+const LAUNCHED = [
+  "run_backup", "dry_run_backup", "restore_archive", "check_repo", "compact_repo",
+  "prune_repo", "delete_archive", "purge_preview", "purge_excluded",
+];
+
+// Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
+const TOPMOST_EXCLUDED =
+  "awk '/^__x_monitor_rc=/ { rc = substr($0, 12); next } " +
+  "/^x / { p = substr($0, 3); if (top != \"\" && index(p, top \"/\") == 1) next; top = p; print; next } " +
+  "{ top = \"\"; print } END { exit rc }'";
+
+// How many listed folders the browser keeps before forgetting the least recently used.
+const LISTING_CACHE = 256;
+
+const DEFAULT_LAYOUT = [
+  ["host_card", "repo_card", "maxage_card", "state_card"],
+  ["size_card", "dedup_card", "count_card", "age_card"],
+  ["canary_card", "checks_card"],
+  ["archives"],
+  ["browser"],
+  ["jobs"],
+  ["events"],
+];
+
+// ── Action shapes ────────────────────────────────────────────────────────────
+
+export interface ActionSpec {
+  name: string;
+  action_id: string;
+  variant: "primary" | "secondary" | "danger";
+  icon: string;
+  job?: string | string[];
+  more?: boolean;
+  kind?: "dialog";
+  dialog?: string;
+  confirm?: string;
+  detached?: boolean;
+}
+
+export type ActionState = "normal" | "accent" | "disabled" | "hidden";
+
+export interface ActionParams {
+  archive?: string | null;
+  path?: string | null;
+  paths?: string[] | null;
+  kind?: string | null;
+}
+
+export type ActionPlanResult = ActionPlan | CollectResult | null;
+
+export type ActionOutcome = boolean | CollectResult;
+
+export interface BackupSummary {
+  repo: string | null;
+  newest_archive_epoch: number | null;
+  newest_archive_age: number | null;
+  max_age: number;
+  fresh: boolean;
+  restore_check: boolean | null;
+  restore_checked_epoch: number | null;
+  repo_checks: boolean | null;
+  repo_checked_epoch: number | null;
+}
+
+type CardPair = [text: string, color: MonitorStatus | null];
+
+interface PendingLaunch {
+  kind: string;
+  redacted: string;
+  workdir: string;
+  started: string;
+}
+
+interface CachedListing {
+  archive: string;
+  member: string;
+  entries: ListingEntry[];
+}
+
+// ── Repository ───────────────────────────────────────────────────────────────
+
+export class BorgRepository {
+  static readonly DEFAULT_TIMEOUT = 180;
+
+  readonly name: string;
+  readonly id: string;
+  timeout: number;
+  data: MetricReader | null = null;
+  jobs: JobStore | null = null;
+
+  repo: string | null;
+  max_age: number;
+  passphrase: string | null;
+  passphrase_file: string | null;
+  passphrase_command: string | null;
+  borg_bin: string;
+  lock_wait: number | string;
+  require_sudo: boolean;
+  list_archives: number;
+  collect_stats: boolean;
+  ssh_key: string | null;
+  rsh: string | null;
+
+  source_paths: string[];
+  exclude: string[];
+  exclude_from: string | null;
+  exclude_caches: boolean;
+  exclude_if_present: string[];
+  one_file_system: boolean;
+  compression: string;
+  archive_prefix: string;
+  cache_dir: string;
+  // Only a configured folder is known to be writable on a watch-only host, so polls otherwise use a throwaway one.
+  cache_dir_configured: boolean;
+  backup_lock_wait: number | string;
+  canary_path: string | null;
+  canary_interval: number;
+  check_units: string[];
+  check_max_age: number;
+  restore_dir: string;
+  browse_limit: number;
+  retention: Partial<Record<KeepOption, number | string>>;
+  prune_match: string;
+  allow_delete: boolean;
+  check_verify_data: boolean;
+  allow_purge: boolean;
+  // Unset means every archive, since the repo may be shared with the tool that owns it.
+  purge_match: string | null;
+
+  prune_after_backup: boolean;
+  compact_after_backup: boolean;
+  skip_when_unreachable: boolean;
+  skip_while_active: string[];
+  job_nice: number | null;
+  job_io_idle: boolean;
+  inhibit_sleep: boolean;
+  job_lock: string | null;
+  check_kinds: Record<string, number>;
+
+  poll_calls: string[] = [];
+  private polling_job: JobRecord | null = null;
+  private pending_launch: PendingLaunch | null = null;
+  // Archives never change once written, so a folder listed once stays true until the archive is deleted.
+  private listings = new Map<string, CachedListing>();
+
+  constructor(name: string, config: BorgConfig) {
+    this.name = name;
+    this.id = config.id ?? name;
+    this.timeout = parse_duration(config.timeout ?? BorgRepository.DEFAULT_TIMEOUT);
+
+    this.repo = config.repo ?? null;
+    this.max_age = parse_duration(config.max_age ?? "1d");
+    this.passphrase = config.passphrase ?? null;
+    this.passphrase_file = config.passphrase_file ?? null;
+    this.passphrase_command = config.passphrase_command ?? null;
+    this.borg_bin = config.borg_bin ?? "borg";
+    this.lock_wait = config.lock_wait ?? 30;
+    this.require_sudo = Boolean(config.require_sudo ?? false);
+    this.list_archives = Math.max(1, Math.trunc(Number(config.list_archives ?? 10)));
+    this.collect_stats = Boolean(config.collect_stats ?? true);
+    this.ssh_key = config.ssh_key ?? null;
+    this.rsh = config.rsh ?? null;
+
+    this.source_paths = as_list(config.source_paths);
+    this.exclude = as_list(config.exclude);
+    this.exclude_from = config.exclude_from ?? null;
+    this.exclude_caches = Boolean(config.exclude_caches ?? true);
+    this.exclude_if_present = as_list(config.exclude_if_present);
+    this.one_file_system = Boolean(config.one_file_system ?? true);
+    this.compression = config.compression ?? "zstd";
+    this.archive_prefix = config.archive_prefix ?? name;
+    this.cache_dir = config.cache_dir ?? "/var/cache/x-monitor-borg";
+    this.cache_dir_configured = Boolean(config.cache_dir);
+    this.backup_lock_wait = config.backup_lock_wait ?? 600;
+    this.canary_path = config.canary_path ?? null;
+    this.canary_interval = parse_duration(config.canary_interval ?? "1d");
+    this.check_units = as_list(config.check_units);
+    this.check_max_age = parse_duration(config.check_max_age ?? "8d");
+    this.restore_dir = config.restore_dir ?? "/var/tmp/x-monitor-restore";
+    this.browse_limit = Math.max(1, Math.trunc(Number(config.browse_limit ?? 2000)));
+    this.retention = {};
+    for (const key of KEEP_OPTIONS) {
+      const value = config[key];
+      if (value !== undefined && value !== null && value !== "" && value !== 0) this.retention[key] = value;
+    }
+    this.prune_match = config.prune_match ?? `${this.archive_prefix}-*`;
+    this.allow_delete = Boolean(config.allow_delete ?? false);
+    this.check_verify_data = Boolean(config.check_verify_data ?? false);
+    this.allow_purge = Boolean(config.allow_purge ?? false);
+    this.purge_match = config.purge_match ?? null;
+
+    this.prune_after_backup = Boolean(config.prune_after_backup ?? false);
+    this.compact_after_backup = Boolean(config.compact_after_backup ?? false);
+    if (this.prune_after_backup && Object.keys(this.retention).length === 0) {
+      throw new Error("prune_after_backup needs a keep_* retention policy");
+    }
+    this.skip_when_unreachable = Boolean(config.skip_when_unreachable ?? true);
+    this.skip_while_active = as_list(config.skip_while_active);
+    this.job_nice = config.job_nice !== undefined && config.job_nice !== null ? Math.trunc(Number(config.job_nice)) : null;
+    this.job_io_idle = Boolean(config.job_io_idle ?? false);
+    this.inhibit_sleep = Boolean(config.inhibit_sleep ?? false);
+    this.job_lock = config.job_lock ?? null;
+    this.check_kinds = {};
+    for (const [kind, age] of Object.entries(config.check_kinds ?? {})) this.check_kinds[kind] = parse_duration(age);
+    const unknown = Object.keys(this.check_kinds).filter((kind) => !(TRACKED_CHECKS as readonly string[]).includes(kind)).sort();
+    if (unknown.length > 0) {
+      throw new Error(`check_kinds has unknown kinds ${JSON.stringify(unknown)}; use repository, archives, data or extract`);
+    }
+  }
+
+  // ── Building borg commands ─────────────────────────────────────────────────
+
+  private read_passphrase_file(): string | null {
+    try {
+      return readFileSync(this.passphrase_file!, "utf8").replace(/\n+$/, "");
+    } catch {
+      return null;
+    }
+  }
+
+  private env_prefix(persistent_cache: boolean): string[] {
+    const env: string[] = [];
+    if (this.passphrase !== null) {
+      env.push("BORG_PASSPHRASE=" + shell_quote(this.passphrase));
+    } else if (this.passphrase_file !== null) {
+      const secret = this.read_passphrase_file();
+      if (secret !== null) env.push("BORG_PASSPHRASE=" + shell_quote(secret));
+    } else if (this.passphrase_command !== null) {
+      env.push("BORG_PASSCOMMAND=" + shell_quote(this.passphrase_command));
+    }
+    env.push("BORG_RELOCATED_REPO_ACCESS_IS_OK=no");
+
+    if (this.rsh || this.ssh_key) {
+      const rsh = this.rsh || `ssh -i ${shell_quote(this.ssh_key!)} -o IdentitiesOnly=yes -o BatchMode=yes`;
+      env.push("BORG_RSH=" + shell_quote(rsh));
+    }
+
+    if (persistent_cache && this.cache_dir) {
+      env.push("BORG_BASE_DIR=" + shell_quote(this.cache_dir));
+    } else {
+      env.push(`BORG_BASE_DIR="$${POLL_BASE_DIR_VAR}"`);
+    }
+    return env;
+  }
+
+  private build(args: string[], options: { persistent_cache?: boolean; bounded?: boolean; wrapped?: boolean } = {}): string {
+    const persistent_cache = options.persistent_cache ?? false;
+    const prefix = this.require_sudo ? ["sudo", "-n"] : [];
+    const env = this.env_prefix(persistent_cache);
+    // Polls only, since a job must outlive the poll; after env, because sudo takes the first non-assignment as the command.
+    const deadline = options.bounded ? this.poll_deadline() : [];
+    const command = [...prefix, ...env, ...deadline, ...args.map(shell_quote)].join(" ");
+    if (!(options.wrapped ?? true) || (persistent_cache && this.cache_dir)) return command;
+    // The trap keeps the throwaway folder throwaway, since borg builds a full chunks cache in it every poll.
+    return `${POLL_BASE_DIR_VAR}=$(mktemp -d); trap 'rm -rf "$${POLL_BASE_DIR_VAR}"' EXIT; ${command}`;
+  }
+
+  // Bounds a poll call by what is left of the whole poll's deadline.
+  private poll_deadline(): string[] {
+    if (!this.timeout || this.timeout <= 0) return [];
+    return ["timeout", "-k", String(KILL_GRACE_SECONDS), `"$(${POLL_LEFT_FN})"`];
+  }
+
+  // The named calls this poll makes, in the order they run.
+  poll_plan(): [name: string, command: string][] {
+    const calls: [string, string][] = [["list", this.list_command()]];
+    if (this.collect_stats) calls.push(["info", this.info_command()]);
+    const archive = this.canary_archive();
+    if (archive && this.canary_due()) calls.push(...this.canary_calls(archive));
+    if (this.check_units.length > 0) calls.push(["checks", check_unit_script(this.check_units)]);
+    return calls;
+  }
+
+  poll_command(): string {
+    return this.sequence_command(this.poll_plan().map(([, command]) => command));
+  }
+
+  // Runs calls one after another under one deadline and frames each one's output; live prints stdout as it is written.
+  sequence_command(calls: string[], options: { limits?: Record<number, number>; filters?: Record<number, string>; live?: boolean } = {}): string {
+    const base = `$${POLL_BASE_DIR_VAR}`;
+    const parts = [
+      `${POLL_BASE_DIR_VAR}=$(mktemp -d)`,
+      `trap 'rm -rf "${base}"' EXIT`,
+    ];
+    if (this.timeout && this.timeout > 0) {
+      // One deadline for the whole poll, so calls in sequence cannot outlast the interval.
+      parts.push(`${POLL_DEADLINE_VAR}=$(( $(date +%s) + ${Math.trunc(this.timeout)} ))`);
+      parts.push(
+        `${POLL_LEFT_FN}() { __x_monitor_left=$(( ${POLL_DEADLINE_VAR} - $(date +%s) )); ` +
+        `[ "$__x_monitor_left" -lt 1 ] && __x_monitor_left=1; printf %s "$__x_monitor_left"; }`,
+      );
+    }
+    calls.forEach((call, index) => {
+      const limit = options.limits?.[index];
+      const filter = options.filters?.[index];
+      if (options.live) {
+        parts.push(...BorgRepository.live_call(index, call, limit, filter));
+        return;
+      }
+      parts.push(`${call} >"${base}/${index}.out" 2>"${base}/${index}.err"; ${POLL_RC_VAR}=$?`);
+      for (const stream of ["out", "err"]) {
+        // The closing newline keeps output with no trailing one from running into the next marker.
+        parts.push(`printf '%s\\n' "${frame_line(index, stream, `$${POLL_RC_VAR}`)}"`);
+        const stream_limit = stream === "out" ? limit : undefined;
+        const keep = stream === "out" ? filter : undefined;
+        const reader = keep ? `${keep} "${base}/${index}.${stream}"` : `cat "${base}/${index}.${stream}"`;
+        parts.push(stream_limit ? `${reader} | head -n ${Math.trunc(stream_limit)}` : reader);
+        parts.push("printf '\\n'");
+      }
+    });
+    return parts.join("; ");
+  }
+
+  // One call of a live sequence: its stdout as it comes, then its stderr under a frame carrying its exit code.
+  private static live_call(index: number, call: string, limit: number | undefined, keep: string | undefined): string[] {
+    const base = `$${POLL_BASE_DIR_VAR}`;
+    let reader = keep ? ` | ${keep}` : "";
+    // awk keeps reading past the limit, so the call never dies of a closed pipe.
+    reader += limit ? ` | awk 'NR <= ${Math.trunc(limit)}'` : "";
+    return [
+      `printf '%s\\n' "${frame_line(index, "out", "-")}"`,
+      `{ ${call} 2>"${base}/${index}.err"; echo $? >"${base}/${index}.rc"; }${reader}`,
+      `${POLL_RC_VAR}=$(cat "${base}/${index}.rc")`,
+      "printf '\\n'",
+      `printf '%s\\n' "${frame_line(index, "err", `$${POLL_RC_VAR}`)}"`,
+      `cat "${base}/${index}.err"`,
+      "printf '\\n'",
+    ];
+  }
+
+  private read_options(): { persistent_cache: boolean; bounded: boolean; wrapped: boolean } {
+    return { persistent_cache: this.cache_dir_configured, bounded: true, wrapped: false };
+  }
+
+  list_command(): string {
+    // Never add --bypass-lock to a read: borg rewrites the index on open, and unlocked mid-compaction that corrupts it.
+    return this.build([
+      this.borg_bin, "list", "--last", String(this.list_archives), "--json", "--lock-wait", String(this.lock_wait), this.repo!,
+    ], this.read_options());
+  }
+
+  info_command(): string {
+    return this.build([
+      this.borg_bin, "info", "--json", "--last", String(this.list_archives), "--lock-wait", String(this.lock_wait), this.repo!,
+    ], this.read_options());
+  }
+
+  backup_command(options: { archive_name?: string; dry_run?: boolean } = {}): string {
+    const name = options.archive_name || this.default_archive_name();
+    const args = [this.borg_bin, "create", "--log-json", "--progress", "--compression", this.compression];
+    args.push(options.dry_run ? "--dry-run" : "--stats");
+    if (this.one_file_system) args.push("--one-file-system");
+    args.push(...this.exclude_args());
+    args.push("--lock-wait", String(this.backup_lock_wait));
+    args.push(`${this.repo}::${name}`);
+    args.push(...this.source_paths);
+    return this.build(args, { persistent_cache: true });
+  }
+
+  // The exclusions a backup applies, which a purge also uses to rewrite existing archives to match.
+  private exclude_args(): string[] {
+    const args: string[] = [];
+    if (this.exclude_caches) args.push("--exclude-caches");
+    for (const marker of this.exclude_if_present) args.push("--exclude-if-present", marker);
+    for (const pattern of this.exclude) args.push("--exclude", pattern);
+    if (this.exclude_from) args.push("--exclude-from", this.exclude_from);
+    return args;
+  }
+
+  // The prefix and the local time, matching the names borgmatic and Vorta give their archives.
+  default_archive_name(): string {
+    return `${this.archive_prefix}-${local_stamp(new Date())}`;
+  }
+
+  // ── Polling ────────────────────────────────────────────────────────────────
+
+  commands(): Command[] {
+    // While a job runs, the cycle polls it instead of listing the repo.
+    const job = this.running_job();
+    // parse() must read results the way they were asked for, even if a job starts or ends mid-cycle.
+    this.polling_job = job;
+    if (job !== null) return [{ text: poll_command(job.workdir!, job.pid!, job.output_seq) }];
+    if (!this.repo) return [];
+    const plan = this.poll_plan();
+    this.poll_calls = plan.map(([name]) => name);
+    return [{ text: this.sequence_command(plan.map(([, command]) => command)) }];
+  }
+
+  private running_job(): JobRecord | null {
+    const job = this.jobs ? this.jobs.running() : null;
+    return job && job.pid && job.workdir ? job : null;
+  }
+
+  parse(results: CmdResult[]): CollectResult {
+    const job = this.polling_job;
+    this.polling_job = null;
+    if (job !== null) return this.parse_job_poll(job, results[0]);
+
+    if (!this.repo) return CollectResult.failed("No 'repo' configured for borg monitor");
+
+    // One command carried the whole poll, so its transcript is unpacked before the calls are read.
+    const names = this.poll_calls.length > 0 ? this.poll_calls : (this.collect_stats ? ["list", "info"] : ["list"]);
+    const split = split_poll(results[0], names.length);
+    const by_name = new Map(names.map((name, index) => [name, split[index]]));
+    const list_result = by_name.get("list")!;
+    const { stdout, stderr, exit_code } = list_result;
+    const logs: LogEntry[] = [[`Running: ${redact(this.list_command())}`, "INFO"]];
+
+    if (exit_code !== 0) {
+      const detail = (stderr || stdout).trim();
+      logs.push([`borg list failed (exit ${exit_code}): ${detail}`, "ERROR"]);
+      const hint = failure_hint(detail);
+      if (hint) logs.push([hint, "ERROR"]);
+      return new CollectResult({ logs, status: list_unavailable(exit_code, detail) ? "unavailable" : "failed" });
+    }
+
+    const view = RepoView.from_stdout(stdout);
+    if (!view.valid) {
+      logs.push(["Could not parse borg output — no archive timestamps found", "ERROR"]);
+      const snippet = (stdout || stderr || "").trim().slice(0, 500);
+      if (snippet) logs.push([`Raw output was: ${snippet}`, "ERROR"]);
+      return new CollectResult({ logs, status: "unavailable" });
+    }
+
+    logs.push(...this.repo_detail_logs(view));
+    const metrics: Record<string, number> = { archive_count: view.raw_count, last_backup_epoch: view.newest_epoch };
+    const metadata: Record<string, string> = {};
+    if (view.archives.length > 0) {
+      metrics.archive_list = view.archives.length;
+      metadata.archive_list = JSON.stringify({ archives: view.archives, repository: view.info });
+    }
+
+    if (view.raw_count === 0 || view.newest_epoch === 0) {
+      logs.push(["No archives in repository", "WARNING"]);
+      return new CollectResult({ metrics, metadata, logs, status: "failed" });
+    }
+
+    let status: MonitorStatus;
+    const age = now_seconds() - view.newest_epoch;
+    if (age > this.max_age) {
+      logs.push([`Last archive was ${format_age(age)}, exceeds max_age of ${format_duration(this.max_age)}`, "WARNING"]);
+      status = "failed";
+    } else {
+      logs.push([`Last archive ${format_age(age)}`, "INFO"]);
+      status = "online";
+    }
+
+    if (this.collect_stats && by_name.has("info")) {
+      const stats = this.parse_repo_stats(by_name.get("info")!, view.archives);
+      Object.assign(metrics, stats.metrics);
+      logs.push(...stats.logs);
+      if (stats.merged_archives !== null) {
+        metrics.archive_list = stats.merged_archives.length;
+        metadata.archive_list = JSON.stringify({ archives: stats.merged_archives, repository: view.info });
+      }
+    }
+
+    const extras = [this.fold_canary(by_name, metrics, metadata, logs), this.fold_checks(by_name, metrics, metadata, logs)];
+    if (extras.includes("failed")) status = "failed";
+    return new CollectResult({ metrics, metadata, logs, status });
+  }
+
+  private repo_detail_logs(view: RepoView): LogEntry[] {
+    const logs: LogEntry[] = [];
+    const parts: string[] = [];
+    if (view.info.location) parts.push(`location=${view.info.location}`);
+    if (view.info.encryption) parts.push(`encryption=${view.info.encryption}`);
+    if (view.info.last_modified) parts.push(`last_modified=${view.info.last_modified}`);
+    if (parts.length > 0) logs.push(["Repository: " + parts.join(", "), "INFO"]);
+
+    if (view.archives.length === 0) return logs;
+    logs.push([`${view.archives.length} most recent archive(s):`, "INFO"]);
+    for (const archive of view.archives) {
+      const age = archive.epoch ? format_age(now_seconds() - archive.epoch) : "unknown age";
+      logs.push([`  ${archive.name} (${age})`, "INFO"]);
+    }
+    return logs;
+  }
+
+  // Reads `borg info` output into stats metrics and per-archive sizes merged onto the listed archives.
+  private parse_repo_stats(info_result: CmdResult, archives: ArchiveEntry[]): { metrics: Record<string, number>; logs: LogEntry[]; merged_archives: ArchiveEntry[] | null } {
+    const { exit_code, stdout, stderr } = info_result;
+    if (exit_code !== 0) {
+      return { metrics: {}, logs: [[`borg info failed (exit ${exit_code}): ${(stderr || stdout).trim().slice(0, 200)}`, "WARNING"]], merged_archives: null };
+    }
+
+    const data = decode_json(stdout);
+    const sizes = parse_archive_sizes(data);
+    let merged_archives: ArchiveEntry[] | null = null;
+    if (sizes.size > 0 && archives.length > 0) {
+      merged_archives = archives.map((archive) => ({ ...archive, ...sizes.get(archive.name) }));
+    }
+
+    const stats = parse_stats(data);
+    if (Object.keys(stats).length === 0) {
+      return { metrics: {}, logs: [["Could not parse borg info output", "WARNING"]], merged_archives };
+    }
+
+    const metrics = { ...stats };
+    const logs: LogEntry[] = [];
+    const original = stats.original_size ?? 0;
+    const deduplicated = stats.deduplicated_size ?? 0;
+    if (original && deduplicated) {
+      const ratio = original / deduplicated;
+      metrics.dedup_ratio = ratio;
+      logs.push([`Repo size: ${format_size(deduplicated)} on disk for ${format_size(original)} of data (${ratio.toFixed(1)}x reduction)`, "INFO"]);
+    }
+    return { metrics, logs, merged_archives };
+  }
+
+  cached_archives(): [archives: ArchiveEntry[], repository: RepositoryInfo] {
+    const metric = this.data?.latest_metric("archive_list") ?? null;
+    if (metric === null || !metric.metadata) return [[], {}];
+    const data = decode_json(metric.metadata);
+    return [(data.archives as ArchiveEntry[]) || [], (data.repository as RepositoryInfo) || {}];
+  }
+
+  // ── Restore canary ─────────────────────────────────────────────────────────
+
+  // The newest archive the last poll saw, which the canary is restored from.
+  private canary_archive(): string | null {
+    if (!this.canary_path || this.data === null) return null;
+    const [archives] = this.cached_archives();
+    return archives.length > 0 ? archives[0].name ?? null : null;
+  }
+
+  private canary_due(): boolean {
+    const checked = this.data?.latest_metric("canary_checked_epoch") ?? null;
+    return checked === null || Date.now() / 1000 - checked.value >= this.canary_interval;
+  }
+
+  // Extracts the canary from the archive to stdout, then reads the live file it should match.
+  canary_calls(archive: string): [name: string, command: string][] {
+    const extract = this.build([
+      this.borg_bin, "extract", "--stdout", "--lock-wait", String(this.lock_wait),
+      `${this.repo}::${archive}`, archive_member(this.canary_path) || this.canary_path!,
+    ], this.read_options());
+    const path = shell_quote(this.canary_path!);
+    // A canary is normally world-readable, and sudo rules allowing only borg would refuse `sudo cat`; braced so one redirect covers both.
+    const live = this.require_sudo ? `{ cat ${path} 2>/dev/null || sudo -n cat ${path}; }` : `cat ${path}`;
+    return [["canary", extract], ["canary_live", live]];
+  }
+
+  // Records this poll's restore check if one ran, and answers failed while the last verdict stands failed.
+  private fold_canary(by_name: Map<string, CmdResult>, metrics: Record<string, number>, metadata: Record<string, string>, logs: LogEntry[]): MonitorStatus | null {
+    if (by_name.has("canary")) {
+      const [verdict, detail] = canary_verdict(by_name.get("canary")!, by_name.get("canary_live") ?? cmd_result(1, "", CUT_SHORT));
+      if (verdict === null) {
+        logs.push([`Restore check skipped: ${detail}`, "WARNING"]);
+      } else {
+        metrics.canary_ok = verdict ? 1 : 0;
+        metrics.canary_checked_epoch = now_seconds();
+        metadata.canary_ok = detail;
+        logs.push([`Restore check ${verdict ? "passed" : "failed"}: ${detail}`, verdict ? "INFO" : "ERROR"]);
+        return verdict ? null : "failed";
+      }
+    }
+    if (!this.canary_path || this.data === null) return null;
+    const last = this.data.latest_metric("canary_ok");
+    return last !== null && last.value < 0.5 ? "failed" : null;
+  }
+
+  // ── Check freshness ────────────────────────────────────────────────────────
+
+  private stored_checks(): Record<string, CheckState> {
+    const metric = this.data?.latest_metric("check_ok_epoch") ?? null;
+    if (metric === null || !metric.metadata) return {};
+    return decode_json(metric.metadata) as Record<string, CheckState>;
+  }
+
+  // Folds the check units' journal into the stored record and answers failed when any check is failed or stale.
+  private fold_checks(by_name: Map<string, CmdResult>, metrics: Record<string, number>, metadata: Record<string, string>, logs: LogEntry[]): MonitorStatus | null {
+    if (this.check_units.length === 0 && Object.keys(this.check_kinds).length === 0) return null;
+    const states = this.stored_checks();
+    const result = by_name.get("checks");
+    if (result !== undefined) {
+      const seen = parse_check_units(result.stdout);
+      if (Object.keys(seen).length === 0) {
+        logs.push([`Could not read the check units' journal: ${(result.stderr || "no output").trim().slice(0, 200)}`, "WARNING"]);
+        if (Object.keys(this.check_kinds).length === 0) return null;
+      } else {
+        for (const unit of this.check_units) {
+          states[unit] = merge_unit(states[unit] ?? {}, observed_unit(seen[unit] ?? { err: [], values: {} }, this.repo!));
+        }
+      }
+    }
+    const judged = this.judge_checks(states, metadata, logs);
+    Object.assign(metrics, judged.metrics);
+    return judged.problems.length > 0 ? "failed" : null;
+  }
+
+  // Every check held to an age, by its stored name, with its label, max age and the setting that sets it.
+  private expected_checks(): Map<string, [label: string, max_age: number, setting: string]> {
+    const expected = new Map<string, [string, number, string]>();
+    for (const unit of this.check_units) expected.set(unit, [unit, this.check_max_age, "check_max_age"]);
+    for (const [kind, max_age] of Object.entries(this.check_kinds)) expected.set(kind, [`${kind} check`, max_age, `check_kinds.${kind}`]);
+    return expected;
+  }
+
+  // Judges every expected check against its maximum age, storing all the records and logging each problem.
+  private judge_checks(states: Record<string, CheckState>, metadata: Record<string, string>, logs: LogEntry[]): { metrics: Record<string, number>; problems: string[] } {
+    const now = now_seconds();
+    const problems: string[] = [];
+    const oks: number[] = [];
+    for (const [name, [label, max_age, setting]] of this.expected_checks()) {
+      const state = states[name] ?? {};
+      if (Object.hasOwn(this.check_kinds, name) && !state.ok && !state.failed) {
+        // A kind never run gets one max age from when it was first expected, so a new schedule has time to reach it.
+        const since = state.since || now;
+        states[name] = { ...state, since };
+        if (now - since <= max_age) {
+          logs.push([`Repository check: ${label} has not run yet`, "INFO"]);
+        } else {
+          problems.push(`${label} has not run within ${setting} of ${format_duration(max_age)}`);
+        }
+        continue;
+      }
+      oks.push(state.ok || 0);
+      if (state.failed) {
+        problems.push(`${label} last run failed: ${state.error || "see its journal"}`);
+      } else if (!state.ok) {
+        problems.push(`${label} has no successful run on record`);
+      } else if (now - state.ok > max_age) {
+        problems.push(`${label} last succeeded ${format_age(now - state.ok)}, exceeds ${setting} of ${format_duration(max_age)}`);
+      }
+    }
+    metadata.check_ok_epoch = JSON.stringify(states);
+    for (const problem of problems) logs.push([`Repository check: ${problem}`, "ERROR"]);
+    if (oks.length > 0 && problems.length === 0) {
+      logs.push([`Repository checks passed, oldest ${format_age(now - Math.min(...oks))}`, "INFO"]);
+    }
+    const metrics = { check_ok_epoch: oks.length > 0 ? Math.min(...oks) : 0, checks_ok: problems.length > 0 ? 0 : 1 };
+    return { metrics, problems };
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+
+  get_actions(): ActionSpec[] {
+    const actions: ActionSpec[] = [];
+    const has_retention = Object.keys(this.retention).length > 0;
+    if (this.source_paths.length > 0) {
+      actions.push(
+        { name: "Run Backup", action_id: "run_backup", job: "backup", variant: "primary", icon: "backup" },
+        { name: "Dry Run", action_id: "dry_run_backup", job: "dry-run", variant: "secondary", icon: "fact_check" },
+      );
+    }
+    if (this.canary_path) {
+      actions.push({ name: "Verify Restore", action_id: "verify_restore", more: true, variant: "secondary", icon: "verified", detached: true });
+    }
+    if (this.repo) {
+      actions.push(
+        { name: "Check", action_id: "check_repo", job: Object.keys(CHECK_KINDS).map(check_job_kind), variant: "secondary", icon: "health_and_safety" },
+        { name: "Compact", action_id: "compact_repo", job: "compact", variant: "secondary", icon: "compress" },
+      );
+    }
+    if (has_retention) {
+      actions.push({ name: "Prune Preview", action_id: "prune_preview", kind: "dialog", more: true, dialog: "prune_preview", variant: "secondary", icon: "content_cut" });
+    }
+    if (this.allow_delete && has_retention) {
+      actions.push({
+        name: "Prune", action_id: "prune_repo", job: "prune", more: true, variant: "danger", icon: "delete_sweep",
+        confirm: `Prune ${this.repo} by its retention policy? Archives it drops are gone for good — run Prune Preview ` +
+          "first to see which. Space is freed by a Compact afterwards.",
+      });
+    }
+    if (this.allow_purge) {
+      actions.push(
+        { name: "Purge Preview", action_id: "purge_preview", job: "purge-preview", more: true, variant: "secondary", icon: "filter_alt" },
+        {
+          name: "Purge Excluded", action_id: "purge_excluded", job: "purge", more: true, variant: "danger", icon: "cleaning_services",
+          confirm: `Rewrite every archive in ${this.repo} without the files its exclude patterns now drop, then compact? ` +
+            "Those files are gone from every archive for good — run Purge Preview first to see which. It holds the " +
+            "repository lock for the whole run, so backups wait until it ends.",
+        },
+      );
+    }
+    if (this.allow_delete) {
+      actions.push({
+        name: "Break Lock", action_id: "break_lock", more: true, variant: "danger", icon: "lock_open",
+        confirm: `Break the locks on ${this.repo}? Only do this when no borg process is using it; breaking a live lock ` +
+          "can corrupt the repository.",
+      });
+    }
+    return actions;
+  }
+
+  // How an action shows now: accent while its job runs, disabled while another job runs, else normal.
+  action_state(action: ActionSpec): ActionState {
+    // Break Lock greys out while a job runs, since that job holds the lock it would break.
+    if (action.action_id === "break_lock" && this.running_job() !== null) return "disabled";
+    if (action.detached && this.jobs) return this.jobs.action_job(action.action_id) ? "accent" : "normal";
+    const job = this.jobs && action.job ? this.jobs.running() : null;
+    if (job === null) return "normal";
+    const kinds = typeof action.job === "string" ? [action.job] : action.job ?? [];
+    return kinds.includes(job.kind) ? "accent" : "disabled";
+  }
+
+  plan_action(action_id: string, params: ActionParams = {}): ActionPlanResult {
+    switch (action_id) {
+      case "run_backup":
+      case "dry_run_backup":
+        return this.plan_backup(action_id);
+      case "prune_preview":
+        return this.plan_prune_preview();
+      case "verify_restore":
+        return this.plan_verify_restore();
+      case "browse_archive":
+        return this.plan_browse(params);
+      case "restore_archive":
+        return this.plan_restore(params);
+      case "check_repo":
+        return this.plan_check(params);
+      case "compact_repo":
+        return this.plan_compact();
+      case "prune_repo":
+        return this.plan_prune();
+      case "delete_archive":
+        return this.plan_delete(params);
+      case "break_lock":
+        return this.plan_break_lock();
+      case "purge_preview":
+      case "purge_excluded":
+        return this.plan_purge(action_id);
+      case "diff_archive":
+        return this.plan_diff(params);
+      default:
+        return null;
+    }
+  }
+
+  interpret_action(action_id: string, result: CmdResult, params: ActionParams = {}): ActionOutcome {
+    switch (action_id) {
+      case "prune_preview":
+        return this.interpret_prune_preview(result);
+      case "verify_restore":
+        return this.interpret_verify_restore(result);
+      case "browse_archive":
+        return this.interpret_browse(result, params);
+      case "break_lock":
+        return this.interpret_break_lock(result);
+      case "diff_archive":
+        return this.interpret_diff(result, params);
+    }
+    if (!LAUNCHED.includes(action_id)) return result.exit_code === 0;
+
+    const { kind, redacted, workdir, started } = this.pending_launch ?? { kind: "job", redacted: "", workdir: "", started: "" };
+    this.pending_launch = null;
+
+    const skipped = result.exit_code === 0 ? skip_reason(result.stdout) : null;
+    if (skipped !== null) {
+      const message = `${capitalize(kind)} skipped: ${skipped}`;
+      return new CollectResult({ logs: [[message, "WARNING"]], metadata: { content: message }, success: true });
+    }
+
+    const pid = result.exit_code === 0 ? parse_launch(result.stdout) : null;
+    if (pid === null) {
+      return CollectResult.failed(`Failed to launch ${kind}: ${(result.stderr || result.stdout).trim().slice(0, 200)}`);
+    }
+
+    const job_id = this.jobs!.create(kind, redacted, workdir);
+    this.jobs!.set_pid(job_id, pid);
+    const message = `${capitalize(kind)} started (pid ${pid})${started}`;
+    return new CollectResult({ logs: [[message, "INFO"]], metadata: { content: message }, success: true });
+  }
+
+  // An action outcome that reports a problem without touching the monitor's status.
+  private static refused(message: string): CollectResult {
+    return new CollectResult({ logs: [[message, "WARNING"]], metadata: { content: message }, success: false });
+  }
+
+  // A single framed borg call as an action, bounded like a poll.
+  private run_one(call: string, limit?: number, keep?: string): ActionPlan {
+    const command = this.sequence_command([call], {
+      limits: limit ? { 0: limit } : undefined,
+      filters: keep ? { 0: keep } : undefined,
+    });
+    return new ActionPlan(command, { timeout: this.timeout || null });
+  }
+
+  // Framed borg calls as a detached action whose output reaches its log as it is written.
+  private run_detached(calls: string[], limit?: number): ActionPlan {
+    const command = this.sequence_command(calls, { limits: limit ? { 0: limit } : undefined, live: true });
+    return new ActionPlan(command, { detached: true });
+  }
+
+  // Launches the command as a detached job; interpret_action records the pid it prints.
+  private launch(kind: string, command: string, started = ""): ActionPlan {
+    const workdir = workdir_for(`${this.id}-${now_seconds()}`);
+    const wrapped = wrap_job(command, this.job_wrappers(kind), this.job_lock);
+    this.pending_launch = { kind, redacted: redact(wrapped), workdir, started };
+    return new ActionPlan(with_preflight(this.preflight(), launch_command(wrapped, workdir)));
+  }
+
+  // The argv every job runs under: the shared job lock, the sleep inhibitor, then the lowered priority.
+  private job_wrappers(kind: string): string[] {
+    const argv: string[] = [];
+    if (this.job_lock) argv.push("flock", this.job_lock);
+    if (this.inhibit_sleep) {
+      argv.push("systemd-inhibit", "--who=X-Monitor", "--what=sleep:shutdown", `--why=X-Monitor borg ${kind} for ${this.name}`);
+    }
+    if (this.job_nice !== null) argv.push("nice", "-n", String(this.job_nice));
+    if (this.job_io_idle) argv.push("ionice", "-c", "3");
+    return argv;
+  }
+
+  // Shell that finds a reason to skip a job before it starts, such as a repository server that is not answering.
+  private preflight(): string | null {
+    const endpoint = this.skip_when_unreachable ? ssh_endpoint(this.repo) : null;
+    return preflight_script(endpoint, this.skip_while_active);
+  }
+
+  // The refusal for starting a job without a repo or while another one runs, else null.
+  private job_refusal(what: string): CollectResult | null {
+    if (!this.repo) return BorgRepository.refused(`Cannot ${what}: no 'repo' configured`);
+    if (this.running_job() !== null) return BorgRepository.refused("A job is already running for this monitor");
+    return null;
+  }
+
+  // ── Backup ─────────────────────────────────────────────────────────────────
+
+  private plan_backup(action_id: string): ActionPlanResult {
+    if (!this.repo) return CollectResult.failed("Cannot back up: no 'repo' configured");
+    if (this.source_paths.length === 0) return CollectResult.failed("Cannot back up: no 'source_paths' configured");
+    if (this.running_job() !== null) return CollectResult.failed("A backup is already running for this monitor", "WARNING", null);
+    if (action_id === "dry_run_backup") return this.launch("dry-run", this.backup_command({ dry_run: true }));
+    const steps: [string, string][] = [];
+    if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), this.repo])]);
+    if (this.compact_after_backup) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", this.repo])]);
+    return this.launch("backup", then_steps(this.backup_command(), steps));
+  }
+
+  // ── Prune preview ──────────────────────────────────────────────────────────
+
+  private retention_args(): string[] {
+    return Object.entries(this.retention).flatMap(([key, value]) => ["--" + key.replaceAll("_", "-"), String(value)]);
+  }
+
+  private prune_preview_command(): string {
+    const args = [this.borg_bin, "prune", "--dry-run", "--list", "--lock-wait", String(this.lock_wait), "--glob-archives", this.prune_match];
+    args.push(...this.retention_args(), this.repo!);
+    return this.build(args, this.read_options());
+  }
+
+  private plan_prune_preview(): ActionPlanResult {
+    if (!this.repo) return BorgRepository.refused("Cannot preview a prune: no 'repo' configured");
+    if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot preview a prune: no keep_* retention configured");
+    return this.run_one(this.prune_preview_command());
+  }
+
+  private interpret_prune_preview(result: CmdResult): CollectResult {
+    const [call] = split_poll(result, 1);
+    const text = [call.stdout, call.stderr].filter(Boolean).join("\n");
+    if (call.exit_code !== 0) {
+      const hint = failure_hint(text);
+      return BorgRepository.refused(`borg prune --dry-run failed (exit ${call.exit_code}): ${text.trim().slice(0, 300)}` + (hint ? `\n${hint}` : ""));
+    }
+    const keep: string[] = [];
+    const prune: string[] = [];
+    for (const line of text.split(/\r\n|\r|\n/)) {
+      const groups = PRUNE_LINE.exec(line.trim())?.groups;
+      if (!groups) continue;
+      if (groups.prune) {
+        prune.push(`  ${groups.name}  ${groups.date}`);
+      } else {
+        keep.push(`  ${groups.name}  ${groups.date}  (${groups.rule})`);
+      }
+    }
+    const policy = Object.entries(this.retention).map(([key, value]) => `--${key.replaceAll("_", "-")} ${value}`).join(" ");
+    const lines = [`Policy: ${policy}`, `Archives matching: ${this.prune_match}`, ""];
+    lines.push(`Would prune ${prune.length} of ${prune.length + keep.length} archive(s):`);
+    lines.push(...(prune.length > 0 ? prune : ["  (none)"]));
+    lines.push("", `Keeping ${keep.length}:`, ...(keep.length > 0 ? keep : ["  (none)"]));
+    return new CollectResult({
+      logs: [[`Prune preview: would prune ${prune.length}, keep ${keep.length}`, "INFO"]],
+      metadata: { content: lines.join("\n") },
+      success: true,
+    });
+  }
+
+  // ── Verify restore ─────────────────────────────────────────────────────────
+
+  private plan_verify_restore(): ActionPlanResult {
+    if (!this.canary_path) return BorgRepository.refused("Cannot verify a restore: no 'canary_path' configured");
+    const archive = this.canary_archive();
+    if (!archive) return BorgRepository.refused("Cannot verify a restore: no archive has been listed yet");
+    return this.run_detached(this.canary_calls(archive).map(([, command]) => command));
+  }
+
+  private interpret_verify_restore(result: CmdResult): CollectResult {
+    const [canary, canary_live] = split_poll(result, 2);
+    const by_name = new Map([["canary", canary], ["canary_live", canary_live]]);
+    const metrics: Record<string, number> = {};
+    const metadata: Record<string, string> = {};
+    const logs: LogEntry[] = [];
+    this.fold_canary(by_name, metrics, metadata, logs);
+    const message = logs.length > 0 ? logs[logs.length - 1][0] : "Restore check reached no verdict";
+    return new CollectResult({ metrics, metadata: { ...metadata, content: message }, logs, success: metrics.canary_ok === 1 });
+  }
+
+  // ── Browse ─────────────────────────────────────────────────────────────────
+
+  // The children of the path in the archive as last listed, or null when that folder has not been listed yet.
+  listing(archive: string, path: string): ListingEntry[] | null {
+    const key = listing_key(archive, archive_member(path) || "");
+    const cached = this.listings.get(key);
+    if (cached === undefined) return null;
+    this.listings.delete(key);
+    this.listings.set(key, cached);
+    return cached.entries;
+  }
+
+  private plan_browse(params: ActionParams): ActionPlanResult {
+    const member = archive_member(params.path || "");
+    const archive = params.archive;
+    if (!this.repo || !archive) return BorgRepository.refused("Cannot browse: no archive given");
+    if (member === null) return BorgRepository.refused("A path may not contain '.' or '..' components");
+    const cached = this.listing(archive, member);
+    if (cached !== null) {
+      return new CollectResult({ metadata: { content: this.listing_text(archive, member, cached) }, success: true });
+    }
+    const args = [this.borg_bin, "list", "--format", LIST_FORMAT, "--lock-wait", String(this.lock_wait), `${this.repo}::${archive}`];
+    if (member) args.push(member);
+    return this.run_one(this.build(args, this.read_options()), this.browse_limit + 1, children_filter(member));
+  }
+
+  private interpret_browse(result: CmdResult, params: ActionParams): CollectResult {
+    const [call] = split_poll(result, 1);
+    if (call.exit_code !== 0) {
+      const detail = (call.stderr || call.stdout).trim();
+      const hint = failure_hint(detail);
+      return BorgRepository.refused(`borg list failed (exit ${call.exit_code}): ${detail.slice(0, 300)}` + (hint ? `\n${hint}` : ""));
+    }
+    const archive = params.archive ?? "";
+    const member = archive_member(params.path || "") || "";
+    const entries = parse_listing(call.stdout);
+    // A listing longer than browse_limit is kept one entry over it, which is how the browser knows it was cut short.
+    this.listings.set(listing_key(archive, member), { archive, member, entries });
+    while (this.listings.size > LISTING_CACHE) this.listings.delete(this.listings.keys().next().value!);
+    return new CollectResult({ metadata: { content: this.listing_text(archive, member, entries) }, success: true });
+  }
+
+  private listing_text(archive: string, member: string, entries: ListingEntry[]): string {
+    const where = `${archive}:/${member}`;
+    if (entries.length === 0) return `${where} — nothing at that path`;
+    let header = `${where} — ${entries.length} entries`;
+    if (entries.length > this.browse_limit) {
+      entries = entries.slice(0, this.browse_limit);
+      header = `${where} — first ${this.browse_limit} entries (raise browse_limit for more)`;
+    }
+    const lines = entries.map((entry) => entry.dir ? `${entry.name}/` : `${entry.name}  ${format_size(entry.size || 0)}  ${entry.mtime}`);
+    return [header, "", ...lines].join("\n");
+  }
+
+  // ── Restore ────────────────────────────────────────────────────────────────
+
+  // Creates a fresh folder under restore_dir and extracts the paths into it, never over live files.
+  private restore_command(archive: string, members: string[], destination: string): string {
+    const extract = this.build([
+      this.borg_bin, "extract", "--log-json", "--progress", "--lock-wait", String(this.backup_lock_wait), `${this.repo}::${archive}`, ...members,
+    ], { persistent_cache: true });
+    const mkdir = (this.require_sudo ? "sudo -n " : "") + "mkdir -p " + shell_quote(destination);
+    return `${mkdir} && cd ${shell_quote(destination)} && ${extract}`;
+  }
+
+  private plan_restore(params: ActionParams): ActionPlanResult {
+    const requested = [...(params.path ? [params.path] : []), ...(params.paths ?? [])];
+    const members = requested.map(archive_member);
+    const archive = params.archive;
+    if (!this.repo || !archive) return BorgRepository.refused("Cannot restore: no archive given");
+    if (members.some((member) => member === null)) return BorgRepository.refused("A path may not contain '.' or '..' components");
+    if (members.length === 0 || !members.every(Boolean)) {
+      return BorgRepository.refused("Give the path to restore — a whole archive is not restored from here");
+    }
+    const refusal = this.job_refusal("restore");
+    if (refusal) return refusal;
+    const destination = `${this.restore_dir.replace(/\/+$/, "")}/${archive}-${utc_compact_stamp(new Date())}`;
+    return this.launch("restore", this.restore_command(archive, members as string[], destination), ` into ${destination}`);
+  }
+
+  // ── Maintenance ────────────────────────────────────────────────────────────
+
+  private maintenance_command(args: string[]): string {
+    return this.build([this.borg_bin, ...args, "--log-json", "--lock-wait", String(this.backup_lock_wait)], { persistent_cache: true });
+  }
+
+  private plan_check(params: ActionParams): ActionPlanResult {
+    const kind = params.kind || (this.check_verify_data ? "data" : "all");
+    if (!Object.hasOwn(CHECK_KINDS, kind)) {
+      return BorgRepository.refused(`Unknown check kind '${kind}': use ${Object.keys(CHECK_KINDS).join(", ")}`);
+    }
+    const refusal = this.job_refusal("check the repository");
+    if (refusal) return refusal;
+    if (kind === "extract") {
+      const [archives] = this.cached_archives();
+      const newest = archives.length > 0 ? archives[0].name : null;
+      if (!newest) return BorgRepository.refused("Cannot run an extract check: no archive listed yet");
+      const command = this.maintenance_command(["extract", "--dry-run", "--progress", `${this.repo}::${newest}`]);
+      return this.launch(check_job_kind(kind), command, ` on ${newest}`);
+    }
+    const args = ["check", "--progress", ...CHECK_KINDS[kind].options];
+    return this.launch(check_job_kind(kind), this.maintenance_command([...args, this.repo!]));
+  }
+
+  private plan_compact(): ActionPlanResult {
+    const refusal = this.job_refusal("compact the repository");
+    if (refusal) return refusal;
+    return this.launch("compact", this.maintenance_command(["compact", "--progress", this.repo!]));
+  }
+
+  private plan_prune(): ActionPlanResult {
+    if (!this.allow_delete) return BorgRepository.refused("Pruning is off for this monitor — set allow_delete: true to enable it");
+    if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot prune: no keep_* retention configured");
+    const refusal = this.job_refusal("prune");
+    if (refusal) return refusal;
+    return this.launch("prune", this.maintenance_command([...this.prune_args(), this.repo!]));
+  }
+
+  // The prune that applies the retention policy for real, shared by the Prune action and the one after a backup.
+  private prune_args(): string[] {
+    return ["prune", "--list", "--stats", "--glob-archives", this.prune_match, ...this.retention_args()];
+  }
+
+  private plan_delete(params: ActionParams): ActionPlanResult {
+    const archive = params.archive;
+    if (!this.allow_delete) return BorgRepository.refused("Deleting archives is off for this monitor — set allow_delete: true to enable it");
+    const [archives] = this.cached_archives();
+    // Only a listed archive may be deleted, so a stale or hand-typed name cannot reach borg.
+    if (!archive || !archives.some((listed) => listed.name === archive)) {
+      return BorgRepository.refused(`Cannot delete ${archive || "an unnamed archive"}: it is not in the archive list`);
+    }
+    const refusal = this.job_refusal("delete an archive");
+    if (refusal) return refusal;
+    for (const [key, cached] of this.listings) {
+      if (cached.archive === archive) this.listings.delete(key);
+    }
+    return this.launch("delete", this.maintenance_command(["delete", "--stats", `${this.repo}::${archive}`]), ` for ${archive}`);
+  }
+
+  // ── Purge ──────────────────────────────────────────────────────────────────
+
+  private purge_refusal(): CollectResult | null {
+    if (!this.allow_purge) return BorgRepository.refused("Purging is off for this monitor — set allow_purge: true to enable it");
+    if (!(this.exclude.length > 0 || this.exclude_from || this.exclude_if_present.length > 0 || this.exclude_caches)) {
+      return BorgRepository.refused("Cannot purge: no exclude patterns configured");
+    }
+    return this.job_refusal("purge excluded files");
+  }
+
+  private plan_purge(action_id: string): ActionPlanResult {
+    const refusal = this.purge_refusal();
+    if (refusal) return refusal;
+    const scope = this.purge_match ? ["--glob-archives", this.purge_match] : [];
+    if (action_id === "purge_preview") {
+      const recreate = this.build([
+        this.borg_bin, "recreate", "--dry-run", "--list", "--filter=x", ...scope, ...this.exclude_args(),
+        "--lock-wait", String(this.backup_lock_wait), this.repo!,
+      ], { persistent_cache: true });
+      return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_monitor_rc=$?"; } | ${TOPMOST_EXCLUDED}`);
+    }
+    // An interrupted recreate leaves a <name>.recreate archive that makes the next attempt fail at once.
+    const leftovers = this.maintenance_command(["delete", "--glob-archives", "*.recreate", this.repo!]);
+    const recreate = this.maintenance_command(["recreate", "--info", "--stats", "--progress", ...scope, ...this.exclude_args(), this.repo!]);
+    const compact = this.maintenance_command(["compact", "--progress", this.repo!]);
+    // A plain exit would leave before the job records its status, so a subshell carries the failure instead.
+    return this.launch("purge", `${leftovers}; ${recreate}; rc=$?; if [ "$rc" -le 1 ]; then ${compact}; else (exit "$rc"); fi`);
+  }
+
+  // ── Break lock ─────────────────────────────────────────────────────────────
+
+  private plan_break_lock(): ActionPlanResult {
+    if (!this.allow_delete) return BorgRepository.refused("Breaking locks is off for this monitor — set allow_delete: true to enable it");
+    const refusal = this.job_refusal("break the lock");
+    if (refusal) return refusal;
+    return this.run_one(this.build([this.borg_bin, "break-lock", this.repo!], { persistent_cache: true, bounded: true, wrapped: false }));
+  }
+
+  private interpret_break_lock(result: CmdResult): CollectResult {
+    const [call] = split_poll(result, 1);
+    if (call.exit_code !== 0) {
+      return BorgRepository.refused(`borg break-lock failed (exit ${call.exit_code}): ${(call.stderr || call.stdout).trim().slice(0, 300)}`);
+    }
+    const message = "Broke the repository and cache locks";
+    return new CollectResult({ logs: [[message, "WARNING"]], metadata: { content: message }, success: true });
+  }
+
+  // ── Diff ───────────────────────────────────────────────────────────────────
+
+  // The listed archive just older than this one, which a diff compares it against.
+  private previous_archive(archive: string): string | null {
+    const names = this.cached_archives()[0].map((listed) => listed.name);
+    const index = names.indexOf(archive);
+    if (index === -1) return null;
+    return index + 1 < names.length ? names[index + 1] : null;
+  }
+
+  private plan_diff(params: ActionParams): ActionPlanResult {
+    const archive = params.archive;
+    if (!this.repo || !archive) return BorgRepository.refused("Cannot diff: no archive given");
+    const older = this.previous_archive(archive);
+    if (older === null) return BorgRepository.refused(`${archive} is the oldest listed archive — there is nothing before it to compare`);
+    const call = this.build([this.borg_bin, "diff", "--lock-wait", String(this.lock_wait), `${this.repo}::${older}`, archive], this.read_options());
+    return this.run_detached([call], this.browse_limit + 1);
+  }
+
+  private interpret_diff(result: CmdResult, params: ActionParams): CollectResult {
+    const [call] = split_poll(result, 1);
+    if (call.exit_code !== 0) {
+      const detail = (call.stderr || call.stdout).trim();
+      const hint = failure_hint(detail);
+      return BorgRepository.refused(`borg diff failed (exit ${call.exit_code}): ${detail.slice(0, 300)}` + (hint ? `\n${hint}` : ""));
+    }
+    let lines = call.stdout.split(/\r\n|\r|\n/).filter((line) => line.trim());
+    const archive = params.archive;
+    // A run adopted after a restart has lost its archive argument, so it names no archives.
+    const span = archive ? `from ${this.previous_archive(archive)} to ${archive}` : "in the archive";
+    let header = `Changes ${span}: ${lines.length}`;
+    if (lines.length > this.browse_limit) {
+      lines = lines.slice(0, this.browse_limit);
+      header = `${header.slice(0, header.lastIndexOf(":"))}: first ${this.browse_limit} (raise browse_limit for more)`;
+    }
+    return new CollectResult({
+      logs: [[header, "INFO"]],
+      metadata: { content: [header, "", ...(lines.length > 0 ? lines : ["(no changes)"])].join("\n") },
+      success: true,
+    });
+  }
+
+  // ── Running jobs ───────────────────────────────────────────────────────────
+
+  // Advances a running job from one poll's output, finishing it once it has ended.
+  private parse_job_poll(job: JobRecord, result: CmdResult): CollectResult {
+    const jobs = this.jobs!;
+    // A poll that never reached the host says nothing about the job; only a real answer may finish it.
+    if (result.exit_code !== 0 && !result.stdout.trim()) {
+      const reason = (result.stderr || "").trim().slice(0, 200) || `exit ${result.exit_code}`;
+      return new CollectResult({ logs: [[`Could not poll the running ${job.kind}: ${reason}`, "WARNING"]] });
+    }
+    const poll = parse_poll(result.stdout);
+
+    const [lines, consumed] = split_job_output(poll.new_output);
+    if (lines.length > 0) {
+      jobs.append_output(job.id, lines);
+      jobs.bump_output_seq(job.id, job.output_seq + consumed);
+      const summary = progress_from_lines(lines);
+      if (summary) jobs.set_progress(job.id, summary);
+    }
+
+    if (poll.exit_code === null && poll.alive) return new CollectResult();
+
+    // The process vanished without an exit file, such as when the host rebooted mid-job.
+    const kind = job.kind;
+    if (poll.exit_code === null) {
+      jobs.finish(job.id, "failed", { exit_code: -1, error: "Process ended without writing an exit code" });
+      return CollectResult.failed(`${capitalize(kind)} ended unexpectedly`);
+    }
+
+    const exit_code = poll.exit_code;
+    const succeeded = exit_code === 0 || exit_code === 1;
+    jobs.finish(job.id, succeeded ? "succeeded" : "failed", { exit_code, error: succeeded ? null : `Exited with status ${exit_code}` });
+
+    let outcome: CollectResult;
+    if (exit_code === 0) {
+      outcome = new CollectResult({ logs: [[`${capitalize(kind)} completed successfully`, "INFO"]], success: true });
+    } else if (exit_code === 1) {
+      outcome = new CollectResult({ logs: [[`${capitalize(kind)} completed with warnings (exit 1)`, "WARNING"]], success: true });
+    } else {
+      outcome = CollectResult.failed(`${capitalize(kind)} failed (exit ${exit_code})`);
+    }
+    this.record_check_job(kind, succeeded, exit_code, outcome);
+    return outcome;
+  }
+
+  // Stores a finished Check's outcome against every tracked check it covers, so check_kinds can judge their age.
+  private record_check_job(kind: string, succeeded: boolean, exit_code: number, outcome: CollectResult): void {
+    const covered = covered_by_check_job(kind);
+    if (covered.length === 0) return;
+    const now = now_seconds();
+    const states = this.stored_checks();
+    for (const name of covered) {
+      const state: CheckState = { ...states[name], end: now, failed: !succeeded, error: succeeded ? null : `${kind} exited with status ${exit_code}` };
+      if (succeeded) state.ok = now;
+      states[name] = state;
+    }
+    Object.assign(outcome.metrics, this.judge_checks(states, outcome.metadata, outcome.logs).metrics);
+  }
+
+  // ── Page values ────────────────────────────────────────────────────────────
+
+  private newest_epoch(): number | null {
+    return this.data?.latest_metric("last_backup_epoch")?.value ?? null;
+  }
+
+  state_pair(): CardPair {
+    const epoch = this.newest_epoch();
+    if (epoch === null) return ["UNKNOWN", "unavailable"];
+    if (Math.trunc(epoch) === 0) return ["NO ARCHIVES", "failed"];
+    return now_seconds() - Math.trunc(epoch) <= this.max_age ? ["OK", "online"] : ["STALE", "failed"];
+  }
+
+  age_pair(): CardPair {
+    const epoch = this.newest_epoch();
+    if (epoch === null) return ["--", "failed"];
+    if (Math.trunc(epoch) === 0) return ["Never", "failed"];
+    const age = now_seconds() - Math.trunc(epoch);
+    return [format_age(age), age <= this.max_age ? "online" : "failed"];
+  }
+
+  canary_pair(): CardPair {
+    if (!this.canary_path) return ["Not configured", null];
+    const ok = this.data?.latest_metric("canary_ok") ?? null;
+    const checked = this.data?.latest_metric("canary_checked_epoch") ?? null;
+    if (ok === null || checked === null) return ["Pending", "unavailable"];
+    const when = format_age(now_seconds() - Math.trunc(checked.value));
+    return ok.value >= 0.5 ? [`Passed ${when}`, "online"] : [`Failed ${when}`, "failed"];
+  }
+
+  checks_pair(): CardPair {
+    if (this.expected_checks().size === 0) return ["Not configured", null];
+    const ok = this.data?.latest_metric("checks_ok") ?? null;
+    const oldest = this.data?.latest_metric("check_ok_epoch") ?? null;
+    if (ok === null || oldest === null) return ["Pending", "unavailable"];
+    if (ok.value < 0.5) {
+      return [Object.values(this.stored_checks()).some((state) => state.failed) ? "Failed" : "Stale", "failed"];
+    }
+    if (!oldest.value) return ["Pending", "unavailable"];
+    return [`Passed ${format_age(now_seconds() - Math.trunc(oldest.value))}`, "online"];
+  }
+
+  // This repository's backup health in one flat record, for a roll-up across repositories.
+  backup_summary(): BackupSummary {
+    const now = now_seconds();
+    const epoch = this.newest_epoch();
+    const newest = epoch ? Math.trunc(epoch) : null;
+    const canary_ok = this.canary_path ? this.data?.latest_metric("canary_ok") ?? null : null;
+    const canary_at = this.canary_path ? this.data?.latest_metric("canary_checked_epoch") ?? null : null;
+    const tracked = this.expected_checks().size > 0;
+    const checks_ok = tracked ? this.data?.latest_metric("checks_ok") ?? null : null;
+    const check_at = tracked ? this.data?.latest_metric("check_ok_epoch") ?? null : null;
+    return {
+      repo: this.repo,
+      newest_archive_epoch: newest,
+      newest_archive_age: newest ? now - newest : null,
+      max_age: this.max_age,
+      fresh: Boolean(newest) && now - newest! <= this.max_age,
+      restore_check: canary_ok === null ? null : canary_ok.value >= 0.5,
+      restore_checked_epoch: canary_at ? Math.trunc(canary_at.value) : null,
+      repo_checks: checks_ok === null ? null : checks_ok.value >= 0.5,
+      repo_checked_epoch: check_at && check_at.value ? Math.trunc(check_at.value) : null,
+    };
+  }
+
+  archive_rows(): Record<string, string>[] {
+    const [archives] = this.cached_archives();
+    const now = now_seconds();
+    return archives.map((archive) => ({
+      name: archive.name ?? "?",
+      created: archive.epoch ? local_minute(new Date(archive.epoch * 1000)) : "unknown",
+      age: archive.epoch ? format_age(now - archive.epoch) : "unknown",
+      size: archive.original !== undefined ? format_size(archive.original) : "--",
+      added: archive.deduplicated !== undefined ? format_size(archive.deduplicated) : "--",
+      files: archive.nfiles !== undefined ? Math.trunc(archive.nfiles).toLocaleString("en-US") : "--",
+    }));
+  }
+
+  // The page's cards, dialogs and tables, described as data for whichever front end draws them.
+  get ui_spec() {
+    return {
+      layout: DEFAULT_LAYOUT,
+      cards: {
+        repo_card: { title: "REPO", value: this.repo || "--" },
+        maxage_card: { title: "MAX AGE", value: format_duration(this.max_age) },
+        state_card: { title: "CURRENT STATE", pair: "state_pair" },
+        size_card: { metric: "deduplicated_size", title: "REPO SIZE", format: "bytes_gb" },
+        dedup_card: { metric: "dedup_ratio", title: "DEDUP RATIO", format: "dedup_ratio" },
+        count_card: { metric: "archive_count", title: "ARCHIVES", format: "int" },
+        age_card: { title: "LAST ARCHIVE", pair: "age_pair" },
+        canary_card: { title: "RESTORE CHECK", pair: "canary_pair" },
+        checks_card: { title: "REPO CHECKS", pair: "checks_pair" },
+      },
+      dialogs: {
+        prune_preview: { kind: "read", title: `Prune preview: ${this.name}`, action_id: "prune_preview", render: "textarea_readonly" },
+        diff: { kind: "read", title: "Changes in {row[name]}", action_id: "diff_archive", params: { archive: "name" }, render: "textarea_readonly" },
+        restore: {
+          kind: "form", title: "Restore from {row[name]}", action_id: "restore_archive", params: { archive: "name" }, submit_label: "Restore",
+          fields: [{ name: "path", label: "Path to restore", placeholder: `Extracted into a new folder under ${this.restore_dir}` }],
+        },
+      },
+      tables: {
+        archives: {
+          title: "Archives",
+          row_key: "name",
+          rows: "archive_rows",
+          columns: [
+            { name: "name", label: "Archive", field: "name", align: "left", sortable: true },
+            { name: "created", label: "Created", field: "created", align: "left", sortable: true },
+            { name: "age", label: "Age", field: "age", align: "left" },
+            { name: "size", label: "Size", field: "size", align: "right", sortable: true },
+            { name: "added", label: "Added", field: "added", align: "right", sortable: true },
+            { name: "files", label: "Files", field: "files", align: "right", sortable: true },
+          ],
+          row_actions: [
+            { id: "diff", icon: "difference", tooltip: "Changes since the previous archive", kind: "dialog", dialog: "diff" },
+            { id: "restore", icon: "restore", tooltip: "Restore a path", kind: "dialog", dialog: "restore" },
+            ...(this.allow_delete ? [{
+              id: "delete", icon: "delete", tooltip: "Delete archive", color: "negative", action_id: "delete_archive",
+              params: { archive: "name" }, confirm: "Delete archive {row[name]}? It cannot be recovered.",
+            }] : []),
+          ],
+        },
+      },
+      job_panel: { widget: "jobs", title: "Jobs", history_limit: 10 },
+      events: { title: "Events", limit: 100, full_height: true },
+    };
+  }
+}
+
+// ── Progress ─────────────────────────────────────────────────────────────────
+
+// The latest human progress line in a batch of newly read job output.
+export function progress_from_lines(lines: string[]): string | null {
+  let summary: string | null = null;
+  for (const text of lines) {
+    // A chained job names each step, and recreate prints which archive it is on as plain text.
+    if (text.startsWith(STEP_MARK)) {
+      summary = text.slice(STEP_MARK.length).trim();
+      continue;
+    }
+    if (text.startsWith("Processing ")) {
+      summary = text.trim();
+      continue;
+    }
+    if (!text.startsWith("{")) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    if (!is_object(record)) continue;
+    if (record.type === "progress_message" || record.type === "progress_percent") {
+      if (record.message && !record.finished) summary = String(record.message).trim();
+      continue;
+    }
+    if (record.type !== "archive_progress" || record.finished) continue;
+    const original = Number(record.original_size) || 0;
+    const deduplicated = Number(record.deduplicated_size) || 0;
+    const nfiles = Number(record.nfiles) || 0;
+    if (!(original || deduplicated || nfiles)) continue;
+    summary = `${nfiles} files, ${format_size(original)} read, ${format_size(deduplicated)} new`;
+    if (record.path) summary += ` — ${record.path}`;
+  }
+  return summary;
+}
+
+// ── Stats readers ────────────────────────────────────────────────────────────
+
+function parse_stats(data: Record<string, unknown>): Record<string, number> {
+  const cache = data.cache;
+  const stats = is_object(cache) ? cache.stats : null;
+  if (!is_object(stats)) return {};
+  const fields: [source: string, target: string][] = [
+    ["total_size", "original_size"],
+    ["total_csize", "compressed_size"],
+    ["unique_csize", "deduplicated_size"],
+    ["total_chunks", "total_chunks"],
+    ["total_unique_chunks", "unique_chunks"],
+  ];
+  const out: Record<string, number> = {};
+  for (const [source, target] of fields) {
+    const value = stats[source];
+    if (typeof value === "number") out[target] = value;
+  }
+  return out;
+}
+
+function parse_archive_sizes(data: Record<string, unknown>): Map<string, Partial<ArchiveEntry>> {
+  const fields: [source: string, target: keyof ArchiveEntry][] = [
+    ["original_size", "original"],
+    ["compressed_size", "compressed"],
+    ["deduplicated_size", "deduplicated"],
+    ["nfiles", "nfiles"],
+  ];
+  const out = new Map<string, Partial<ArchiveEntry>>();
+  const archives = Array.isArray(data.archives) ? data.archives : [];
+  for (const archive of archives) {
+    if (!is_object(archive) || !archive.name || !is_object(archive.stats)) continue;
+    const entry: Record<string, number> = {};
+    for (const [source, target] of fields) {
+      const value = archive.stats[source];
+      if (typeof value === "number") entry[target] = value;
+    }
+    if (Object.keys(entry).length > 0) out.set(String(archive.name), entry);
+  }
+  return out;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function now_seconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+}
+
+function listing_key(archive: string, member: string): string {
+  return JSON.stringify([archive, member]);
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+// Local time as 2026-10-25T14:30:00.
+function local_stamp(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+// Local time as 2026-10-25 14:30.
+function local_minute(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// UTC time as 20261025T143000.
+function utc_compact_stamp(date: Date): string {
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}` +
+    `T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`;
+}
