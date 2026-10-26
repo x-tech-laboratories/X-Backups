@@ -3,6 +3,7 @@
 // ── Names the generated shell uses ───────────────────────────────────────────
 
 export const BASE_DIR_VAR = "__x_backups_base";
+export const PASSPHRASE_VAR = "__x_backups_passphrase";
 const CALL_RC_VAR = "__x_backups_call_rc";
 const JOB_RC_VAR = "__x_backups_job_rc";
 const STEP_RC_VAR = "__x_backups_step_rc";
@@ -33,6 +34,16 @@ export function redact(command: string): string {
   return command.replace(/(BORG_PASS(?:PHRASE|COMMAND)=)('(?:[^']|'\\'')*'|"[^"]*"|\S+)/g, "$1*****");
 }
 
+// ── Passphrase ───────────────────────────────────────────────────────────────
+
+// Reads the passphrase from stdin before a command whose borg calls need it, so it never shows in a process list.
+export function with_passphrase(command: string, options: { detached?: boolean } = {}): string {
+  if (!command.includes(PASSPHRASE_VAR)) return command;
+  // A detached job runs in a new shell, which sees the passphrase only when it is exported.
+  const handoff = options.detached ? `export ${PASSPHRASE_VAR}; ` : "";
+  return `IFS= read -r ${PASSPHRASE_VAR}; ${handoff}${command}`;
+}
+
 // ── Pipes ────────────────────────────────────────────────────────────────────
 
 // Pipes a call's stdout through the reader and exits with the call's own status, which a plain pipe would replace with
@@ -57,7 +68,7 @@ export function failure_hint(stderr: string): string | null {
     return "Hint: sudo needs a password — grant the SSH user passwordless sudo for borg (NOPASSWD).";
   }
   if (text.includes("not allowed to set the following environment variables")) {
-    return "Hint: sudoers forbids setting BORG_PASSPHRASE — the rule needs the SETENV tag to pass the passphrase through sudo.";
+    return "Hint: sudoers forbids setting borg's environment — the rule needs the SETENV tag to pass it through sudo.";
   }
   if (text.includes("passphrase") || text.includes("not a valid repository")) {
     return "Hint: the repo is encrypted and the passphrase was missing or wrong — check `passphrase_file` / `passphrase_command`.";

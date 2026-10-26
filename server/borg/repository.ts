@@ -19,8 +19,8 @@ import {
   type ArchiveEntry, type ListingEntry,
 } from "./parsing.ts";
 import {
-  BASE_DIR_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script, redact,
-  shell_quote, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job,
+  BASE_DIR_VAR, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
+  redact, shell_quote, skip_reason, ssh_endpoint, then_steps, with_passphrase, with_preflight, wrap_job,
 } from "./shell.ts";
 import {
   ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
@@ -254,22 +254,29 @@ export class BorgRepository {
 
   // ── Building borg commands ─────────────────────────────────────────────────
 
-  private read_passphrase_file(): string | null {
+  // The passphrase borg reads from stdin, or null when none is set or its file cannot be read.
+  private secret(): string | null {
+    if (this.passphrase !== null) return this.passphrase;
+    if (this.passphrase_file === null) return null;
     try {
-      return readFileSync(this.passphrase_file!, "utf8").replace(/\n+$/, "");
+      return readFileSync(this.passphrase_file, "utf8").replace(/\n+$/, "");
     } catch {
       return null;
     }
   }
 
-  private env_prefix(persistent_cache: boolean): string[] {
+  // The stdin for commands that read the passphrase, or null when none of them does.
+  private stdin_for(commands: string[]): string | null {
+    if (!commands.some((command) => command.includes(PASSPHRASE_VAR))) return null;
+    const secret = this.secret();
+    return secret === null ? null : secret + "\n";
+  }
+
+  private env_prefix(persistent_cache: boolean, has_secret: boolean): string[] {
     const env: string[] = [];
-    if (this.passphrase !== null) {
-      env.push("BORG_PASSPHRASE=" + shell_quote(this.passphrase));
-    } else if (this.passphrase_file !== null) {
-      const secret = this.read_passphrase_file();
-      if (secret !== null) env.push("BORG_PASSPHRASE=" + shell_quote(secret));
-    } else if (this.passphrase_command !== null) {
+    if (has_secret) {
+      env.push("BORG_PASSPHRASE_FD=0");
+    } else if (this.passphrase === null && this.passphrase_file === null && this.passphrase_command !== null) {
       env.push("BORG_PASSCOMMAND=" + shell_quote(this.passphrase_command));
     }
     env.push("BORG_RELOCATED_REPO_ACCESS_IS_OK=no");
@@ -289,8 +296,11 @@ export class BorgRepository {
 
   private build(args: string[], options: { persistent_cache?: boolean } = {}): string {
     const persistent_cache = options.persistent_cache ?? false;
+    const has_secret = this.secret() !== null;
+    // printf is a shell builtin, so the passphrase reaches borg's stdin without ever being an argument.
+    const feed = has_secret ? [`printf '%s\\n' "$${PASSPHRASE_VAR}"`, "|"] : [];
     const prefix = this.require_sudo ? ["sudo", "-n"] : [];
-    const command = [...prefix, ...this.env_prefix(persistent_cache), ...args.map(shell_quote)].join(" ");
+    const command = [...feed, ...prefix, ...this.env_prefix(persistent_cache, has_secret), ...args.map(shell_quote)].join(" ");
     if (persistent_cache && this.cache_dir) return command;
     // The trap keeps the throwaway folder throwaway, since borg builds a full chunks cache in it every poll.
     return `${BASE_DIR_VAR}=$(mktemp -d); trap 'rm -rf "$${BASE_DIR_VAR}"' EXIT; ${command}`;
@@ -358,11 +368,11 @@ export class BorgRepository {
     // parse() must read results the way they were asked for, even if a job starts or ends mid-cycle.
     this.polling_job = job;
     const timeout = this.timeout || null;
-    if (job !== null) return [{ text: poll_command(job.workdir!, job.pid!, job.output_seq), timeout }];
+    if (job !== null) return [{ text: poll_command(job.workdir!, job.pid!, job.output_seq), timeout, stdin: null }];
     if (!this.repo) return [];
     const plan = this.poll_plan();
     this.poll_calls = plan.map(([name]) => name);
-    return plan.map(([, text]) => ({ text, timeout }));
+    return plan.map(([, text]) => ({ text: with_passphrase(text), timeout, stdin: this.stdin_for([text]) }));
   }
 
   private running_job(): JobRecord | null {
@@ -680,12 +690,15 @@ export class BorgRepository {
 
   // A single borg call as an action, bounded like a poll, with its stdout filtered and cut to the first lines.
   private run_one(call: string, read: (result: CmdResult) => CollectResult, limit?: number, keep?: string): ActionPlan {
-    return new ActionPlan([capped(call, limit, keep)], ([result]) => read(result), { timeout: this.timeout || null });
+    return new ActionPlan([with_passphrase(capped(call, limit, keep))], ([result]) => read(result), {
+      timeout: this.timeout || null, stdin: this.stdin_for([call]),
+    });
   }
 
   // Borg calls as a detached action whose output reaches its log as it is written, the first one cut to the first lines.
   private run_detached(calls: string[], read: (results: CmdResult[]) => CollectResult, limit?: number): ActionPlan {
-    return new ActionPlan(calls.map((call, index) => index === 0 ? capped(call, limit) : call), read, { detached: true });
+    const commands = calls.map((call, index) => with_passphrase(index === 0 ? capped(call, limit) : call));
+    return new ActionPlan(commands, read, { stdin: this.stdin_for(calls), detached: true });
   }
 
   // Launches the command as a detached job, whose reader records the pid it prints.
@@ -694,8 +707,9 @@ export class BorgRepository {
     const wrapped = wrap_job(command, this.job_wrappers(kind), this.job_lock);
     const redacted = redact(wrapped);
     return new ActionPlan(
-      [with_preflight(this.preflight(), launch_command(wrapped, workdir))],
+      [with_passphrase(with_preflight(this.preflight(), launch_command(wrapped, workdir)), { detached: true })],
       ([result]) => this.read_launch(kind, redacted, workdir, started, result),
+      { stdin: this.stdin_for([command]) },
     );
   }
 

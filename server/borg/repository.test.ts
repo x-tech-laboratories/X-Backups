@@ -290,7 +290,6 @@ describe("logging", () => {
   it("logs the command with the passphrase hidden", () => {
     const result = collect(make({ ...BASE_CFG, passphrase: "s3cret" }), cmd_result(0, multi_json(now() - 3600), ""));
     expect(messages(result)).toContain("borg list");
-    expect(messages(result)).toContain("BORG_PASSPHRASE=*****");
     expect(messages(result)).not.toContain("s3cret");
   });
 
@@ -389,44 +388,63 @@ describe("list command", () => {
     expect(command).toContain("__x_backups_base=$(mktemp -d)");
   });
 
-  it("passes the passphrase as an environment variable", () => {
-    const command = make({ ...BASE_CFG, passphrase: "s3cret" }).repository.list_command();
-    expect(command.indexOf("BORG_PASSPHRASE=")).toBeGreaterThan(-1);
-    expect(command.indexOf("BORG_PASSPHRASE=")).toBeLessThan(command.indexOf("borg list"));
+  it("feeds the passphrase to borg on stdin, never on the command line", () => {
+    const [command] = make({ ...BASE_CFG, passphrase: "s3cret" }).repository.commands();
+    expect(command.text).not.toContain("s3cret");
+    expect(command.text).toMatch(/^IFS= read -r __x_backups_passphrase; /);
+    expect(command.text).toContain(`printf '%s\\n' "$__x_backups_passphrase" | BORG_PASSPHRASE_FD=0 `);
+    expect(command.stdin).toBe("s3cret\n");
+  });
+
+  it("hands a real shell's borg the passphrase on its stdin", () => {
+    const fake_borg = join(scratch_dir(), "borg");
+    writeFileSync(fake_borg, `#!/bin/sh\nIFS= read -r line <&"$BORG_PASSPHRASE_FD"; echo "got $line"\n`, { mode: 0o755 });
+    const [command] = make({ ...BASE_CFG, borg_bin: fake_borg, passphrase: "two words" }).repository.commands();
+
+    const result = spawnSync("sh", ["-c", command.text], { input: command.stdin!, encoding: "utf8" });
+
+    expect(result.stdout.trim()).toBe("got two words");
+  });
+
+  it("sends no stdin to a call that needs no passphrase", () => {
+    const [command] = make().repository.commands();
+    expect(command.text).not.toContain("read -r");
+    expect(command.stdin).toBeNull();
   });
 
   it("uses BORG_PASSCOMMAND for a passphrase command", () => {
     const command = make({ ...BASE_CFG, passphrase_command: "cat /run/secret" }).repository.list_command();
     expect(command).toContain("BORG_PASSCOMMAND=");
-    expect(command).not.toContain("BORG_PASSPHRASE=");
+    expect(command).not.toContain("BORG_PASSPHRASE");
   });
 
-  it("inlines a passphrase file's contents", () => {
+  it("sends a passphrase file's contents on stdin", () => {
     const file = join(scratch_dir(), "borg.pass");
     writeFileSync(file, "s3cret-from-file\n");
-    const command = make({ ...BASE_CFG, passphrase_file: file }).repository.list_command();
-    expect(command).toContain("BORG_PASSPHRASE=s3cret-from-file");
-    expect(command).not.toContain("BORG_PASSCOMMAND=");
-    expect(command).not.toContain(file);
+    const [command] = make({ ...BASE_CFG, passphrase_file: file }).repository.commands();
+    expect(command.stdin).toBe("s3cret-from-file\n");
+    expect(command.text).not.toContain("s3cret-from-file");
+    expect(command.text).not.toContain("BORG_PASSCOMMAND=");
+    expect(command.text).not.toContain(file);
   });
 
   it("prefers an inline passphrase over a file", () => {
     const file = join(scratch_dir(), "borg.pass");
     writeFileSync(file, "from-file");
-    const command = make({ ...BASE_CFG, passphrase: "inline-wins", passphrase_file: file }).repository.list_command();
-    expect(command).toContain("BORG_PASSPHRASE=inline-wins");
-    expect(command).not.toContain("from-file");
+    const [command] = make({ ...BASE_CFG, passphrase: "inline-wins", passphrase_file: file }).repository.commands();
+    expect(command.stdin).toBe("inline-wins\n");
   });
 
   it("leaves the passphrase out when its file is missing", () => {
-    const command = make({ ...BASE_CFG, passphrase_file: join(scratch_dir(), "nope") }).repository.list_command();
-    expect(command).not.toContain("BORG_PASSPHRASE=");
-    expect(command).not.toContain("BORG_PASSCOMMAND=");
+    const [command] = make({ ...BASE_CFG, passphrase_file: join(scratch_dir(), "nope") }).repository.commands();
+    expect(command.text).not.toContain("BORG_PASSPHRASE");
+    expect(command.text).not.toContain("BORG_PASSCOMMAND=");
+    expect(command.stdin).toBeNull();
   });
 
   it("sets no passphrase when none is configured", () => {
     const command = make().repository.list_command();
-    expect(command).not.toContain("BORG_PASSPHRASE=");
+    expect(command).not.toContain("BORG_PASSPHRASE");
     expect(command).not.toContain("BORG_PASSCOMMAND=");
   });
 
@@ -466,10 +484,11 @@ describe("list command", () => {
     expect(make().repository.list_command()).not.toContain("sudo");
   });
 
-  it("puts sudo first, then the environment, then borg", () => {
+  it("puts the passphrase pipe first, then sudo, then the environment, then borg", () => {
     const command = make({ ...BASE_CFG, require_sudo: true, passphrase: "s3cret" }).repository.list_command();
-    expect(command.indexOf("sudo -n ")).toBeLessThan(command.indexOf("BORG_PASSPHRASE="));
-    expect(command.indexOf("BORG_PASSPHRASE=")).toBeLessThan(command.indexOf("borg list"));
+    expect(command.indexOf("printf ")).toBeLessThan(command.indexOf("sudo -n "));
+    expect(command.indexOf("sudo -n ")).toBeLessThan(command.indexOf("BORG_PASSPHRASE_FD=0"));
+    expect(command.indexOf("BORG_PASSPHRASE_FD=0")).toBeLessThan(command.indexOf("borg list"));
   });
 
   it("supports a local repo path", () => {
@@ -696,8 +715,8 @@ describe("backup command", () => {
     expect(repository.backup_command()).not.toContain("--dry-run");
   });
 
-  it("inlines the passphrase and honours sudo", () => {
-    expect(make({ ...BACKUP_CFG, passphrase: "s3cret" }).repository.backup_command()).toContain("BORG_PASSPHRASE=s3cret");
+  it("reads the passphrase from stdin and honours sudo", () => {
+    expect(make({ ...BACKUP_CFG, passphrase: "s3cret" }).repository.backup_command()).toContain("BORG_PASSPHRASE_FD=0");
     expect(make({ ...BACKUP_CFG, require_sudo: true }).repository.backup_command()).toMatch(/^sudo -n /);
   });
 });
@@ -735,7 +754,14 @@ describe("backup launch", () => {
     launch(harness);
     const stored = harness.jobs.running()!.command;
     expect(stored).not.toContain("s3cret");
-    expect(stored).toContain("BORG_PASSPHRASE=*****");
+    expect(stored).toContain("BORG_PASSPHRASE_FD=0");
+  });
+
+  it("hands the passphrase to the detached job through its environment", () => {
+    const plan = plan_of(make({ ...BACKUP_CFG, passphrase: "s3cret" }), "run_backup");
+    expect(plan.commands[0]).toMatch(/^IFS= read -r __x_backups_passphrase; export __x_backups_passphrase; /);
+    expect(plan.commands[0]).not.toContain("s3cret");
+    expect(plan.stdin).toBe("s3cret\n");
   });
 
   it("refuses a second backup while one runs", () => {

@@ -56,6 +56,19 @@ describe("polling", () => {
     expect(commands.filter((command) => !command.startsWith("systemctl"))).toHaveLength(1);
   });
 
+  it("hands the passphrase to the runner as stdin", async () => {
+    const stdins: (string | undefined)[] = [];
+    const config: Config = { repositories: [{ ...CONFIG.repositories[0], borg: { ...CONFIG.repositories[0].borg, passphrase: "s3cret" } }] };
+    poller = new Poller(config, store, async (_target, command, options) => {
+      if (!command.startsWith("systemctl")) stdins.push(options.stdin);
+      return cmd_result(0, LIST, "");
+    });
+
+    await poller.poll("odin");
+
+    expect(stdins).toEqual(["s3cret\n"]);
+  });
+
   it("reports a failing run as a failed poll", async () => {
     poller = make(() => {
       throw new Error("no ssh");

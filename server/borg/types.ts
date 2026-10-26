@@ -9,6 +9,8 @@ import type { ArchiveEntry, RepositoryInfo } from "./parsing.ts";
 export interface Command {
   text: string;
   timeout: number | null;
+  // Fed to the call, carrying the passphrase when its borg calls need one.
+  stdin: string | null;
 }
 
 export interface CmdResult {
@@ -27,13 +29,19 @@ export class ActionPlan {
   // Reads the commands' results into what the action reports.
   read: (results: CmdResult[]) => CollectResult;
   timeout: number | null;
+  // Fed to each command, carrying the passphrase when its borg calls need one.
+  stdin: string | null;
   // A detached plan is followed to its end by whoever runs it, so a restart never kills it.
   detached: boolean;
 
-  constructor(commands: string[], read: (results: CmdResult[]) => CollectResult, options: { timeout?: number | null; detached?: boolean } = {}) {
+  constructor(
+    commands: string[], read: (results: CmdResult[]) => CollectResult,
+    options: { timeout?: number | null; stdin?: string | null; detached?: boolean } = {},
+  ) {
     this.commands = commands;
     this.read = read;
     this.timeout = options.timeout ?? null;
+    this.stdin = options.stdin ?? null;
     this.detached = options.detached ?? false;
   }
 }

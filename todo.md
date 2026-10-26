@@ -59,17 +59,18 @@ adapted where a task changes a contract.
    `systemd-run --unit=x-backups-<repo>-<time>` and `Nice=`/`IOSchedulingClass=idle` properties in
    place of the `nice`/`ionice` wrappers. Read state with `systemctl show`, output with
    `journalctl -u <unit>`, and cancel with `systemctl stop`. Keep `flock` for `job_lock` and
-   `systemd-inhibit` for `inhibit_sleep`. Remove `server/borg/detached.ts`.
+   `systemd-inhibit` for `inhibit_sleep`. Remove `server/borg/detached.ts`. A detached job gets the
+   passphrase today by exporting the shell variable `with_passphrase` reads into, which a
+   `systemd-run` unit would not inherit: use `passphrase_command` on the target or a systemd
+   credential there.
 5. [ ] **Rename X-Monitor leftovers.** Done except the `cache_dir` default, which waits for task 16. The `__XMONITOR_*` and `__x_monitor_*` shell markers, the
    `cache_dir` default `/var/cache/x-monitor-borg` and `restore_dir` default
    `/var/tmp/x-monitor-restore` in `repository.ts`, `$HOME/.cache/x_monitor/jobs`,
    `--who=X-Monitor`, and "X-Monitor" in `failure_hint`. A new `cache_dir` rebuilds each
    repository's chunks cache once, so land that default with the cutover (task 16).
-6. [ ] **Passphrase off the command line.** `env_prefix` reads `passphrase_file` and writes
-   `BORG_PASSPHRASE=<secret>` into the command, where the target's process list shows it. Send it
-   on the SSH command's stdin with `BORG_PASSPHRASE_FD=0` instead. For systemd jobs, use
-   `passphrase_command` on the target or a systemd credential. Needs task 2 first: a framed command
-   runs several borg calls, and only the first one would read the passphrase from stdin.
+6. [x] **Passphrase off the command line.** The passphrase travels on the command's stdin: the
+   shell reads it into a variable once, and each borg call gets it piped in by the `printf`
+   builtin with `BORG_PASSPHRASE_FD=0`, so no process list shows it, under sudo too.
 
 ### Run it
 

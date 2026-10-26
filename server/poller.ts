@@ -91,7 +91,8 @@ export class Poller {
       const watched = this.watched(id);
       const results: CmdResult[] = [];
       for (const command of plan.commands) {
-        results.push(await this.run(watched.config, command, { timeout_in_seconds: plan.timeout ?? longest_action_in_seconds }));
+        const options = { timeout_in_seconds: plan.timeout ?? longest_action_in_seconds, stdin: plan.stdin ?? undefined };
+        results.push(await this.run(watched.config, command, options));
       }
       const result = plan.read(results);
       this.keep(watched, result, false);
@@ -105,7 +106,8 @@ export class Poller {
     try {
       const results: CmdResult[] = [];
       for (const command of watched.repository.commands()) {
-        results.push(await this.run(watched.config, command.text, { timeout_in_seconds: command.timeout ?? longest_action_in_seconds }));
+        const options = { timeout_in_seconds: command.timeout ?? longest_action_in_seconds, stdin: command.stdin ?? undefined };
+        results.push(await this.run(watched.config, command.text, options));
       }
       result = watched.repository.parse(results);
     } catch (error) {
