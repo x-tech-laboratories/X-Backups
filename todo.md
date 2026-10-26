@@ -84,7 +84,7 @@ adapted where a task changes a contract.
 9. [x] **Storage.** `server/store.ts` on `node:sqlite` (built into Node 24) keeps repository state,
    events, and jobs (unit name, kind, state, exit code, journal cursor), with the database in
    `X_BACKUPS_STATE_DIR`. It implements whatever store interfaces tasks 1 and 4 leave.
-10. [ ] **Poll loop.** `server/poller.ts` polls each repository at startup and then on its
+10. [x] **Poll loop.** `server/poller.ts` polls each repository at startup and then on its
     `interval` (default 1h), and every 10 s while one of its jobs runs. It runs at most one poll per
     repository at a time. The startup poll also picks up jobs left running before a restart.
     Reference: `../X-Monitor/x_monitor/core/coordination/engine.py` and `action_jobs.py`.
