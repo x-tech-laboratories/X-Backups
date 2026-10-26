@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { children_filter, parse_listing } from "../../server/borg/parsing.ts";
-import { BorgRepository, progress_from_lines, type BorgConfig } from "../../server/borg/repository.ts";
-import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job } from "../../server/borg/shell.ts";
+import { children_filter, parse_listing } from "../../src/server/borg/parsing.ts";
+import { BorgRepository, progress_from_lines, type BorgConfig } from "../../src/server/borg/repository.ts";
+import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
 import { Harness } from "./testing.ts";
-import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult } from "../../server/borg/types.ts";
+import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult } from "../../src/server/borg/types.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

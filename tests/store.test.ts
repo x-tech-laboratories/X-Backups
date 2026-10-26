@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { CollectResult, empty_state, type RepositoryState } from "../server/borg/types.ts";
-import { Store } from "../server/store.ts";
+import { CollectResult, empty_state, type RepositoryState } from "../src/server/borg/types.ts";
+import { Store } from "../src/server/store.ts";
 
 let store: Store;
 

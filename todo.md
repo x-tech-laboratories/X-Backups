@@ -13,7 +13,7 @@ X-Backups does one thing, so it leaves out X-Monitor's general machinery: no plu
 graph, groups, triggers, agent, sync or per-plugin UI contract.
 
 - One Node process. Repositories come from one JSON file the Nix module writes; a restart reloads it.
-- `server/borg/` builds commands and reads their output, and never runs anything. A runner runs the
+- `src/server/borg/` builds commands and reads their output, and never runs anything. A runner runs the
   commands, a SQLite store keeps state, a loop polls, Fastify routes expose it, the page shows it.
 - Each repository keeps one typed state record (archives, repo info, canary, checks, last poll), not
   X-Monitor's metric and metadata string bags read back through `MetricReader`.
@@ -30,7 +30,7 @@ graph, groups, triggers, agent, sync or per-plugin UI contract.
 ## Open questions
 
 - Do all repository hosts have systemd and allow `sudo systemd-run` for the SSH user? If not, keep
-  the `setsid` jobs in `server/borg/detached.ts` and skip task 4.
+  the `setsid` jobs in `src/server/borg/detached.ts` and skip task 4.
 - Are there repositories on hosts SSH cannot reach, such as a laptop that sleeps (X-Monitor reaches
   those through its agent today)? Each one needs a plan before cutover.
 - Does any host lack its own backup timer? Only then does X-Backups need a scheduler (cron parsing is
@@ -59,7 +59,7 @@ adapted where a task changes a contract.
    `systemd-run --unit=x-backups-<repo>-<time>` and `Nice=`/`IOSchedulingClass=idle` properties in
    place of the `nice`/`ionice` wrappers. Read state with `systemctl show`, output with
    `journalctl -u <unit>`, and cancel with `systemctl stop`. Keep `flock` for `job_lock` and
-   `systemd-inhibit` for `inhibit_sleep`. Remove `server/borg/detached.ts`. A detached job gets the
+   `systemd-inhibit` for `inhibit_sleep`. Remove `src/server/borg/detached.ts`. A detached job gets the
    passphrase today by exporting the shell variable `with_passphrase` reads into, which a
    `systemd-run` unit would not inherit: use `passphrase_command` on the target or a systemd
    credential there.

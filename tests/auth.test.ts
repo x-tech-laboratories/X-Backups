@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { build_app } from "../server/app.ts";
-import { hash_password, verify_password } from "../server/auth.ts";
-import { Poller } from "../server/poller.ts";
-import { Store } from "../server/store.ts";
+import { build_app } from "../src/server/app.ts";
+import { hash_password, verify_password } from "../src/server/auth.ts";
+import { Poller } from "../src/server/poller.ts";
+import { Store } from "../src/server/store.ts";
 
 const password_hash = hash_password("correct horse");
 

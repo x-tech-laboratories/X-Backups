@@ -18,8 +18,7 @@ buildNpmPackage {
       ../tsconfig.server.json
       ../tsconfig.web.json
       ../vite.config.ts
-      ../server
-      ../web
+      ../src
     ];
   };
 
@@ -34,11 +33,12 @@ buildNpmPackage {
 
     npm prune --omit=dev --no-save
 
-    mkdir -p $out/lib/x-backups
-    cp -r package.json server dist node_modules $out/lib/x-backups/
+    mkdir -p $out/lib/x-backups/src
+    cp -r package.json dist node_modules $out/lib/x-backups/
+    cp -r src/server $out/lib/x-backups/src/
 
     makeWrapper ${lib.getExe nodejs_24} $out/bin/x-backups \
-      --add-flags $out/lib/x-backups/server/main.ts \
+      --add-flags $out/lib/x-backups/src/server/main.ts \
       --set-default NODE_ENV production
 
     runHook postInstall

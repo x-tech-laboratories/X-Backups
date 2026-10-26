@@ -1,8 +1,8 @@
 // In-memory stores and a cycle driver, so a repository can be exercised without a host or a database.
 
-import { BorgRepository, type BorgConfig } from "../../server/borg/repository.ts";
-import { cmd_result, type CmdResult, type Command, type JobRecord, type JobState, type JobStore, type LogEntry, type MonitorStatus } from "../../server/borg/types.ts";
-import { CollectResult } from "../../server/borg/types.ts";
+import { BorgRepository, type BorgConfig } from "../../src/server/borg/repository.ts";
+import { cmd_result, type CmdResult, type Command, type JobRecord, type JobState, type JobStore, type LogEntry, type MonitorStatus } from "../../src/server/borg/types.ts";
+import { CollectResult } from "../../src/server/borg/types.ts";
 
 // ── Outcome log ──────────────────────────────────────────────────────────────
 

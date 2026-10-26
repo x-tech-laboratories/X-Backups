@@ -28,7 +28,7 @@ interface ActionBody {
   kind?: string;
 }
 
-const web_build_directory = fileURLToPath(new URL("../dist", import.meta.url));
+const web_build_directory = fileURLToPath(new URL("../../dist", import.meta.url));
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 

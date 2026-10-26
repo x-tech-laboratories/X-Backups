@@ -3,9 +3,9 @@ import { defineConfig } from "vitest/config";
 const server_port = Number(process.env.PORT ?? 7710);
 
 export default defineConfig({
-  root: "web",
+  root: "src/web",
   build: {
-    outDir: "../dist",
+    outDir: "../../dist",
     emptyOutDir: true,
   },
   server: {
