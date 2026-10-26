@@ -134,8 +134,9 @@ adapted where a task changes a contract.
 ### Then
 
 17. [x] **Dashboard.** Grow the web page (task 13) into a dashboard drawing on the apps under
-    "Apps to review for features". Configuration stays declarative in the Nix module, so the page
-    shows state and runs actions but never edits repositories, sources or schedules. It covers:
+    "Apps to review for features". Configuration stayed declarative in the Nix module, so the page
+    shows state and runs actions but never edits repositories, sources or schedules (tasks 35–37
+    change that). It covers:
     - destination repositories: size, deduplication and compression over time, archive counts,
       last check and canary results
     - backup jobs: history, durations, outcomes and logs
@@ -191,9 +192,10 @@ agent per app, read-only, notes into this file. Ordered by value to X-Backups.
 ### Features the review found missing
 
 Flagged for another session; each wants its source review (tasks 19–25) first. Left out as out of
-scope: notifications (X-Monitor alerts), schedulers and backup plans, repository creation, editing
-config from the page, users and roles, OIDC, cloud sync, hooks, database dumps, agents, and FUSE
-mounts.
+scope: notifications (X-Monitor alerts), schedulers and backup plans, repository creation, users
+and roles, OIDC, cloud sync, hooks, database dumps, agents, and FUSE mounts. Editing config from the
+page is back in as tasks 35–37, and the rest is reweighed under "Feature parity" in the UI layout
+review below.
 
 26. [ ] **Health levels.** `/api/health` answers `status: "ok"` whatever the repositories say. Give
     it an overall ok, warning or critical with each repository's reasons, so X-Monitor can alert on
@@ -221,6 +223,290 @@ mounts.
     count drifts far from the previous one, a cheap form of the spot check (task 21 settles the
     file layout). Optionally accept borgmatic's start/finish pings to show a backup running
     between polls.
+
+### UI layout review
+
+Each app's frontend was read in source on 2026-10-26 (shallow clones, not the docs), for how it lays
+its pages out. The goal is a page with at least every capability the other apps have.
+
+#### How each app is laid out
+
+- **Borg UI** (React, MUI):
+  - Shell: an app bar and a 240 px sidebar of about 20 entries in groups (Main, Infrastructure,
+    Storage, Backups, and Settings with collapsible subgroups). On phones the sidebar becomes a
+    drawer and tables become card lists.
+  - Dashboard, polled every 30 s: a health banner, a success donut, per-repository health,
+    upcoming backups, space savings and an activity timeline. Skeletons while loading, and an
+    alert with Retry on error.
+  - Repositories: cards grouped Local/Remote or Full/Observe-only. Each carries 15+ fields and
+    chips (sync issue, borg version, paused), plus Check, Compact and Prune buttons that open
+    explanatory dialogs.
+  - Activity: runs grouped by repository, with follow-up jobs nested under their parent and
+    filters in the URL.
+  - Archive page: stat tiles with deltas against the previous archive, and Changes, Files and
+    Info tabs kept in `?tab=`.
+  - Wizards: restore takes three steps (Files, Destination, Review), and the repository wizard
+    previews the exact borg command it will run.
+  - Prune preview ranks the archives that would go.
+  - Live updates: one shared SSE stream for jobs, refetched after a reconnect.
+  - Settings: each one is tagged Customized, From environment or Default.
+  - Theme and i18n: light/dark/system toggle in the avatar menu, four languages.
+- **Borg Backup Server** (PHP, Bootstrap):
+  - Shell: a dark top bar (page title, notification bell, user menu with theme toggle) and a
+    sidebar that becomes an offcanvas drawer.
+  - Dashboard:
+    - four clickable KPI tiles; the errors tile turns red and opens the log filtered to errors
+    - a 24 h stacked jobs-by-type chart and a backup summary grid
+    - server health sparklines
+    - active jobs beside upcoming schedules
+    - recent jobs, flagged when one finished with warnings
+  - Repository page: one card per maintenance action, each saying what it does and when to use
+    it.
+  - Archive page: breadcrumbs, a prev/next stepper, a changes-against-previous table and a
+    searchable file catalog.
+  - Queue: progress bars, a duration bar against the typical run, and cancel and retry per row.
+    The job page adds a green, yellow or red result bar.
+  - Schedules: a weekly calendar.
+  - Archive lock: a locked archive's delete button is disabled, with the reason in a tooltip.
+  - Settings: rows with the label and help on the left and the control on the right.
+  - Confirms: a `data-confirm` modal for ordinary actions, and a stronger modal with scope
+    checkboxes ("keep data on disk", "also delete offsite") for deleting a repository.
+- **Borgitory** (FastAPI, HTMX):
+  - Shell: a top bar and an 11-item flat sidebar mixing operations, config and debug pages. The
+    tabs are pushed into the URL.
+  - No overview: it opens on the repository config page, whose cards show no health or size.
+  - Layout: forms on the left, lists on the right.
+  - Job history: expandable cards listing each task, with live output per task over SSE that
+    swaps to a static view when the task ends.
+  - Prune: dry run is on by default, under a warning banner.
+  - Archive browser: breadcrumbs and per-file download.
+  - Limits: lists capped at 10 archives and 20 jobs, with no paging.
+  - Confirms: native `confirm()` everywhere.
+- **BorgWarehouse** (Next.js):
+  - Shell: a dark header with a theme toggle and an avatar menu, and a three-icon rail that
+    disappears on phones with nothing in its place.
+  - Repository list: search, sort and an archived filter, all kept in localStorage. Cards are
+    collapsible, with a status dot, chips (append-only, alerts off) and a storage bar coloured at
+    75 % and 90 %.
+  - Monitoring: four KPI cards, a storage-per-repository chart, and a "Needs attention" list with a
+    reason per repository and an "Everything looks healthy" empty state.
+  - Confirms: one dialog with danger and warning variants. It names the target, says whether the
+    action can be undone and shows a busy label.
+  - Archived repositories are dimmed, with a disabled form and a banner.
+  - Settings: tabs (General, Notifications, Storage, Integrations). An environment-set value is
+    shown read-only, naming the variable.
+- **Vorta** (PyQt):
+  - Shell: a profile list on the left; tabs Repository, Sources, Schedule and Archives on the
+    right; a two-line status and Start/Cancel at the bottom.
+  - Archives: repository actions (Check, Prune, Compact, Mount) are kept apart from archive actions
+    (Diff, Extract, Rename, Delete).
+  - Extract and Diff dialogs share a Tree / Simplified / Flat switch. Diff colours added, modified
+    and removed entries and sums a net size per folder.
+  - The Schedule tab puts prune, check and compact beside the backup timing and shows the next run.
+- **BorgWeb**: a log list beside a paged viewer and one Start Backup button. Each log is coloured by
+  borg's exit code.
+- **borgmatic**: no UI. Its YAML or `services.borgmatic` config is the source of truth, and the rest
+  is read through `--json`, its check state files and its monitoring hooks. X-Backups follows this
+  model.
+
+#### What they share
+
+1. A shell that stays put: a header with the user menu and theme toggle, and a sidebar that becomes
+   a drawer on phones.
+2. An overview built from KPI tiles, a needs-attention list, a jobs chart and upcoming runs.
+3. Repository cards with a status colour, the last backup's age, the size, and chips for special
+   states (append-only, observe-only, paused, archived).
+4. A jobs or queue page with filters, progress, cancel and retry.
+5. An archive page with changes against the previous archive, and a file tree that restores to a
+   chosen destination.
+6. Destructive actions confirmed in a dialog that names the target and the consequence. The
+   strongest add a typed name (Borg UI) or scope checkboxes (Borg Backup Server).
+7. Prune previewed as a dry run first.
+8. Live job output, pushed over SSE (Borg UI, Borgitory) or polled.
+9. Light, dark and system themes, switched from the header and remembered.
+10. Settings as sections of label, help and control.
+11. Weak spots shared by nearly all of them:
+    - native `confirm()` mixed with custom dialogs
+    - status shown by colour alone
+    - icon-only buttons
+    - modals with no focus trap
+    - no `aria-live` on polled tables
+    - lists cut off at a fixed count
+    - polling that swallows its errors
+    - no global search
+
+#### Where X-Backups stands
+
+Ahead of the others:
+- history charts: size, compression and dedup over time, unique data per archive, and check and
+  canary strips (no other app charts history)
+- the host timer view with missed runs
+- Purge Excluded
+- polling over SSH, with no agent
+
+Behind, in layout:
+- Each repository is one long page, with history, archives, browser, jobs, sources, timers and
+  events stacked in turn.
+- There is no navigation beyond a back link.
+- There are no cross-repository jobs, archives or events pages, and no page per archive.
+- Confirms use native `confirm()`.
+- An action's outcome lands in a panel at the top that may be scrolled out of view.
+- Archives and jobs cannot be searched, sorted, filtered or paged.
+- There is no theme toggle, and no skeletons or Retry on error.
+- The page polls every 15 s whether anything is running or not.
+
+#### Configuration from the page
+
+None of the apps both reads declarative config and lets the page edit it. These come closest:
+- Borg UI tags each setting with where its value came from (saved, environment or default), and a
+  saved value wins.
+- BorgWarehouse shows a setting set by the environment as read-only and names the variable.
+- Borg UI's observe-only repositories disable what does not apply and say why, rather than hiding
+  it.
+
+Outside borg, Grafana's provisioning and Home Assistant's YAML entities set the pattern. A
+provisioned Grafana dashboard cannot be saved from the page unless `allowUiUpdates` is set, and a
+Home Assistant entity defined in YAML "cannot be managed from the UI".
+
+#### Recommended layout
+
+- **Shell:**
+  - The header holds the brand, a search over repositories and archives by name, a running-jobs
+    indicator, a light/dark/system toggle (with task 18) and Log out.
+  - The sidebar holds Overview, Repositories, Jobs, Schedules and Events, plus Settings when the
+    config is not wholly declared. It becomes a drawer under 768 px. Routes stay hash-based.
+- **Overview:**
+  - Tiles that open filtered views (the failing tile opens the repositories filtered to failing).
+  - A needs-attention list with one reason per line, such as "last backup 3 d ago, limit 1 d",
+    "check failed" or "timer missed".
+  - A 24 h and 7 d chart of jobs by outcome.
+  - Running jobs beside the timers' upcoming runs.
+  - Total stored over time.
+- **Repositories:**
+  - A grid or table, with search, sort (status, name, last backup, size) and filters (status,
+    host, declared or page-managed). All of it is kept in the URL.
+  - Cards keep today's fields and add chips for append-only, paused, declared and running.
+- **Repository page:**
+  - Tabs kept in the URL: Overview (facts, needs-attention lines, charts), Archives, Jobs, Sources
+    and retention, Schedule, Events and Config.
+  - Actions in two groups, as Vorta does. Repository actions sit in the header: Backup, Check,
+    Compact, Prune preview, Break lock. Archive actions sit on each row: Browse, Diff, Restore,
+    Download, Delete.
+  - Maintenance actions each carry a sentence saying what they do, as Borg Backup Server's do.
+- **Archive page:**
+  - Breadcrumbs and a prev/next stepper.
+  - Deltas against the previous archive (files, original, unique).
+  - A Changes tab: the diff, coloured by added, modified and removed, with net size per folder and
+    a Tree/Flat switch.
+  - A Files tab: a tree with checkboxes and search, and Restore and Download for the selection.
+- **Jobs page:**
+  - Every job across repositories, filtered by repository, kind, outcome and period, with the
+    filters in the URL, and paged.
+  - A duration bar against the median for that kind, live output, cancel and retry.
+  - A job page with a result bar and the output.
+- **Dialogs:**
+  - One confirm component in place of `confirm()`. It names the target, says what is lost and
+    whether that can be undone, and shows a busy label.
+  - A typed name for Purge Excluded, and for Break Lock while a job may be running.
+  - Outcomes arrive as toasts that link to the job, and errors also stay inline.
+- **Live updates:** one SSE stream of job and poll events, refetched after a reconnect. The page
+  falls back to polling only while a job runs, and pauses while the tab is hidden.
+- **States:** skeletons while loading, an inline error with Retry, and empty states that say what
+  to do next.
+- **Accessibility:**
+  - status as text as well as colour
+  - labelled icon buttons
+  - dialogs with a focus trap and Escape
+  - `aria-live` on job state
+  - tables that sort by value, not by the displayed text
+
+#### Feature parity
+
+The out-of-scope list above, weighed against having every capability the other apps have. Each one
+is the user's call; the suggestion follows the dash.
+
+- Repository creation (`borg init`, Borg UI and Borgitory): add in `page` and `mixed` modes, with
+  task 36.
+- Schedules (all but BorgWarehouse):
+  - Now: show the host timers as a weekly calendar, as Borg Backup Server does.
+  - Later: optionally write a systemd timer on the host for page-managed repositories.
+- Notifications (all but Vorta and BorgWeb): X-Monitor alerts on `/api/health` (task 26). Add an
+  Apprise URL list with a Test button only if X-Monitor cannot reach someone.
+- Users and roles, OIDC and TOTP (Borg UI, Borg Backup Server, BorgWarehouse): add TOTP first,
+  taking X-Monitor's as the reference. Roles fit once task 29's read-only token exists.
+- FUSE mount (Borg UI, Borgitory, Vorta): download through `export-tar` (task 32) covers its use
+  from a browser, so leave it out.
+- Cloud sync, hooks, database dumps and agents: these belong to the hosts' own backup jobs, so
+  leave them out.
+
+#### Tasks
+
+35. [ ] **Config sources and read-only mode.** Read two sources:
+    - the declared file, `X_BACKUPS_CONFIG`, which the Nix module writes
+    - a page-managed `repositories.json` in `X_BACKUPS_STATE_DIR`
+
+    A `config_mode` setting picks how they combine:
+    - `declarative`: the page edits nothing. This is today's behaviour and the Nix module's
+      default.
+    - `mixed`: declared repositories are locked, and new ones can be added from the page.
+    - `page`: there is no declared file.
+
+    The Nix module sets the mode (`services.x-backups.configMode`). A declared repository shadows
+    a page-managed one of the same name, and the page flags the shadowed copy. Each repository in
+    the API carries `source: "declared" | "page"` and `editable`.
+36. [ ] **Config editor.**
+    - Build the form from `borg_fields` in `src/server/config.ts`, so a new field appears without
+      page changes. Group it into Connection, Sources, Retention, Checks and Jobs.
+    - Check posted entries with the same `parse_repository`, and show its message inline beside
+      the field.
+    - A declared repository shows the same form read-only, under a "Declared in the Nix
+      configuration" banner, with no Edit or Delete.
+    - A passphrase never travels back to the page. The form takes a file path or a command, or a
+      passphrase written once into the state directory (mode 0600) and never read back.
+    - A save applies without a restart: the poller adds, replaces or drops the repository.
+    - Each save is logged as an event.
+    - Each page-managed repository has "Show as Nix" and "Show as JSON", so it can be moved into
+      the declared file. Once declared it shadows the page copy, which can then be deleted.
+37. [ ] **Settings and their provenance.** Global settings get the same rule: poll interval,
+    staleness thresholds (task 27), browse limit and theme. Each setting is tagged Declared, Saved
+    or Default, as Borg UI does, and a declared setting is read-only.
+38. [ ] **App shell and routing.**
+    - The header and sidebar from "Recommended layout", with a drawer on phones.
+    - Routes for overview, repositories, repository tabs, archive, jobs, job, schedules, events
+      and settings.
+    - The theme toggle comes with task 18.
+39. [ ] **Overview.** Clickable tiles, the needs-attention list (reasons from task 26), the jobs
+    chart (task 30), running jobs beside upcoming timer runs, and total stored over time.
+40. [ ] **Repository page.**
+    - Split the long page into tabs kept in the URL.
+    - Group the actions into repository actions and archive actions.
+    - Give each maintenance action a one-line description.
+    - Show the outcome as a toast linking to the job, not a panel at the top.
+41. [ ] **Archive page.**
+    - Breadcrumbs, the prev/next stepper and deltas against the previous archive.
+    - A Changes tab built from `borg diff --json-lines`: colour by change type, net size per
+      folder, and a Tree/Flat switch.
+    - A Files tab with search, restore and download (task 32).
+42. [ ] **Jobs page.** Jobs across all repositories with filters and paging in the URL, a duration
+    bar against the median for each kind, retry (task 30), and a job page with a result bar and
+    its output.
+43. [ ] **Confirm dialog and toasts.**
+    - One dialog component in place of every `confirm()`, naming the target and saying whether the
+      action can be undone.
+    - A typed name for Purge Excluded and for a forced Break Lock.
+    - Toasts for outcomes, with errors also kept inline.
+44. [ ] **Live updates over SSE.**
+    - `GET /api/events/stream` for job state and output, poll results and config changes.
+    - The page refetches after a reconnect, and polls only while a job runs and the tab is
+      visible.
+    - Show an error with Retry in place of silent failures.
+45. [ ] **Lists.** Search, sort, filter and paging, kept in the URL, for repositories, archives, jobs
+    and events. The header search goes across repositories and archives.
+46. [ ] **States and accessibility.**
+    - Skeletons while loading, and empty states that say what to do next.
+    - Status as text as well as colour, and labelled buttons.
+    - Dialogs with a focus trap and Escape, and `aria-live` on job state.
+    - Mobile layouts for the tables, as card lists or with columns dropped.
 
 ## Apps to review for features
 
