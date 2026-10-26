@@ -88,6 +88,9 @@ adapted where a task changes a contract.
     `interval` (default 1h), and every 10 s while one of its jobs runs. It runs at most one poll per
     repository at a time. The startup poll also picks up jobs left running before a restart.
     Reference: `../X-Monitor/x_monitor/core/coordination/engine.py` and `action_jobs.py`.
+    Run a repository's poll commands one after another, never in parallel (they share borg's cache lock). The
+    runner's timeout only kills the local `ssh`, so under `require_sudo` a hung borg may keep running on the
+    host: prefix each poll call with `timeout -k 5 <n>` after `sudo` and the environment, or settle it with task 4.
 11. [x] **API routes.**
     - `GET /api/repositories`: the list, each with its status.
     - `GET /api/repositories/:id`: state, archives, and actions with whether each is enabled.
