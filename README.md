@@ -62,6 +62,24 @@ Each repository takes the fields of a `config.example.json` entry. Host keys com
 `programs.ssh.knownHosts`. After changing `package-lock.json`, update `npmDepsHash` in
 `nix/package.nix` to the hash `nix build` reports.
 
+## Editing the config from the page
+
+`X_BACKUPS_CONFIG_MODE` (the module's `configMode`) decides whether the page may change the config:
+
+- `declarative`, the default: everything comes from `X_BACKUPS_CONFIG` and the page shows it
+  read-only.
+- `mixed`: what the file declares stays locked, and the page may add repositories and set the
+  defaults the file leaves open.
+- `page`: the same, with `X_BACKUPS_CONFIG` optional.
+
+The page keeps its part in `config.json` under `X_BACKUPS_STATE_DIR`, and a passphrase typed there in
+`passphrases/<name>`, both readable only by X-Backups. A declared repository replaces a page one of
+the same name. A file's top-level `defaults` (the module's `defaults`) sets `interval`, `max_age`,
+`check_max_age` and `browse_limit` for every repository that does not set its own.
+
+Anyone who can log in to a page that edits the config can make X-Backups run commands as its user,
+through fields such as `rsh`, `borg_bin` and `passphrase_command`.
+
 ## Licence
 
 GPL-3.0-or-later.

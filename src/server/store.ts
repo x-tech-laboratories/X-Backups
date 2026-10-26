@@ -56,7 +56,7 @@ export interface JobRow extends JobRecord {
 
 // What changed, so a page that listens can fetch only what it shows.
 export interface Change {
-  kind: "repository" | "job" | "timers";
+  kind: "repository" | "job" | "timers" | "config";
   repository_id: string | null;
   job_id?: number;
 }

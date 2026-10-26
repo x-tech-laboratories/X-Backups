@@ -160,6 +160,30 @@ export interface RepositoryConfig {
   fields: Record<string, unknown>;
 }
 
+export type FieldKind = "string" | "number" | "boolean" | "duration" | "number_or_string" | "list" | "durations";
+
+export interface FieldSpec {
+  name: string;
+  kind: FieldKind;
+}
+
+export interface Setting {
+  name: string;
+  value: number | string;
+  source: "declared" | "saved" | "default";
+}
+
+export interface ConfigInfo {
+  mode: "declarative" | "mixed" | "page";
+  editable: boolean;
+  fields: FieldSpec[];
+  settings: Setting[];
+  shadowed: string[];
+}
+
+// Shown in place of a secret; sent back unchanged, it keeps the secret as it was.
+export const SECRET_MASK = "(set)";
+
 export interface SearchResults {
   repositories: { id: string; name: string }[];
   archives: { repository_id: string; name: string; epoch: number }[];
@@ -167,7 +191,7 @@ export interface SearchResults {
 
 // What the server's stream says changed; null stands for "anything may have changed".
 export interface Change {
-  kind: "repository" | "job" | "timers";
+  kind: "repository" | "job" | "timers" | "config";
   repository_id: string | null;
   job_id?: number;
 }
@@ -176,16 +200,40 @@ export interface Change {
 
 export class LoginNeeded extends Error {}
 
+// A refused request, naming the config field at fault when the server gave one.
+export class ApiError extends Error {
+  readonly field: string | null;
+
+  constructor(message: string, field: string | null) {
+    super(message);
+    this.field = field;
+  }
+}
+
 export async function api<Answer>(path: string, body?: object): Promise<Answer> {
   const response = await fetch(path, body === undefined ? {} : {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+  return answer_of<Answer>(response);
+}
+
+// The same for a request that changes or removes something, which the server takes as PUT or DELETE.
+export async function send<Answer>(method: "PUT" | "DELETE", path: string, body?: object): Promise<Answer> {
+  const response = await fetch(path, body === undefined ? { method } : {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return answer_of<Answer>(response);
+}
+
+async function answer_of<Answer>(response: Response): Promise<Answer> {
   if (response.status === 401) throw new LoginNeeded();
   if (response.status === 204) return undefined as Answer;
   const answer = await response.json();
-  if (!response.ok) throw new Error(answer.error ?? `${response.status} ${response.statusText}`);
+  if (!response.ok) throw new ApiError(answer.error ?? `${response.status} ${response.statusText}`, answer.field ?? null);
   return answer as Answer;
 }
 

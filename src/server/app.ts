@@ -10,6 +10,8 @@ import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
 import { host_name, type Poller, type Watched } from "./poller.ts";
+import { ConfigError, default_settings, field_list, type Config } from "./config.ts";
+import { mask, type ConfigSources } from "./sources.ts";
 import type { Change, JobRow, Store } from "./store.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -20,6 +22,8 @@ export interface app_options {
   password_hash: string;
   poller: Poller;
   store: Store;
+  // Where the config comes from; without it the config is the poller's own and read-only.
+  sources?: ConfigSources;
 }
 
 interface ActionBody {
@@ -44,8 +48,6 @@ const web_build_directory = fileURLToPath(new URL("../../dist", import.meta.url)
 // A stream sends a comment this often, so proxies keep an idle connection open.
 const stream_keepalive_in_milliseconds = 25_000;
 
-// Fields that may hold a secret, shown only as set or not.
-const secret_fields = new Set(["passphrase", "passphrase_command"]);
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 
@@ -86,7 +88,7 @@ export function retry_action(kind: string): [action_id: string, body: ActionBody
 
 export async function build_app(options: app_options): Promise<FastifyInstance> {
   const app = fastify({ logger: options.logger });
-  const { poller, store } = options;
+  const { poller, store, sources } = options;
 
   register_auth(app, options.password_hash);
 
@@ -183,15 +185,80 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   });
 
   // The repository's settings as declared, with secrets shown only as set.
+  // The repository's entry as written, with secrets masked, and whether the page may change it.
   app.get<{ Params: { id: string } }>("/api/repositories/:id/config", async (request, reply) => {
     const watched = find(request.params.id, reply);
     if (watched === null) return reply;
-    const { name, host, ssh_user, interval_in_seconds, borg } = watched.config;
-    const fields = Object.fromEntries(Object.entries(borg).map(([field, value]) => [field, secret_fields.has(field) ? "(set)" : value]));
-    return {
-      source: "declared", editable: false, config_mode: "declarative",
-      fields: { name, host, ssh_user, interval: interval_in_seconds, ...fields },
-    };
+    const { name, host, ssh_user, interval_in_seconds, borg, source } = watched.config;
+    const fields = sources?.entry(name) ?? mask({ name, host, ssh_user, interval: interval_in_seconds, ...borg });
+    return { source, editable: Boolean(sources?.editable) && source === "page", config_mode: sources?.mode ?? "declarative", fields };
+  });
+
+  // ── Config ───────────────────────────────────────────────────────────────
+
+  // How the config is kept, the fields a repository takes, and the defaults with where each came from.
+  app.get("/api/config", async () => ({
+    mode: sources?.mode ?? "declarative",
+    editable: Boolean(sources?.editable),
+    fields: field_list(),
+    settings: sources?.settings() ?? Object.entries(default_settings).map(([name, { fallback }]) => ({ name, value: fallback, source: "default" })),
+    shadowed: sources?.shadowed() ?? [],
+  }));
+
+  // Applies a config the sources accepted, logging what changed on the repository it concerns.
+  const applied = (config: Config, repository_id: string | null, message: string) => {
+    poller.apply_config(config);
+    if (repository_id !== null) store.apply(repository_id, new CollectResult({ logs: [[message, "INFO"]] }), { poll: false });
+    store.changed({ kind: "config", repository_id });
+  };
+
+  const editing = (reply: FastifyReply): ConfigSources | null => {
+    if (sources?.editable) return sources;
+    void reply.code(403).send({ error: "The config is declarative here: change it in the Nix configuration." });
+    return null;
+  };
+
+  app.post<{ Body: Record<string, unknown> }>("/api/repositories", async (request, reply) => {
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    const name = String(request.body?.name ?? "");
+    applied(editable.save_repository(request.body ?? {}, null), name, "Repository added from the page");
+    return reply.code(201).send({ id: name });
+  });
+
+  app.put<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/repositories/:id/config", async (request, reply) => {
+    const watched = find(request.params.id, reply);
+    if (watched === null) return reply;
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    applied(editable.save_repository(request.body ?? {}, watched.config.name), watched.repository.id, "Config saved from the page");
+    return { id: watched.repository.id };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/repositories/:id", async (request, reply) => {
+    const watched = find(request.params.id, reply);
+    if (watched === null) return reply;
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    const id = watched.repository.id;
+    applied(editable.delete_repository(watched.config.name), null, "");
+    store.apply(id, new CollectResult({ logs: [["Repository removed from the page; its history is kept", "WARNING"]] }), { poll: false });
+    return reply.code(204).send();
+  });
+
+  app.put<{ Body: Record<string, unknown> }>("/api/config/defaults", async (request, reply) => {
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    applied(editable.save_defaults(request.body ?? {}), null, "");
+    return { settings: editable.settings() };
+  });
+
+  // A config the checks refused answers with the message and the field it names, for the page to show beside it.
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ConfigError) return reply.code(400).send({ error: error.message, field: error.field });
+    reply.log.error(error);
+    const status = (error as { statusCode?: number }).statusCode ?? 500;
+    return reply.code(status).send({ error: (error as Error).message });
   });
 
   // Repositories and archives whose names hold the text, for the header's search.
@@ -315,7 +382,6 @@ function summary(watched: Watched) {
     canary: state.canary,
     checks_passed: state.checks?.passed ?? null,
     running_job: repository.jobs?.running() ?? null,
-    // Every repository comes from the declared file until the page can add its own.
-    source: "declared",
+    source: watched.config.source,
   };
 }

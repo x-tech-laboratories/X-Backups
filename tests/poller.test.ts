@@ -8,7 +8,7 @@ import { Store } from "../src/server/store.ts";
 const LIST = JSON.stringify({ archives: [{ name: "a1", time: "2026-10-01T10:00:00" }], repository: { location: "/srv/repo" } });
 
 const CONFIG: Config = {
-  repositories: [{ name: "odin", host: null, ssh_user: null, interval_in_seconds: 3600, borg: { repo: "/srv/repo", collect_stats: false } }],
+  repositories: [{ name: "odin", host: null, ssh_user: null, interval_in_seconds: 3600, borg: { repo: "/srv/repo", collect_stats: false }, source: "declared" }],
 };
 
 let store: Store;
@@ -31,6 +31,32 @@ beforeEach(() => {
 afterEach(() => {
   poller.stop();
   store.close();
+});
+
+// ── Config changes ───────────────────────────────────────────────────────────
+
+describe("config changes", () => {
+  it("adds, replaces and drops repositories without a restart", async () => {
+    poller = make();
+    poller.start();
+    await poller.poll("odin");
+
+    const thor = { name: "thor", host: null, ssh_user: null, interval_in_seconds: 60, borg: { repo: "/srv/thor", collect_stats: false }, source: "page" as const };
+    poller.apply_config({ repositories: [CONFIG.repositories[0], thor] });
+    const odin = poller.repositories.get("odin");
+    await poller.poll("thor");
+
+    expect([...poller.repositories.keys()]).toEqual(["odin", "thor"]);
+    expect(poller.repositories.get("thor")!.repository.state.archive_count).toBe(1);
+
+    poller.apply_config({ repositories: [{ ...CONFIG.repositories[0], borg: { ...CONFIG.repositories[0].borg, max_age: "3d" } }] });
+
+    expect([...poller.repositories.keys()]).toEqual(["odin"]);
+    expect(poller.repositories.get("odin")).not.toBe(odin);
+    expect(poller.repositories.get("odin")!.repository.max_age).toBe(3 * 86400);
+    // The replacement starts from the stored state rather than empty.
+    expect(poller.repositories.get("odin")!.repository.state.archive_count).toBe(1);
+  });
 });
 
 // ── Polling ──────────────────────────────────────────────────────────────────

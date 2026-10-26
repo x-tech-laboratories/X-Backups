@@ -76,7 +76,7 @@ export function overview_view(): View {
       section("Repositories", grid, h("a", { href: link(["repositories"]) }, "Filter and sort")),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "job", "timers"])) await update(true, touches(changes, null, ["repository"]));
+      if (touches(changes, null, ["repository", "job", "timers", "config"])) await update(true, touches(changes, null, ["repository", "config"]));
     },
   };
 }

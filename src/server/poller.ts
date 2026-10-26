@@ -44,12 +44,36 @@ export class Poller {
   constructor(config: Config, store: Store, run: Run = run_command) {
     this.store = store;
     this.run = run;
-    for (const repository_config of config.repositories) {
-      const repository = new BorgRepository(repository_config.name, repository_config.borg);
-      repository.state = store.load_state(repository.id) ?? repository.state;
-      repository.jobs = store.jobs_for(repository.id);
-      const status = store.polls(repository.id).at(-1)?.status ?? null;
-      this.repositories.set(repository.id, { config: repository_config, repository, status });
+    for (const repository_config of config.repositories) this.watch(repository_config);
+  }
+
+  private watch(repository_config: RepositoryConfig): Watched {
+    const repository = new BorgRepository(repository_config.name, repository_config.borg);
+    repository.state = this.store.load_state(repository.id) ?? repository.state;
+    repository.jobs = this.store.jobs_for(repository.id);
+    const status = this.store.polls(repository.id).at(-1)?.status ?? null;
+    const watched = { config: repository_config, repository, status };
+    this.repositories.set(repository.id, watched);
+    return watched;
+  }
+
+  // Takes a changed config without a restart: new repositories are polled at once, changed ones start over from
+  // their stored state, and removed ones stop being polled while their history stays in the store.
+  apply_config(config: Config): void {
+    const next = new Map(config.repositories.map((repository_config) => [repository_config.borg.id ?? repository_config.name, repository_config]));
+    for (const id of this.repositories.keys()) {
+      if (next.has(id)) continue;
+      clearTimeout(this.timers.get(id));
+      this.timers.delete(id);
+      this.repositories.delete(id);
+    }
+    for (const [id, repository_config] of next) {
+      const current = this.repositories.get(id);
+      if (current !== undefined && JSON.stringify(current.config) === JSON.stringify(repository_config)) continue;
+      clearTimeout(this.timers.get(id));
+      this.timers.delete(id);
+      this.watch(repository_config);
+      if (!this.stopped) void this.poll(id);
     }
   }
 
@@ -147,7 +171,8 @@ export class Poller {
 
   // Sets the next poll: soon while a job runs, else after the repository's interval.
   private schedule(id: string): void {
-    if (this.stopped) return;
+    // A repository removed while its poll ran is not polled again.
+    if (this.stopped || !this.repositories.has(id)) return;
     clearTimeout(this.timers.get(id));
     const watched = this.watched(id);
     const job_running = watched.repository.jobs?.running() != null;

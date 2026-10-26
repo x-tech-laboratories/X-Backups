@@ -3,16 +3,17 @@
 import { action_descriptions, run_action, start_action, type ActionTarget } from "../actions.ts";
 import { overdue, repository_reasons } from "../attention.ts";
 import {
-  api, query, repository_path, type Action, type Archive, type EventRow, type History, type Job, type RepositoryConfig, type RepositoryDetail,
-  type TimerRow,
+  api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type EventRow, type History, type Job,
+  type RepositoryConfig, type RepositoryDetail, type TimerRow,
 } from "../api.ts";
 import { bar_chart, line_chart, strip } from "../charts.ts";
 import { age, duration, h, nodes, now_seconds, size, stamp, type Child } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import {
   attempt, chip, confirm_dialog, crumbs, data_table, empty, facts, load, pager, search_box, section, select, skeleton, sorting_from,
-  status_badge, tabs, text_dialog, toast, toolbar, verdict, type Sorting,
+  status_badge, tabs, toast, toolbar, verdict, type Sorting,
 } from "../ui.ts";
+import { config_form, config_read_only, config_tools } from "./config_form.ts";
 import { events_list, jobs_table, timers_table, touches, type View } from "./shared.ts";
 
 const history_span_in_seconds = 90 * 86400;
@@ -91,7 +92,7 @@ export function repository_view(id: string, tab: string): View {
       body,
     ),
     update: async (changes) => {
-      if (touches(changes, id, ["repository", "job", "timers"])) await update(true);
+      if (touches(changes, id, ["repository", "job", "timers", "config"])) await update(true);
     },
   };
 }
@@ -114,7 +115,7 @@ function repository_header(repository: RepositoryDetail, target: ActionTarget): 
     h("div", { class: "page-title" },
       h("h1", {}, repository.name),
       status_badge(repository.status),
-      repository.source === "declared" && chip("declared", "Set in the Nix configuration; edit it there"),
+      repository.source === "declared" ? chip("declared", "Set in the Nix configuration; edit it there") : chip("added here", "Added from this page; edit it on its Config tab"),
       repository.running_job && h("a", { class: "chip chip-info", href: link(["jobs", String(repository.running_job.id)]) },
         `${repository.running_job.kind} running${repository.running_job.progress ? ` · ${repository.running_job.progress}` : ""}`),
     ),
@@ -413,71 +414,73 @@ function events_tab(context: TabContext): (quiet: boolean) => Promise<void> {
 
 // ── Config tab ───────────────────────────────────────────────────────────────
 
-// The config's fields in groups, in the order a reader looks for them; anything unlisted lands in Other.
-const field_groups: [title: string, fields: string[]][] = [
-  ["Connection", ["name", "id", "host", "ssh_user", "repo", "rsh", "ssh_key", "borg_bin", "require_sudo", "passphrase", "passphrase_file", "passphrase_command", "lock_wait", "timeout", "interval", "skip_when_unreachable"]],
-  ["Sources", ["source_paths", "exclude", "exclude_from", "exclude_caches", "exclude_if_present", "one_file_system", "compression", "archive_prefix"]],
-  ["Retention", ["keep_within", "keep_last", "keep_secondly", "keep_minutely", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly", "prune_match", "prune_after_backup", "compact_after_backup"]],
-  ["Checks", ["max_age", "check_units", "check_max_age", "check_kinds", "check_verify_data", "canary_path", "canary_interval"]],
-  ["Jobs", ["job_nice", "job_io_idle", "inhibit_sleep", "job_lock", "skip_while_active", "backup_lock_wait", "cache_dir", "restore_dir", "browse_limit", "list_archives", "collect_stats"]],
-  ["Safety", ["allow_delete", "allow_purge", "purge_match"]],
-];
-
 function config_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   const holder = h("div", { class: "stack" }, skeleton(6));
   context.body.replaceChildren(holder);
+  // A refresh while the form is open would throw away what was typed, so only a save or a reload redraws it.
+  let editing = false;
+  const reload = async (quiet: boolean) => {
+    editing = false;
+    await load(holder, async () => {
+      const [config, info] = await Promise.all([api<RepositoryConfig>(`${context.base}/config`), api<ConfigInfo>("/api/config")]);
+      if (!config.editable) return config_locked(config);
+      editing = true;
+      return config_editor(context, config, info, () => void reload(true));
+    }, { quiet });
+  };
   return async (quiet) => {
-    await load(holder, async () => config_view(await api<RepositoryConfig>(`${context.base}/config`)), { quiet });
+    if (!editing) await reload(quiet);
   };
 }
 
-function config_view(config: RepositoryConfig): HTMLElement[] {
-  const fields = config.fields;
-  const listed = new Set(field_groups.flatMap(([, names]) => names));
-  const other = Object.keys(fields).filter((name) => !listed.has(name));
-  const groups = [...field_groups, ["Other", other] as [string, string[]]]
-    .map(([title, names]) => [title, names.filter((name) => fields[name] !== undefined && fields[name] !== null)] as [string, string[]])
-    .filter(([, names]) => names.length > 0);
-  return [
-    h("div", { class: "banner", role: "note" },
-      h("strong", {}, config.source === "declared" ? "Declared in the Nix configuration." : "Managed from this page."),
-      " ",
-      config.editable ? "" : "This page shows it read-only; change it under services.x-backups.repositories and switch the system to apply it.",
-    ),
-    toolbar(
-      h("button", { onclick: () => text_dialog("Config as JSON", JSON.stringify(fields, null, 2)) }, "Show as JSON"),
-      h("button", { onclick: () => text_dialog("Config as Nix", as_nix(fields)) }, "Show as Nix"),
-    ),
-    ...groups.map(([title, names]) => section(title, facts(names.map((name): [string, Child] => [name, config_value(fields[name])]), "rows"))),
-  ];
+function config_locked(config: RepositoryConfig): Child[] {
+  const why = config.source === "declared"
+    ? [h("strong", {}, "Declared in the Nix configuration."), " Change it under services.x-backups.repositories and switch the system to apply it."]
+    : [h("strong", {}, "Added from this page,"), " but the config is declarative now, so the page shows it read-only."];
+  return [h("div", { class: "banner", role: "note" }, ...why), config_tools(config.fields), ...config_read_only(config.fields)];
 }
 
-function config_value(value: unknown): Child {
-  if (Array.isArray(value)) return value.length === 0 ? "none" : h("ul", { class: "paths" }, ...value.map((item) => h("li", {}, h("code", {}, String(item)))));
-  if (typeof value === "object" && value !== null) return h("code", {}, JSON.stringify(value));
-  if (typeof value === "boolean") return value ? "yes" : "no";
-  return h("code", {}, String(value));
-}
-
-// The repository as a Nix attribute set for services.x-backups.repositories, with secrets left as a comment.
-function as_nix(fields: Record<string, unknown>): string {
-  const { name, ...rest } = fields;
-  const value = (item: unknown, indent: string): string => {
-    if (typeof item === "string") return JSON.stringify(item);
-    if (typeof item === "number" || typeof item === "boolean") return String(item);
-    if (Array.isArray(item)) return `[ ${item.map((entry) => value(entry, indent)).join(" ")} ]`;
-    if (typeof item === "object" && item !== null) {
-      const inner = Object.entries(item).map(([key, entry]) => `${indent}  ${nix_key(key)} = ${value(entry, `${indent}  `)};`);
-      return `{\n${inner.join("\n")}\n${indent}}`;
+function config_editor(context: TabContext, config: RepositoryConfig, info: ConfigInfo, reload: () => void): Child[] {
+  const name = String(config.fields.name);
+  const form = config_form(info.fields, config.fields, { adding: false });
+  const save = h("button", { class: "accent solid" }, "Save");
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    save.textContent = "Saving…";
+    try {
+      await send("PUT", `${context.base}/config`, form.read());
+      toast("Config saved. The repository is polled again with it.", { tone: "good" });
+      reload();
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      form.show_error(error.message, error.field);
+    } finally {
+      save.disabled = false;
+      save.textContent = "Save";
     }
-    return "null";
-  };
-  const lines = Object.entries(rest)
-    .filter(([, item]) => item !== null && item !== undefined)
-    .map(([key, item]) => item === "(set)" ? `  # ${key} is set; keep it in a secret file, never in the Nix store.` : `  ${nix_key(key)} = ${value(item, "  ")};`);
-  return `services.x-backups.repositories.${nix_key(String(name))} = {\n${lines.join("\n")}\n};\n`;
-}
-
-function nix_key(key: string): string {
-  return /^[A-Za-z_][A-Za-z0-9_'-]*$/.test(key) ? key : JSON.stringify(key);
+  });
+  const remove = h("button", {
+    class: "danger",
+    onclick: () => confirm_dialog({
+      title: `Stop watching ${name}?`,
+      message: h("div", {},
+        h("p", {}, "X-Backups stops polling it and takes it off this page. The borg repository and its archives are not touched."),
+        h("p", { class: "muted" }, "Its history stays in X-Backups' state, and adding it again under the same name brings that back.")),
+      confirm_label: "Stop watching",
+      busy_label: "Removing…",
+      danger: true,
+      type_to_confirm: name,
+      run: async () => {
+        await send("DELETE", context.base);
+        toast(`${name} is no longer watched.`, { tone: "warn" });
+        location.hash = link(["repositories"]);
+      },
+    }),
+  }, "Stop watching");
+  return [
+    h("div", { class: "banner", role: "note" }, h("strong", {}, "Added from this page."), " Saving applies the change at once; nothing restarts."),
+    config_tools(config.fields),
+    form.element,
+    h("div", { class: "form-actions" }, save, h("button", { onclick: reload }, "Discard changes"), remove),
+  ];
 }

@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { build_app } from "../src/server/app.ts";
@@ -5,6 +8,7 @@ import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
 import type { Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
+import { ConfigSources } from "../src/server/sources.ts";
 import { Store } from "../src/server/store.ts";
 
 const password_hash = hash_password("correct horse");
@@ -17,7 +21,7 @@ const RUNNING = "===XBACKUPS_SIZE===\n0\n===XBACKUPS_EXIT===\n\n===XBACKUPS_ALIV
 const CONFIG: Config = {
   repositories: [{
     name: "odin", host: null, ssh_user: null, interval_in_seconds: 3600,
-    borg: { repo: "/srv/repo", collect_stats: false, source_paths: ["/etc"] },
+    borg: { repo: "/srv/repo", collect_stats: false, source_paths: ["/etc"] }, source: "declared",
   }],
 };
 
@@ -179,5 +183,76 @@ describe("actions and jobs", () => {
     const events = (await get("/api/events?repository=odin")).json();
 
     expect(events.some((event: { message: string }) => event.message.startsWith("Backup started"))).toBe(true);
+  });
+});
+
+// ── Config from the page ─────────────────────────────────────────────────────
+
+describe("config from the page", () => {
+  let editable_app: FastifyInstance;
+  let editable_poller: Poller;
+  let editable_store: Store;
+  let session: string;
+
+  beforeEach(async () => {
+    const directory = mkdtempSync(join(tmpdir(), "x-backups-app-"));
+    const declared = join(directory, "declared.json");
+    writeFileSync(declared, JSON.stringify({ repositories: [{ name: "odin", repo: "/srv/repo", collect_stats: false }] }));
+    const sources = new ConfigSources({ mode: "mixed", declared_path: declared, state_dir: directory });
+    editable_store = new Store(":memory:");
+    editable_poller = new Poller(sources.config(), editable_store, async () => cmd_result(0, LIST, ""));
+    editable_app = await build_app({ serve_web: false, logger: false, password_hash, poller: editable_poller, store: editable_store, sources });
+    const login = await editable_app.inject({ method: "POST", url: "/api/login", payload: { password: "correct horse" } });
+    session = String(login.headers["set-cookie"]).split(";")[0];
+  });
+
+  afterEach(async () => {
+    editable_poller.stop();
+    await editable_app.close();
+    editable_store.close();
+  });
+
+  const send = (method: "GET" | "POST" | "PUT" | "DELETE", url: string, payload?: object) =>
+    editable_app.inject({ method, url, payload, headers: { cookie: session } });
+
+  it("says how the config is kept", async () => {
+    const config = (await send("GET", "/api/config")).json();
+
+    expect(config).toMatchObject({ mode: "mixed", editable: true, shadowed: [] });
+    expect(config.fields.find((field: { name: string }) => field.name === "repo")).toEqual({ name: "repo", kind: "string" });
+  });
+
+  it("adds, edits and removes a page repository, and leaves a declared one alone", async () => {
+    const created = await send("POST", "/api/repositories", { name: "thor", repo: "/srv/thor", collect_stats: false });
+    expect(created.statusCode).toBe(201);
+    expect(editable_poller.repositories.has("thor")).toBe(true);
+    expect((await send("GET", "/api/repositories/thor/config")).json()).toMatchObject({ source: "page", editable: true });
+    expect((await send("GET", "/api/repositories/odin/config")).json()).toMatchObject({ source: "declared", editable: false });
+
+    const edited = await send("PUT", "/api/repositories/thor/config", { name: "thor", repo: "/srv/thor", collect_stats: false, max_age: "3d" });
+    expect(edited.statusCode).toBe(200);
+    expect(editable_poller.repositories.get("thor")!.repository.max_age).toBe(3 * 86400);
+
+    expect((await send("PUT", "/api/repositories/odin/config", { name: "odin", repo: "/x" })).statusCode).toBe(400);
+    expect((await send("DELETE", "/api/repositories/thor")).statusCode).toBe(204);
+    expect(editable_poller.repositories.has("thor")).toBe(false);
+  });
+
+  it("answers a bad entry with its message and field", async () => {
+    const refused = await send("POST", "/api/repositories", { name: "thor", repo: "/srv/thor", max_age: "soon" });
+
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({ field: "max_age" });
+  });
+
+  it("saves a default the declared file leaves open", async () => {
+    const saved = (await send("PUT", "/api/config/defaults", { browse_limit: 50 })).json();
+
+    expect(saved.settings.find((setting: { name: string }) => setting.name === "browse_limit")).toEqual({ name: "browse_limit", value: 50, source: "saved" });
+    expect(editable_poller.repositories.get("odin")!.repository.browse_limit).toBe(50);
+  });
+
+  it("refuses edits when the app has no editable sources", async () => {
+    expect((await post("/api/repositories", { name: "thor", repo: "/srv/thor" })).statusCode).toBe(403);
   });
 });

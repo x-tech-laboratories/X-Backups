@@ -46,6 +46,23 @@ describe("config loading", () => {
     expect(() => parse_repositories([{ name: "ok", repo: "/a" }, { name: "has space", repo: "/b" }])).toThrow("Repository 2: name must be");
   });
 
+  it("fills unset fields from the file's defaults", () => {
+    const config = parse_config(JSON.stringify({ defaults: { interval: "10m", max_age: "2d" }, repositories: [{ name: "a", repo: "/a" }, { name: "b", repo: "/b", max_age: "1h" }] }), "test.json");
+
+    expect(config.repositories[0]).toMatchObject({ interval_in_seconds: 600, borg: { max_age: "2d" } });
+    expect(config.repositories[1].borg.max_age).toBe("1h");
+    expect(() => parse_config(JSON.stringify({ defaults: { repo: "/x" }, repositories: [] }), "test.json")).toThrow("unknown default 'repo'");
+  });
+
+  it("names the field at fault", () => {
+    try {
+      parse_repositories([{ name: "nas", repo: "/b", max_age: "soon" }]);
+    } catch (error) {
+      expect((error as { field: string }).field).toBe("max_age");
+    }
+    expect(() => parse_repositories([{ name: "nas", repo: "/b", prune_after_backup: true }])).toThrow("prune_after_backup needs a keep_* retention policy");
+  });
+
   it("stops on two repositories with the same id", () => {
     expect(() => parse_repositories([{ name: "a", repo: "/a" }, { name: "b", id: "a", repo: "/b" }])).toThrow("Repository 'b': id 'a' is used twice");
   });

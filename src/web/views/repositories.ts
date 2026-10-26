@@ -1,7 +1,7 @@
 // Every repository as cards or a table, searched, filtered and sorted, with the choices kept in the URL.
 
 import { failing, overdue, repository_reasons } from "../attention.ts";
-import { api, type RepositorySummary } from "../api.ts";
+import { api, type ConfigInfo, type RepositorySummary } from "../api.ts";
 import { h } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { attempt, empty, search_box, select, skeleton, sorting_from, toolbar, type Sorting } from "../ui.ts";
@@ -33,6 +33,9 @@ export function repositories_view(): View {
   let repositories: RepositorySummary[] = [];
 
   const host_filter = h("span");
+  const add_button = h("span");
+  // Whether the page may add repositories, which the config mode decides.
+  let adding = false;
   const body = h("div", {}, skeleton());
 
   const render = () => {
@@ -44,7 +47,9 @@ export function repositories_view(): View {
     }));
     const shown = repositories.filter((repository) => matches(repository, text, status, host));
     if (repositories.length === 0) {
-      body.replaceChildren(empty("No repositories yet.", "Repositories are declared in the Nix configuration under services.x-backups.repositories."));
+      body.replaceChildren(empty("No repositories yet.", adding
+        ? h("a", { class: "button accent solid", href: link(["new-repository"]) }, "Add the first one")
+        : "Repositories are declared in the Nix configuration under services.x-backups.repositories."));
       return;
     }
     if (shown.length === 0) {
@@ -74,6 +79,11 @@ export function repositories_view(): View {
     render();
   };
   void update(false);
+  void api<ConfigInfo>("/api/config").then((info) => {
+    adding = info.editable;
+    if (adding) add_button.replaceChildren(h("a", { class: "button accent solid", href: link(["new-repository"]) }, "Add repository"));
+    if (repositories.length === 0) render();
+  }).catch(() => {});
 
   const layout_switch = h("div", { class: "segmented", role: "group", "aria-label": "Layout" },
     ...(["grid", "table"] as const).map((value) => h("button", {
@@ -89,7 +99,7 @@ export function repositories_view(): View {
   return {
     title: "Repositories",
     root: h("div", { class: "page" },
-      h("h1", {}, "Repositories"),
+      h("div", { class: "page-title spread" }, h("h1", {}, "Repositories"), add_button),
       toolbar(
         search_box("Search by name or host", text, (value) => { text = value; replace_query({ q: value }); render(); }),
         select("Status", status_filters, status, (value) => { status = value; replace_query({ status: value }); render(); }),
@@ -104,7 +114,7 @@ export function repositories_view(): View {
       body,
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "job"])) await update(true);
+      if (touches(changes, null, ["repository", "job", "config"])) await update(true);
     },
   };
 }

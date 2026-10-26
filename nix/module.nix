@@ -31,6 +31,7 @@ let
     };
 
   config_file = json.generate "x-backups.json" {
+    inherit (cfg) defaults;
     repositories = lib.mapAttrsToList repository_entry cfg.repositories;
   };
 
@@ -80,6 +81,35 @@ in
       description = ''
         Private key X-Backups logs in to repository hosts with. Host keys come from the system's
         known hosts, so list each host in `programs.ssh.knownHosts`.
+      '';
+    };
+
+    configMode = mkOption {
+      type = types.enum [
+        "declarative"
+        "mixed"
+        "page"
+      ];
+      default = "declarative";
+      description = ''
+        Whether the web page may change the config. `declarative` shows it read-only. `mixed` keeps
+        the repositories and defaults set here locked, and lets the page add its own repositories
+        and set the defaults left open here. `page` is the same, for a setup that declares nothing
+        here. The page keeps its part in the state directory, and a repository declared here
+        replaces a page one of the same name.
+
+        Anyone who can log in to a page that edits the config can make X-Backups run commands
+        (`rsh`, `borg_bin`, `passphrase_command`) as its service user on this machine and over SSH.
+      '';
+    };
+
+    defaults = mkOption {
+      type = json.type;
+      default = { };
+      example = literalExpression ''{ interval = "30m"; max_age = "2d"; }'';
+      description = ''
+        Settings for every repository that does not set its own: `interval`, `max_age`,
+        `check_max_age` and `browse_limit`. The page shows these as declared and leaves them locked.
       '';
     };
 
@@ -139,6 +169,7 @@ in
         X_BACKUPS_CONFIG = toString config_file;
         X_BACKUPS_PASSWORD_HASH_FILE = "${credentials_directory}/password-hash";
         X_BACKUPS_STATE_DIR = "/var/lib/x-backups";
+        X_BACKUPS_CONFIG_MODE = cfg.configMode;
       }
       // lib.optionalAttrs (cfg.sshKeyFile != null) {
         X_BACKUPS_SSH_KEY_FILE = "${credentials_directory}/ssh-key";

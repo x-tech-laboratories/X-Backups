@@ -427,24 +427,21 @@ what each of the other apps does. These are tasks 47–56, to be built after the
 
 #### Tasks
 
-35. [ ] **Config sources and read-only mode.** Read two sources:
+35. [x] **Config sources and read-only mode.** Read two sources:
     - the declared file, `X_BACKUPS_CONFIG`, which the Nix module writes
-    - a page-managed `repositories.json` in `X_BACKUPS_STATE_DIR`
+    - a page-managed `config.json` in `X_BACKUPS_STATE_DIR` (`src/server/sources.ts`)
 
     A `config_mode` setting picks how they combine:
     - `declarative`: the page edits nothing. This is today's behaviour and the Nix module's
       default.
     - `mixed`: declared repositories are locked, and new ones can be added from the page.
-    - `page`: there is no declared file.
+    - `page`: the declared file is optional; whatever it declares is still locked.
 
-    The Nix module sets the mode (`services.x-backups.configMode`). A declared repository shadows
-    a page-managed one of the same name, and the page flags the shadowed copy. Each repository in
-    the API carries `source: "declared" | "page"` and `editable`.
-
-    Started with the UI (tasks 38–46): repository summaries carry `source: "declared"`, and
-    `GET /api/repositories/:id/config` returns the declared fields read-only, with the passphrase
-    fields masked and `config_mode: "declarative"`. The page-managed file and the other modes remain.
-36. [ ] **Config editor.**
+    The Nix module sets the mode (`services.x-backups.configMode`, env `X_BACKUPS_CONFIG_MODE`). A
+    declared repository shadows a page-managed one of the same name, and Settings lists the
+    shadowed copies. Each repository in the API carries `source: "declared" | "page"` and its
+    config `editable`.
+36. [x] **Config editor.**
     - Build the form from `borg_fields` in `src/server/config.ts`, so a new field appears without
       page changes. Group it into Connection, Sources, Retention, Checks and Jobs.
     - Check posted entries with the same `parse_repository`, and show its message inline beside
@@ -458,11 +455,16 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     - Each page-managed repository has "Show as Nix" and "Show as JSON", so it can be moved into
       the declared file. Once declared it shadows the page copy, which can then be deleted.
 
-    The read-only half is done: the repository page's Config tab shows the fields in these
-    groups under the banner, with "Show as JSON" and "Show as Nix". Editing remains.
-37. [ ] **Settings and their provenance.** Global settings get the same rule: poll interval,
+    Built at `#/new-repository` and on the Config tab. A name cannot change once saved, since it
+    names archives, units and the stored history. Removing a repository keeps its history.
+37. [x] **Settings and their provenance.** Global settings get the same rule: poll interval,
     staleness thresholds (task 27), browse limit and theme. Each setting is tagged Declared, Saved
     or Default, as Borg UI does, and a declared setting is read-only.
+
+    Built as a file's top-level `defaults` (the module's `defaults`) for `interval`, `max_age`,
+    `check_max_age` and `browse_limit`, edited on the Settings page. Task 27's warning thresholds
+    join the list when they exist. The theme stays a per-browser choice rather than a server
+    setting.
 38. [x] **App shell and routing.**
     - The header and sidebar from "Recommended layout", with a drawer on phones.
     - Routes for overview, repositories, repository tabs, archive, jobs, job, schedules, events

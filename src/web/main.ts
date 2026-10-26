@@ -7,6 +7,7 @@ import { current_route, link } from "./router.ts";
 import { apply, next_theme, theme_choice, type Theme } from "./theme.ts";
 import { archive_view } from "./views/archive.ts";
 import { job_view, jobs_view } from "./views/jobs.ts";
+import { new_repository_view } from "./views/new_repository.ts";
 import { overview_view } from "./views/overview.ts";
 import { events_view, schedules_view, settings_view } from "./views/pages.ts";
 import { repositories_view } from "./views/repositories.ts";
@@ -26,6 +27,7 @@ let first_view = true;
 
 function view_for(parts: string[]): View {
   const [section, id, tab, archive] = parts;
+  if (section === "new-repository") return new_repository_view();
   if (section === "repositories" && id && tab === "archives" && archive) return archive_view(id, archive);
   if (section === "repositories" && id) return repository_view(id, tab ?? "overview");
   if (section === "repositories") return repositories_view();
@@ -44,7 +46,7 @@ function show(): void {
   main.replaceChildren(current.root);
   document.title = `${current.title} · X-Backups`;
   for (const item of sidebar.querySelectorAll<HTMLAnchorElement>("a[data-section]")) {
-    const active = item.dataset.section === (route.parts[0] ?? "");
+    const active = item.dataset.section === ((route.parts[0] === "new-repository" ? "repositories" : route.parts[0]) ?? "");
     item.classList.toggle("active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");

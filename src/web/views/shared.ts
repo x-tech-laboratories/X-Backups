@@ -40,7 +40,7 @@ export function repository_card(repository: RepositorySummary): HTMLElement {
     ),
     h("div", { class: "verdicts" }, verdict(repository.checks_passed, "checks"), verdict(repository.canary?.ok, "canary")),
     h("div", { class: "chips" },
-      repository.source === "declared" && chip("declared", "Set in the Nix configuration; edit it there"),
+      repository.source === "declared" ? chip("declared", "Set in the Nix configuration; edit it there") : chip("added here", "Added from this page; edit it on its Config tab"),
       repository.running_job && chip(`${repository.running_job.kind} running${repository.running_job.progress ? ` · ${repository.running_job.progress}` : ""}`),
     ),
   );

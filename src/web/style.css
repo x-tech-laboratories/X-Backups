@@ -85,6 +85,8 @@
 /* ── Base ─────────────────────────────────────────────────────────────────── */
 
 * { box-sizing: border-box; }
+/* An element hidden by its attribute stays hidden whatever display its class gives it. */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -124,14 +126,14 @@ button, .button {
 }
 button:hover:not(:disabled), .button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
-button.accent { border-color: var(--accent); color: var(--accent); }
-button.solid.accent { background: var(--accent); color: var(--on-accent); }
+button.accent, .button.accent { border-color: var(--accent); color: var(--accent); }
+button.solid.accent, .button.solid.accent { background: var(--accent); color: var(--on-accent); }
 button.danger { color: var(--bad); }
 button.solid.danger { background: var(--bad); border-color: var(--bad); color: var(--on-accent); }
 button.link { border: none; background: none; padding: 0; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 button.icon { padding: 4px 9px; font-size: 16px; line-height: 1; }
 
-input, select {
+input, select, textarea {
   font: inherit;
   padding: 5px 8px;
   border: 1px solid var(--border);
@@ -140,6 +142,8 @@ input, select {
   color: var(--text);
 }
 input.filter { min-width: 220px; }
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; resize: vertical; }
+input[readonly] { background: var(--surface-2); color: var(--muted); }
 .field { display: inline-flex; flex-direction: column; gap: 2px; }
 .field-label { font-size: 12px; color: var(--muted); }
 .check { display: inline-flex; align-items: center; gap: 4px; }
@@ -185,7 +189,6 @@ input.filter { min-width: 220px; }
 .search-item:hover, .search-item:focus { background: var(--surface-2); }
 .search-none { margin: 6px 8px; }
 .running-chip { margin-left: auto; text-decoration: none; }
-.running-chip[hidden] { display: none; }
 #theme { margin-left: auto; }
 .running-chip:not([hidden]) + #theme { margin-left: 0; }
 
@@ -324,6 +327,28 @@ a.tile:hover { border-color: var(--accent); }
 .tree-file { display: flex; gap: 8px; align-items: baseline; padding: 2px 0 2px 16px; flex-wrap: wrap; }
 .tree-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
 
+/* ── Config forms ─────────────────────────────────────────────────────────── */
+
+.form-group > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+.form-group > summary::-webkit-details-marker { display: none; }
+.form-group > summary::before { content: "▸"; color: var(--muted); }
+.form-group[open] > summary::before { content: "▾"; }
+.form-group[open] > summary { margin-bottom: 10px; }
+.form-rows { display: grid; }
+.form-row { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 6px 16px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: start; }
+.form-row:last-child { border-bottom: none; }
+.form-row label { padding-top: 6px; }
+.form-row input, .form-row select, .form-row textarea { width: 100%; max-width: 560px; }
+.form-row p { margin: 4px 0 0; }
+.field-error { font-weight: 600; }
+.form-actions { position: sticky; bottom: 0; z-index: 5; display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 0; background: var(--background); border-top: 1px solid var(--border); }
+.form-actions .danger { margin-left: auto; }
+.setting-value { display: flex; gap: 8px; align-items: center; }
+.setting-value input { max-width: 240px; }
+.source-declared { background: var(--info-soft); color: var(--info); }
+.source-saved { background: var(--good-soft); color: var(--good); }
+.page-title.spread { justify-content: space-between; }
+
 /* ── Jobs ─────────────────────────────────────────────────────────────────── */
 
 .result-bar { padding: 10px 14px; border-radius: 8px; font-weight: 600; }
@@ -447,6 +472,8 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text); }
   table.responsive td::before { content: attr(data-label); color: var(--muted); text-align: left; }
   table.responsive td[data-label=""]::before { content: none; }
   table.responsive td.actions-cell { justify-content: flex-end; }
+  .form-row { grid-template-columns: 1fr; }
+  .form-row label { padding-top: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
