@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { build_app } from "./app.ts";
 import { hash_password, verify_password } from "./auth.ts";
+import { Poller } from "./poller.ts";
+import { Store } from "./store.ts";
 
 const password_hash = hash_password("correct horse");
+
+// An app watching no repositories, so only its login is exercised.
+function make_app() {
+  const store = new Store(":memory:");
+  return build_app({ serve_web: false, logger: false, password_hash, poller: new Poller({ repositories: [] }, store), store });
+}
 
 async function login(app: Awaited<ReturnType<typeof build_app>>, password: string) {
   return app.inject({ method: "POST", url: "/api/login", payload: { password } });
@@ -18,7 +26,7 @@ describe("password hashes", () => {
 
 describe("api guard", () => {
   it("leaves health open and turns away other api calls without a session", async () => {
-    const app = await build_app({ serve_web: false, logger: false, password_hash });
+    const app = await make_app();
 
     expect((await app.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: "/api/logout" })).statusCode).toBe(401);
@@ -27,7 +35,7 @@ describe("api guard", () => {
   });
 
   it("refuses a wrong password", async () => {
-    const app = await build_app({ serve_web: false, logger: false, password_hash });
+    const app = await make_app();
 
     const response = await login(app, "wrong");
     expect(response.statusCode).toBe(401);
@@ -37,7 +45,7 @@ describe("api guard", () => {
   });
 
   it("lets a session in until it logs out", async () => {
-    const app = await build_app({ serve_web: false, logger: false, password_hash });
+    const app = await make_app();
 
     const response = await login(app, "correct horse");
     expect(response.statusCode).toBe(204);

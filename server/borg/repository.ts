@@ -12,7 +12,7 @@ import {
   CHECK_KINDS, TRACKED_CHECKS, canary_verdict, check_job_kind, check_unit_script, covered_by_check_job,
   merge_unit, observed_unit, parse_check_units, type CheckState,
 } from "./checks.ts";
-import { launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
+import { cancel_command, launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
 import { format_age, format_duration, parse_duration } from "./durations.ts";
 import {
   LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, format_size, is_object, parse_listing,
@@ -1033,6 +1033,23 @@ export class BorgRepository {
       content: [header, "", ...(lines.length > 0 ? lines : ["(no changes)"])].join("\n"),
       success: true,
     });
+  }
+
+  // ── Cancel ───────────────────────────────────────────────────────────────
+
+  cancel_job(): ActionStart {
+    const job = this.running_job();
+    if (job === null) return BorgRepository.refused("No job is running for this repository");
+    return this.run_one(cancel_command(job.pid!), (result) => this.read_cancel(job, result));
+  }
+
+  read_cancel(job: JobRecord, call: CmdResult): CollectResult {
+    if (call.exit_code !== 0) {
+      return BorgRepository.refused(`Could not cancel the ${job.kind}: ${(call.stderr || call.stdout).trim().slice(0, 200)}`);
+    }
+    this.jobs!.finish(job.id, "cancelled", { error: "Cancelled" });
+    const message = `${capitalize(job.kind)} cancelled`;
+    return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
   }
 
   // ── Running jobs ───────────────────────────────────────────────────────────

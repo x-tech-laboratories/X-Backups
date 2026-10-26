@@ -88,7 +88,7 @@ adapted where a task changes a contract.
     `interval` (default 1h), and every 10 s while one of its jobs runs. It runs at most one poll per
     repository at a time. The startup poll also picks up jobs left running before a restart.
     Reference: `../X-Monitor/x_monitor/core/coordination/engine.py` and `action_jobs.py`.
-11. [ ] **API routes.**
+11. [x] **API routes.**
     - `GET /api/repositories`: the list, each with its status.
     - `GET /api/repositories/:id`: state, archives, and actions with whether each is enabled.
     - `POST /api/repositories/:id/actions/:action`

@@ -44,6 +44,11 @@ export function parse_launch(stdout: string): number | null {
   return /^\s*[+-]?\d+\s*$/.test(line) ? Number(line) : null;
 }
 
+// Stops the job's whole process group, which setsid made with the job's pid at its head.
+export function cancel_command(pid: number): string {
+  return `kill -TERM -- -${Math.trunc(pid)}`;
+}
+
 // ── Polling ──────────────────────────────────────────────────────────────────
 
 // One command giving the job's output size, exit code, liveness, and any output past the offset.
