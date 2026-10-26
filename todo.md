@@ -76,7 +76,7 @@ adapted where a task changes a contract.
 7. [x] **Config loading.** `server/config.ts` reads the JSON file named by `X_BACKUPS_CONFIG`:
    `{ "repositories": [BorgConfig plus host, ssh_user and interval] }`. It validates on load and
    stops with the repository's name on a bad entry. Add an example file with placeholder hosts.
-8. [ ] **Runner.** `server/runner.ts` runs a command on a host with
+8. [x] **Runner.** `server/runner.ts` runs a command on a host with
    `ssh -o BatchMode=yes -o ControlMaster=auto -o ControlPath=… -o ControlPersist=…`, or locally with
    `sh -c` when the repository has no host. It enforces a timeout by killing the process, takes
    optional stdin (task 6), and returns a `CmdResult`. It uses the system's `known_hosts`. Reference:
