@@ -92,7 +92,7 @@ const LAUNCHED = [
 
 // Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
 const TOPMOST_EXCLUDED =
-  "awk '/^__x_monitor_rc=/ { rc = substr($0, 12); next } " +
+  "awk '/^__x_monitor_rc=/ { rc = substr($0, 16); next } " +
   "/^x / { p = substr($0, 3); if (top != \"\" && index(p, top \"/\") == 1) next; top = p; print; next } " +
   "{ top = \"\"; print } END { exit rc }'";
 
