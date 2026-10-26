@@ -101,7 +101,7 @@ adapted where a task changes a contract.
 12. [x] **Authentication.** Required before going online, since the API can delete, prune, purge
     and break locks. Smallest fit: one password hash from a secret file and a session cookie, with
     X-Monitor's TOTP login as a reference if a second factor is wanted.
-13. [ ] **Web page.** Plain TypeScript, adding a framework only if the page needs one:
+13. [x] **Web page.** Plain TypeScript, adding a framework only if the page needs one:
     - the repository list with statuses
     - the archives table with diff, restore and delete
     - the archive browser (`browser_rows` in `server/borg/parsing.ts` builds its rows)

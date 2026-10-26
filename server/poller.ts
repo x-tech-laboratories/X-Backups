@@ -64,9 +64,17 @@ export class Poller {
   poll(id: string): Promise<CollectResult> {
     const pending = this.pending_polls.get(id);
     if (pending) return pending;
-    const poll = this.queued(id, () => this.poll_now(id)).finally(() => {
+    const jobs = this.watched(id).repository.jobs;
+    const poll = this.queued(id, async () => {
+      const followed_job = jobs?.running() != null;
+      const result = await this.poll_now(id);
+      return { result, job_ended: followed_job && jobs?.running() == null };
+    }).then(({ result, job_ended }) => {
       this.pending_polls.delete(id);
-      this.schedule(id);
+      // A finished job changed the repository, so it is polled again at once rather than after its interval.
+      if (job_ended) void this.poll(id);
+      else this.schedule(id);
+      return result;
     });
     this.pending_polls.set(id, poll);
     return poll;

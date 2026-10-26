@@ -28,11 +28,12 @@ describe("state and history", () => {
     expect(store.load_state("thor")).toBeNull();
   });
 
-  it("adds one history row per poll and none per action", () => {
+  it("adds one history row per repository poll and none per job poll or action", () => {
     const stats = { original_size: 300, compressed_size: 200, deduplicated_size: 100, total_chunks: 9, unique_chunks: 5 };
     const state = state_with({ stats, archive_count: 2, canary: { ok: true, checked_epoch: 5, detail: "" } });
     store.apply("odin", new CollectResult({ state, status: "online" }), { poll: true, epoch: 100 });
-    store.apply("odin", new CollectResult({ status: "warning" }), { poll: true, epoch: 200 });
+    store.apply("odin", new CollectResult({ state, status: "warning" }), { poll: true, epoch: 200 });
+    store.apply("odin", new CollectResult({ logs: [["Backup running", "INFO"]] }), { poll: true, epoch: 250 });
     store.apply("odin", new CollectResult({ state }), { poll: false, epoch: 300 });
 
     const polls = store.polls("odin");

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastify_static from "@fastify/static";
 import { register_auth } from "./auth.ts";
+import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
 import type { Poller, Watched } from "./poller.ts";
@@ -132,7 +133,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       if (watched === null) return reply;
       const { archive = "", path = "" } = request.query;
       const result = await settle(watched.repository.id, watched.repository.browse_archive(archive || null, path));
-      return { success: result.success, content: result.content, entries: watched.repository.listing(archive, path) ?? [] };
+      const entries = watched.repository.listing(archive, path) ?? [];
+      return { success: result.success, content: result.content, rows: browser_rows(entries, watched.repository.browse_limit), more: entries.length > watched.repository.browse_limit };
     },
   );
 

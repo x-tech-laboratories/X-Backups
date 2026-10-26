@@ -146,7 +146,7 @@ export class Store {
     const epoch = options.epoch ?? now_seconds();
     this.transaction(() => {
       if (result.state !== null) this.save_state(repository_id, result.state);
-      if (options.poll) this.add_poll(repository_id, epoch, result);
+      if (options.poll && result.state !== null) this.add_poll(repository_id, epoch, result.state, result.status);
       for (const [message, level] of result.logs) {
         this.run("INSERT INTO events (repository_id, epoch, level, message) VALUES (?, ?, ?, ?)", repository_id, epoch, level, message);
       }
@@ -173,18 +173,16 @@ export class Store {
     }
   }
 
-  // A poll that left the state as it was still adds a row, read from the state already kept.
-  private add_poll(repository_id: string, epoch: number, result: CollectResult): void {
-    const state = result.state ?? this.load_state(repository_id);
-    const stats = state?.stats ?? null;
+  // Only a poll of the repository itself adds a row; a poll that only followed a job leaves the state alone.
+  private add_poll(repository_id: string, epoch: number, state: RepositoryState, status: MonitorStatus | null): void {
+    const stats = state.stats;
     this.run(
       `INSERT OR REPLACE INTO polls (repository_id, epoch, status, original_size, compressed_size, deduplicated_size,
          total_chunks, unique_chunks, archive_count, last_backup_epoch, canary_ok, checks_passed)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      repository_id, epoch, result.status, stats?.original_size ?? null, stats?.compressed_size ?? null,
+      repository_id, epoch, status, stats?.original_size ?? null, stats?.compressed_size ?? null,
       stats?.deduplicated_size ?? null, stats?.total_chunks ?? null, stats?.unique_chunks ?? null,
-      state?.archive_count ?? null, state?.last_backup_epoch ?? null,
-      flag(state?.canary?.ok), flag(state?.checks?.passed),
+      state.archive_count, state.last_backup_epoch, flag(state.canary?.ok), flag(state.checks?.passed),
     );
   }
 

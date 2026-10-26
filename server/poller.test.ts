@@ -78,6 +78,22 @@ describe("polling", () => {
   });
 });
 
+describe("jobs", () => {
+  it("polls the repository again at once when a job ends", async () => {
+    const ended = "===XBACKUPS_SIZE===\n0\n===XBACKUPS_EXIT===\n0\n===XBACKUPS_ALIVE===\n0\n===XBACKUPS_OUT===\n";
+    poller = make((command) => cmd_result(0, command.includes("kill -0") ? ended : LIST, ""));
+    const job_id = store.jobs_for("odin").create("backup", "borg create", "/tmp/w");
+    store.jobs_for("odin").set_pid(job_id, 42);
+
+    await poller.poll("odin");
+    await poller.poll("odin");
+
+    expect(store.job(job_id)!.state).toBe("succeeded");
+    expect(commands.filter((command) => command.includes("kill -0"))).toHaveLength(1);
+    expect(store.polls("odin")).toHaveLength(1);
+  });
+});
+
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 describe("actions", () => {
