@@ -155,11 +155,112 @@ adapted where a task changes a contract.
     `THEME-DESIGN-GUIDE.md` in `../../Coding/Halon`, and X-Monitor's
     `x_monitor/core/ui/static/halon*.css` and `docs/theme.md`.
 
+### Review the apps' source
+
+Each app's online docs were reviewed on 2026-10-26 (see "Apps to review for features"). These read
+the source to confirm what the docs claim and to settle how the features below should be built. One
+agent per app, read-only, notes into this file. Ordered by value to X-Backups.
+
+19. [ ] **Borg UI.** `app/` (restore-check modes and canary, staleness thresholds, metrics endpoint,
+    borg command builders and timeouts, archive indexing), `frontend/` (repository cards, job and
+    progress views, restore wizard), `examples/monitoring/` (Prometheus metric names, Grafana
+    dashboards). The docs skip authentication, mounting and reverse-proxy pages, so confirm those
+    from source.
+20. [ ] **Borg Backup Server.** `src/` (health checks per component, JSON and Prometheus metrics,
+    `/api/v1/summary`, failure-alert deduplication), `scheduler.php` (missed-schedule detection),
+    `schema.sql` and `migrations/` (job, stats and notification tables), `public/` (dashboard
+    charts), `agent/` (progress from `--log-json`). Its API wiki page was cut off and the Backup
+    Plans, Restoring Files, Queue and Jobs pages were not read.
+21. [ ] **borgmatic.** `borgmatic/actions/check.py` and `borgmatic/borg/` (where check time files go
+    under the state directory and how `frequency` is compared; the spot check), `hooks/monitoring/`
+    (exact payloads), `hooks/data_source/` (where database dumps sit in an archive), the config
+    schema, and the shipped systemd units. The docs leave the check file layout undocumented.
+22. [ ] **Borgitory.** `src/borgitory/services/` (JobManager queue, cancel and retry,
+    RecoveryService for interrupted jobs, prune preview parsing, FUSE mount cleanup), `templates/`
+    (HTMX job output and archive browser). Its docs mix shipped and planned features, so check
+    each claim. The Reddit announcement could not be fetched.
+23. [ ] **BorgWarehouse.** `pages/api/v1/` and `services/` (status and "no recent backup" alert
+    computed from repository mtime, scoped API tokens, archive mode), `Components/` and
+    `Containers/` (repository list, monitoring page, whose charts the docs do not show).
+24. [ ] **Vorta.** `src/vorta/views/` (archive tab, extract dialog, diff result), `src/vorta/borg/`
+    (diff and extract jobs, JSON parsing), `src/vorta/scheduler/` (next-run and missed-run logic).
+    The docs have no schedule or diff pages, so both are unverified.
+25. [ ] **BorgWeb.** `borgweb/views/` and `js/` only. Low priority: X-Backups already does
+    everything it does.
+
+### Features the review found missing
+
+Flagged for another session; each wants its source review (tasks 19–25) first. Left out as out of
+scope: notifications (X-Monitor alerts), schedulers and backup plans, repository creation, editing
+config from the page, users and roles, OIDC, cloud sync, hooks, database dumps, agents, and FUSE
+mounts.
+
+26. [ ] **Health levels.** `/api/health` answers `status: "ok"` whatever the repositories say. Give
+    it an overall ok, warning or critical with each repository's reasons, so X-Monitor can alert on
+    one field (Borg Backup Server, Borg UI).
+27. [ ] **Two-level staleness.** One `max_age` decides failed. Add a warning threshold before it, and
+    the same pair for the last check and canary ages (Borg UI warns at 14 days, critical at 30).
+28. [ ] **Warning job state.** `JobState` has no warning, so a borg exit 1 is `succeeded` with a log
+    line. Add a completed-with-warnings state shown apart from success (Borg Backup Server,
+    BorgWeb).
+29. [ ] **Read-only token and metrics.** A scoped token for read-only API access and a
+    token-protected Prometheus `/metrics` (Borg UI, Borg Backup Server, BorgWarehouse). Today the
+    API takes only the login session.
+30. [ ] **Job retry and history.** Rerun a failed job with the same action, and filter the job
+    history by repository, kind and outcome (Borg Backup Server, Borgitory). Add a 24-hour and
+    7-day job activity chart (Borg Backup Server).
+31. [ ] **Fuller restore verification.** Verify Restore checks one canary path. Add probe paths
+    and a full-archive extract to `/dev/null` as on-demand modes (Borg UI).
+32. [ ] **Archive download.** Download a file or folder from the browser as a tar stream via
+    `borg export-tar`, and an extract dialog with a target folder (Borg UI, Borgitory, Vorta).
+33. [ ] **Paused repositories and storage.** A declared paused flag that keeps a repository listed
+    but silences staleness, an append-only badge, and free space and quota on the storage host
+    (BorgWarehouse).
+34. [ ] **borgmatic awareness.** On borgmatic hosts, show each check type's last run from
+    borgmatic's state directory, recognise `borgmatic.timer`, and warn when an archive's file
+    count drifts far from the previous one, a cheap form of the spot check (task 21 settles the
+    file layout). Optionally accept borgmatic's start/finish pings to show a backup running
+    between polls.
+
 ## Apps to review for features
 
-Reviewed from READMEs only, so thin. Borg Backup Server is the richest: dashboard charts, job queue
-with live progress, logs, cancel and retry, and overdue / never-succeeded / failed alerts. Borg UI
-and BorgWarehouse add a repository grid with staleness per repository. The views to copy, in order:
+Reviewed from their online docs on 2026-10-26; source review is tasks 19–25 and the gaps found are
+tasks 26–34. Release dates below lack a year on the release pages, so 2026 is assumed.
+
+- **Borg UI** (Python backend and JS frontend, AGPL-3.0, about 1.7k stars, 2.4.3 on 26 Oct). Reaches
+  repositories locally, over SSH, through its own agents and rclone. Cron backup plans chaining
+  prune, compact and check; Apprise notifications; restore checks by canary, probe paths or full
+  archive; staleness warning at 14 days and critical at 30; Prometheus `/metrics` behind a token;
+  roles, OIDC and proxy-header login; an observe-only import of existing repositories. No history
+  charts of its own, only example Grafana dashboards.
+- **Borg Backup Server** (PHP with MySQL and ClickHouse, Python agents polling over HTTPS, MIT, 387
+  stars, v2.99.7 on 26 Oct). A different shape: clients push into append-only `borg serve`
+  repositories. Stat cards, a 24-hour jobs chart, a 7-day activity chart, storage per client and
+  upcoming backups; a queue with cancel and retry; a completed-with-warnings job state; 12
+  notification events with deduplicated failure alerts and missed-schedule detection; health per
+  component (ok, warning, critical), JSON and Prometheus metrics, a summary endpoint; TOTP and SSO.
+- **borgmatic** (Python CLI, GPL-3.0-or-later, 2.1.10 on 5 Oct). Not a UI. Check types
+  `repository`, `archives`, `extract`, `data` and `spot`, each with its own `frequency`, with the
+  last run of each kept under `~/.local/state/borgmatic/checks`. The spot check compares source
+  file counts and hashes a sample against the latest archive. Monitoring hooks for Healthchecks,
+  Uptime Kuma, ntfy, Loki, Zabbix and others send start, finish and fail. Ships
+  `borgmatic.service` and `borgmatic.timer`, and logs structured fields to the journal.
+- **Borgitory** (FastAPI with HTMX, SQLite, APScheduler, MIT, about 194 stars, v3.0.0 on 16 Oct).
+  Runs borg in its own container. Cron schedules, retention with prune preview, Apprise, hooks,
+  rclone sync, an archive browser with downloads over FUSE, job history with cancel and retry, one
+  login. API keys, roles and metrics are only planned; its docs mix planned features in.
+- **BorgWarehouse** (Next.js, AGPL-3.0, about 681 stars, 3.7.0 on 20 Sep). Manages the storage
+  server clients push to: repositories, restricted SSH keys, quotas. Sees only each repository's
+  size and last change, so cannot tell a good backup from a failed one. A "no recent backup" alert
+  per repository, SMTP, Apprise and webhooks, OIDC, and a REST API with scoped tokens.
+- **Vorta** (PyQt desktop app, 0.11.6 on 7 Sep). Repository, Sources, Archives and Schedule tabs;
+  extract by a full-path file tree into a chosen folder; mount; prune by hand or after each backup.
+  Its scheduler, WiFi rules and keyring are desktop concerns.
+- **BorgWeb** (Flask, 0.3.0, apparently stagnant). Lists backup logs and starts a backup; no login.
+  X-Backups already covers it.
+
+None of them has X-Backups' size and deduplication history, check freshness read from systemd
+units, Purge Excluded or host timer views. The views to copy, in order, mostly done by task 17:
 
 1. Repository grid: status, last archive age against `max_age`, size, archive count, last check.
 2. Overdue and missed-run flags per repository and per timer.
@@ -174,11 +275,12 @@ and BorgWarehouse add a repository grid with staleness per repository. The views
 | --- | --- | --- |
 | Vorta | https://github.com/borgbase/vorta | https://vorta.borgbase.com/ |
 | borgmatic | https://github.com/borgmatic-collective/borgmatic | https://torsion.org/borgmatic/ |
-| Borgitory | https://github.com/mlapaglia/Borgitory | https://www.reddit.com/r/BorgBackup/comments/1nedz9v/borgitory_a_web_ui_for_managing_borg_repositories/ |
+| Borgitory | https://github.com/mlapaglia/Borgitory | https://borgitory.com/en/latest/ |
 | Borg UI | https://github.com/karanhudia/borg-ui | https://docs.borgui.com/ |
 | BorgWeb | https://github.com/borgbackup/borgweb | https://borgweb.readthedocs.io/en/stable/ |
 | BorgWarehouse | https://github.com/Ravinou/borgwarehouse | https://borgwarehouse.com/ |
 | Borg Backup Server | https://github.com/marcpope/borgbackupserver | https://www.borgbackupserver.com/ |
 
 The BorgBase docs, community-scripts and alexjenkins.tech links were all third-party pages about Borg UI, so they were dropped.
-https://borgui.com/ is probably Borg UI's site too, but the page names no repo, so that is unconfirmed.
+https://borgui.com/ shows only the title "Borg UI"; its docs use license.borgui.com, so it is very likely the same project.
+Borgitory's Reddit announcement (https://www.reddit.com/r/BorgBackup/comments/1nedz9v/) could not be fetched.
