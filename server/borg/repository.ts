@@ -16,7 +16,7 @@ import { launch_command, parse_launch, parse_poll, poll_command, split_job_outpu
 import { KILL_GRACE_SECONDS, format_age, format_duration, parse_duration } from "./durations.ts";
 import {
   LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, format_size, is_object, parse_listing,
-  type ArchiveEntry, type ListingEntry, type RepositoryInfo,
+  type ArchiveEntry, type ListingEntry,
 } from "./parsing.ts";
 import {
   CUT_SHORT, POLL_BASE_DIR_VAR, POLL_DEADLINE_VAR, POLL_LEFT_FN, POLL_RC_VAR, STEP_MARK, archive_member, as_list,
@@ -24,8 +24,8 @@ import {
   ssh_endpoint, then_steps, with_preflight, wrap_job,
 } from "./shell.ts";
 import {
-  ActionPlan, CollectResult, cmd_result, type CmdResult, type Command, type JobRecord, type JobStore, type LogEntry,
-  type MetricReader, type MonitorStatus,
+  ActionPlan, CollectResult, cmd_result, empty_state, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
+  type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
 } from "./types.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ export class BorgRepository {
   readonly name: string;
   readonly id: string;
   timeout: number;
-  data: MetricReader | null = null;
+  state: RepositoryState = empty_state();
   jobs: JobStore | null = null;
 
   repo: string | null;
@@ -475,13 +475,14 @@ export class BorgRepository {
     const list_result = by_name.get("list")!;
     const { stdout, stderr, exit_code } = list_result;
     const logs: LogEntry[] = [[`Running: ${redact(this.list_command())}`, "INFO"]];
+    const state: RepositoryState = { ...this.state, last_poll_epoch: now_seconds() };
 
     if (exit_code !== 0) {
       const detail = (stderr || stdout).trim();
       logs.push([`borg list failed (exit ${exit_code}): ${detail}`, "ERROR"]);
       const hint = failure_hint(detail);
       if (hint) logs.push([hint, "ERROR"]);
-      return new CollectResult({ logs, status: list_unavailable(exit_code, detail) ? "unavailable" : "failed" });
+      return new CollectResult({ state, logs, status: list_unavailable(exit_code, detail) ? "unavailable" : "failed" });
     }
 
     const view = RepoView.from_stdout(stdout);
@@ -489,20 +490,17 @@ export class BorgRepository {
       logs.push(["Could not parse borg output — no archive timestamps found", "ERROR"]);
       const snippet = (stdout || stderr || "").trim().slice(0, 500);
       if (snippet) logs.push([`Raw output was: ${snippet}`, "ERROR"]);
-      return new CollectResult({ logs, status: "unavailable" });
+      return new CollectResult({ state, logs, status: "unavailable" });
     }
 
     logs.push(...this.repo_detail_logs(view));
-    const metrics: Record<string, number> = { archive_count: view.raw_count, last_backup_epoch: view.newest_epoch };
-    const metadata: Record<string, string> = {};
-    if (view.archives.length > 0) {
-      metrics.archive_list = view.archives.length;
-      metadata.archive_list = JSON.stringify({ archives: view.archives, repository: view.info });
-    }
+    Object.assign(state, {
+      archives: view.archives, repository: view.info, archive_count: view.raw_count, last_backup_epoch: view.newest_epoch,
+    });
 
     if (view.raw_count === 0 || view.newest_epoch === 0) {
       logs.push(["No archives in repository", "WARNING"]);
-      return new CollectResult({ metrics, metadata, logs, status: "failed" });
+      return new CollectResult({ state, logs, status: "failed" });
     }
 
     let status: MonitorStatus;
@@ -517,17 +515,14 @@ export class BorgRepository {
 
     if (this.collect_stats && by_name.has("info")) {
       const stats = this.parse_repo_stats(by_name.get("info")!, view.archives);
-      Object.assign(metrics, stats.metrics);
+      if (stats.stats !== null) state.stats = stats.stats;
       logs.push(...stats.logs);
-      if (stats.merged_archives !== null) {
-        metrics.archive_list = stats.merged_archives.length;
-        metadata.archive_list = JSON.stringify({ archives: stats.merged_archives, repository: view.info });
-      }
+      if (stats.merged_archives !== null) state.archives = stats.merged_archives;
     }
 
-    const extras = [this.fold_canary(by_name, metrics, metadata, logs), this.fold_checks(by_name, metrics, metadata, logs)];
+    const extras = [this.fold_canary(by_name, state, logs), this.fold_checks(by_name, state, logs)];
     if (extras.includes("failed")) status = "failed";
-    return new CollectResult({ metrics, metadata, logs, status });
+    return new CollectResult({ state, logs, status });
   }
 
   private repo_detail_logs(view: RepoView): LogEntry[] {
@@ -547,11 +542,11 @@ export class BorgRepository {
     return logs;
   }
 
-  // Reads `borg info` output into stats metrics and per-archive sizes merged onto the listed archives.
-  private parse_repo_stats(info_result: CmdResult, archives: ArchiveEntry[]): { metrics: Record<string, number>; logs: LogEntry[]; merged_archives: ArchiveEntry[] | null } {
+  // Reads `borg info` output into repository stats and per-archive sizes merged onto the listed archives.
+  private parse_repo_stats(info_result: CmdResult, archives: ArchiveEntry[]): { stats: RepositoryStats | null; logs: LogEntry[]; merged_archives: ArchiveEntry[] | null } {
     const { exit_code, stdout, stderr } = info_result;
     if (exit_code !== 0) {
-      return { metrics: {}, logs: [[`borg info failed (exit ${exit_code}): ${(stderr || stdout).trim().slice(0, 200)}`, "WARNING"]], merged_archives: null };
+      return { stats: null, logs: [[`borg info failed (exit ${exit_code}): ${(stderr || stdout).trim().slice(0, 200)}`, "WARNING"]], merged_archives: null };
     }
 
     const data = decode_json(stdout);
@@ -563,40 +558,31 @@ export class BorgRepository {
 
     const stats = parse_stats(data);
     if (Object.keys(stats).length === 0) {
-      return { metrics: {}, logs: [["Could not parse borg info output", "WARNING"]], merged_archives };
+      return { stats: null, logs: [["Could not parse borg info output", "WARNING"]], merged_archives };
     }
 
-    const metrics = { ...stats };
     const logs: LogEntry[] = [];
     const original = stats.original_size ?? 0;
     const deduplicated = stats.deduplicated_size ?? 0;
     if (original && deduplicated) {
       const ratio = original / deduplicated;
-      metrics.dedup_ratio = ratio;
+      stats.dedup_ratio = ratio;
       logs.push([`Repo size: ${format_size(deduplicated)} on disk for ${format_size(original)} of data (${ratio.toFixed(1)}x reduction)`, "INFO"]);
     }
-    return { metrics, logs, merged_archives };
-  }
-
-  cached_archives(): [archives: ArchiveEntry[], repository: RepositoryInfo] {
-    const metric = this.data?.latest_metric("archive_list") ?? null;
-    if (metric === null || !metric.metadata) return [[], {}];
-    const data = decode_json(metric.metadata);
-    return [(data.archives as ArchiveEntry[]) || [], (data.repository as RepositoryInfo) || {}];
+    return { stats, logs, merged_archives };
   }
 
   // ── Restore canary ─────────────────────────────────────────────────────────
 
   // The newest archive the last poll saw, which the canary is restored from.
   private canary_archive(): string | null {
-    if (!this.canary_path || this.data === null) return null;
-    const [archives] = this.cached_archives();
-    return archives.length > 0 ? archives[0].name ?? null : null;
+    if (!this.canary_path) return null;
+    return this.state.archives[0]?.name ?? null;
   }
 
   private canary_due(): boolean {
-    const checked = this.data?.latest_metric("canary_checked_epoch") ?? null;
-    return checked === null || Date.now() / 1000 - checked.value >= this.canary_interval;
+    const canary = this.state.canary;
+    return canary === null || Date.now() / 1000 - canary.checked_epoch >= this.canary_interval;
   }
 
   // Extracts the canary from the archive to stdout, then reads the live file it should match.
@@ -611,35 +597,34 @@ export class BorgRepository {
     return [["canary", extract], ["canary_live", live]];
   }
 
-  // Records this poll's restore check if one ran, and answers failed while the last verdict stands failed.
-  private fold_canary(by_name: Map<string, CmdResult>, metrics: Record<string, number>, metadata: Record<string, string>, logs: LogEntry[]): MonitorStatus | null {
-    if (by_name.has("canary")) {
-      const [verdict, detail] = canary_verdict(by_name.get("canary")!, by_name.get("canary_live") ?? cmd_result(1, "", CUT_SHORT));
-      if (verdict === null) {
-        logs.push([`Restore check skipped: ${detail}`, "WARNING"]);
-      } else {
-        metrics.canary_ok = verdict ? 1 : 0;
-        metrics.canary_checked_epoch = now_seconds();
-        metadata.canary_ok = detail;
-        logs.push([`Restore check ${verdict ? "passed" : "failed"}: ${detail}`, verdict ? "INFO" : "ERROR"]);
-        return verdict ? null : "failed";
-      }
+  // The verdict of a restore check that ran, or null when none ran or it reached no verdict.
+  private read_canary(by_name: Map<string, CmdResult>, logs: LogEntry[]): CanaryRecord | null {
+    if (!by_name.has("canary")) return null;
+    const [verdict, detail] = canary_verdict(by_name.get("canary")!, by_name.get("canary_live") ?? cmd_result(1, "", CUT_SHORT));
+    if (verdict === null) {
+      logs.push([`Restore check skipped: ${detail}`, "WARNING"]);
+      return null;
     }
-    if (!this.canary_path || this.data === null) return null;
-    const last = this.data.latest_metric("canary_ok");
-    return last !== null && last.value < 0.5 ? "failed" : null;
+    logs.push([`Restore check ${verdict ? "passed" : "failed"}: ${detail}`, verdict ? "INFO" : "ERROR"]);
+    return { ok: verdict, checked_epoch: now_seconds(), detail };
+  }
+
+  // Records this poll's restore check if one ran, and answers failed while the last verdict stands failed.
+  private fold_canary(by_name: Map<string, CmdResult>, state: RepositoryState, logs: LogEntry[]): MonitorStatus | null {
+    const canary = this.read_canary(by_name, logs);
+    if (canary !== null) state.canary = canary;
+    if (!this.canary_path) return null;
+    return state.canary !== null && !state.canary.ok ? "failed" : null;
   }
 
   // ── Check freshness ────────────────────────────────────────────────────────
 
   private stored_checks(): Record<string, CheckState> {
-    const metric = this.data?.latest_metric("check_ok_epoch") ?? null;
-    if (metric === null || !metric.metadata) return {};
-    return decode_json(metric.metadata) as Record<string, CheckState>;
+    return { ...this.state.checks?.checks };
   }
 
   // Folds the check units' journal into the stored record and answers failed when any check is failed or stale.
-  private fold_checks(by_name: Map<string, CmdResult>, metrics: Record<string, number>, metadata: Record<string, string>, logs: LogEntry[]): MonitorStatus | null {
+  private fold_checks(by_name: Map<string, CmdResult>, state: RepositoryState, logs: LogEntry[]): MonitorStatus | null {
     if (this.check_units.length === 0 && Object.keys(this.check_kinds).length === 0) return null;
     const states = this.stored_checks();
     const result = by_name.get("checks");
@@ -654,9 +639,8 @@ export class BorgRepository {
         }
       }
     }
-    const judged = this.judge_checks(states, metadata, logs);
-    Object.assign(metrics, judged.metrics);
-    return judged.problems.length > 0 ? "failed" : null;
+    state.checks = this.judge_checks(states, logs);
+    return state.checks.passed ? null : "failed";
   }
 
   // Every check held to an age, by its stored name, with its label, max age and the setting that sets it.
@@ -667,8 +651,8 @@ export class BorgRepository {
     return expected;
   }
 
-  // Judges every expected check against its maximum age, storing all the records and logging each problem.
-  private judge_checks(states: Record<string, CheckState>, metadata: Record<string, string>, logs: LogEntry[]): { metrics: Record<string, number>; problems: string[] } {
+  // Judges every expected check against its maximum age, keeping all the records and logging each problem.
+  private judge_checks(states: Record<string, CheckState>, logs: LogEntry[]): ChecksRecord {
     const now = now_seconds();
     const problems: string[] = [];
     const oks: number[] = [];
@@ -694,13 +678,11 @@ export class BorgRepository {
         problems.push(`${label} last succeeded ${format_age(now - state.ok)}, exceeds ${setting} of ${format_duration(max_age)}`);
       }
     }
-    metadata.check_ok_epoch = JSON.stringify(states);
     for (const problem of problems) logs.push([`Repository check: ${problem}`, "ERROR"]);
     if (oks.length > 0 && problems.length === 0) {
       logs.push([`Repository checks passed, oldest ${format_age(now - Math.min(...oks))}`, "INFO"]);
     }
-    const metrics = { check_ok_epoch: oks.length > 0 ? Math.min(...oks) : 0, checks_ok: problems.length > 0 ? 0 : 1 };
-    return { metrics, problems };
+    return { checks: states, passed: problems.length === 0, oldest_ok_epoch: oks.length > 0 ? Math.min(...oks) : 0 };
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────
@@ -819,7 +801,7 @@ export class BorgRepository {
     const skipped = result.exit_code === 0 ? skip_reason(result.stdout) : null;
     if (skipped !== null) {
       const message = `${capitalize(kind)} skipped: ${skipped}`;
-      return new CollectResult({ logs: [[message, "WARNING"]], metadata: { content: message }, success: true });
+      return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
     }
 
     const pid = result.exit_code === 0 ? parse_launch(result.stdout) : null;
@@ -830,12 +812,12 @@ export class BorgRepository {
     const job_id = this.jobs!.create(kind, redacted, workdir);
     this.jobs!.set_pid(job_id, pid);
     const message = `${capitalize(kind)} started (pid ${pid})${started}`;
-    return new CollectResult({ logs: [[message, "INFO"]], metadata: { content: message }, success: true });
+    return new CollectResult({ logs: [[message, "INFO"]], content: message, success: true });
   }
 
   // An action outcome that reports a problem without touching the monitor's status.
   private static refused(message: string): CollectResult {
-    return new CollectResult({ logs: [[message, "WARNING"]], metadata: { content: message }, success: false });
+    return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: false });
   }
 
   // A single framed borg call as an action, bounded like a poll.
@@ -942,7 +924,7 @@ export class BorgRepository {
     lines.push("", `Keeping ${keep.length}:`, ...(keep.length > 0 ? keep : ["  (none)"]));
     return new CollectResult({
       logs: [[`Prune preview: would prune ${prune.length}, keep ${keep.length}`, "INFO"]],
-      metadata: { content: lines.join("\n") },
+      content: lines.join("\n"),
       success: true,
     });
   }
@@ -959,12 +941,11 @@ export class BorgRepository {
   private interpret_verify_restore(result: CmdResult): CollectResult {
     const [canary, canary_live] = split_poll(result, 2);
     const by_name = new Map([["canary", canary], ["canary_live", canary_live]]);
-    const metrics: Record<string, number> = {};
-    const metadata: Record<string, string> = {};
     const logs: LogEntry[] = [];
-    this.fold_canary(by_name, metrics, metadata, logs);
+    const record = this.read_canary(by_name, logs);
     const message = logs.length > 0 ? logs[logs.length - 1][0] : "Restore check reached no verdict";
-    return new CollectResult({ metrics, metadata: { ...metadata, content: message }, logs, success: metrics.canary_ok === 1 });
+    const state = record === null ? null : { ...this.state, canary: record };
+    return new CollectResult({ state, content: message, logs, success: record?.ok === true });
   }
 
   // ── Browse ─────────────────────────────────────────────────────────────────
@@ -986,7 +967,7 @@ export class BorgRepository {
     if (member === null) return BorgRepository.refused("A path may not contain '.' or '..' components");
     const cached = this.listing(archive, member);
     if (cached !== null) {
-      return new CollectResult({ metadata: { content: this.listing_text(archive, member, cached) }, success: true });
+      return new CollectResult({ content: this.listing_text(archive, member, cached), success: true });
     }
     const args = [this.borg_bin, "list", "--format", LIST_FORMAT, "--lock-wait", String(this.lock_wait), `${this.repo}::${archive}`];
     if (member) args.push(member);
@@ -1006,7 +987,7 @@ export class BorgRepository {
     // A listing longer than browse_limit is kept one entry over it, which is how the browser knows it was cut short.
     this.listings.set(listing_key(archive, member), { archive, member, entries });
     while (this.listings.size > LISTING_CACHE) this.listings.delete(this.listings.keys().next().value!);
-    return new CollectResult({ metadata: { content: this.listing_text(archive, member, entries) }, success: true });
+    return new CollectResult({ content: this.listing_text(archive, member, entries), success: true });
   }
 
   private listing_text(archive: string, member: string, entries: ListingEntry[]): string {
@@ -1061,8 +1042,7 @@ export class BorgRepository {
     const refusal = this.job_refusal("check the repository");
     if (refusal) return refusal;
     if (kind === "extract") {
-      const [archives] = this.cached_archives();
-      const newest = archives.length > 0 ? archives[0].name : null;
+      const newest = this.state.archives[0]?.name ?? null;
       if (!newest) return BorgRepository.refused("Cannot run an extract check: no archive listed yet");
       const command = this.maintenance_command(["extract", "--dry-run", "--progress", `${this.repo}::${newest}`]);
       return this.launch(check_job_kind(kind), command, ` on ${newest}`);
@@ -1093,9 +1073,8 @@ export class BorgRepository {
   private plan_delete(params: ActionParams): ActionPlanResult {
     const archive = params.archive;
     if (!this.allow_delete) return BorgRepository.refused("Deleting archives is off for this monitor — set allow_delete: true to enable it");
-    const [archives] = this.cached_archives();
     // Only a listed archive may be deleted, so a stale or hand-typed name cannot reach borg.
-    if (!archive || !archives.some((listed) => listed.name === archive)) {
+    if (!archive || !this.state.archives.some((listed) => listed.name === archive)) {
       return BorgRepository.refused(`Cannot delete ${archive || "an unnamed archive"}: it is not in the archive list`);
     }
     const refusal = this.job_refusal("delete an archive");
@@ -1150,14 +1129,14 @@ export class BorgRepository {
       return BorgRepository.refused(`borg break-lock failed (exit ${call.exit_code}): ${(call.stderr || call.stdout).trim().slice(0, 300)}`);
     }
     const message = "Broke the repository and cache locks";
-    return new CollectResult({ logs: [[message, "WARNING"]], metadata: { content: message }, success: true });
+    return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
   }
 
   // ── Diff ───────────────────────────────────────────────────────────────────
 
   // The listed archive just older than this one, which a diff compares it against.
   private previous_archive(archive: string): string | null {
-    const names = this.cached_archives()[0].map((listed) => listed.name);
+    const names = this.state.archives.map((listed) => listed.name);
     const index = names.indexOf(archive);
     if (index === -1) return null;
     return index + 1 < names.length ? names[index + 1] : null;
@@ -1190,7 +1169,7 @@ export class BorgRepository {
     }
     return new CollectResult({
       logs: [[header, "INFO"]],
-      metadata: { content: [header, "", ...(lines.length > 0 ? lines : ["(no changes)"])].join("\n") },
+      content: [header, "", ...(lines.length > 0 ? lines : ["(no changes)"])].join("\n"),
       success: true,
     });
   }
@@ -1251,42 +1230,34 @@ export class BorgRepository {
       if (succeeded) state.ok = now;
       states[name] = state;
     }
-    Object.assign(outcome.metrics, this.judge_checks(states, outcome.metadata, outcome.logs).metrics);
+    outcome.state = { ...this.state, checks: this.judge_checks(states, outcome.logs) };
   }
 
   // ── Page values ────────────────────────────────────────────────────────────
 
-  private newest_epoch(): number | null {
-    return this.data?.latest_metric("last_backup_epoch")?.value ?? null;
-  }
-
   // This repository's backup health in one flat record, for a roll-up across repositories.
   backup_summary(): BackupSummary {
     const now = now_seconds();
-    const epoch = this.newest_epoch();
+    const epoch = this.state.last_backup_epoch;
     const newest = epoch ? Math.trunc(epoch) : null;
-    const canary_ok = this.canary_path ? this.data?.latest_metric("canary_ok") ?? null : null;
-    const canary_at = this.canary_path ? this.data?.latest_metric("canary_checked_epoch") ?? null : null;
-    const tracked = this.expected_checks().size > 0;
-    const checks_ok = tracked ? this.data?.latest_metric("checks_ok") ?? null : null;
-    const check_at = tracked ? this.data?.latest_metric("check_ok_epoch") ?? null : null;
+    const canary = this.canary_path ? this.state.canary : null;
+    const checks = this.expected_checks().size > 0 ? this.state.checks : null;
     return {
       repo: this.repo,
       newest_archive_epoch: newest,
       newest_archive_age: newest ? now - newest : null,
       max_age: this.max_age,
       fresh: Boolean(newest) && now - newest! <= this.max_age,
-      restore_check: canary_ok === null ? null : canary_ok.value >= 0.5,
-      restore_checked_epoch: canary_at ? Math.trunc(canary_at.value) : null,
-      repo_checks: checks_ok === null ? null : checks_ok.value >= 0.5,
-      repo_checked_epoch: check_at && check_at.value ? Math.trunc(check_at.value) : null,
+      restore_check: canary === null ? null : canary.ok,
+      restore_checked_epoch: canary === null ? null : Math.trunc(canary.checked_epoch),
+      repo_checks: checks === null ? null : checks.passed,
+      repo_checked_epoch: checks && checks.oldest_ok_epoch ? Math.trunc(checks.oldest_ok_epoch) : null,
     };
   }
 
   archive_rows(): Record<string, string>[] {
-    const [archives] = this.cached_archives();
     const now = now_seconds();
-    return archives.map((archive) => ({
+    return this.state.archives.map((archive) => ({
       name: archive.name ?? "?",
       created: archive.epoch ? local_minute(new Date(archive.epoch * 1000)) : "unknown",
       age: archive.epoch ? format_age(now - archive.epoch) : "unknown",
@@ -1337,18 +1308,18 @@ export function progress_from_lines(lines: string[]): string | null {
 
 // ── Stats readers ────────────────────────────────────────────────────────────
 
-function parse_stats(data: Record<string, unknown>): Record<string, number> {
+function parse_stats(data: Record<string, unknown>): RepositoryStats {
   const cache = data.cache;
   const stats = is_object(cache) ? cache.stats : null;
   if (!is_object(stats)) return {};
-  const fields: [source: string, target: string][] = [
+  const fields: [source: string, target: keyof RepositoryStats][] = [
     ["total_size", "original_size"],
     ["total_csize", "compressed_size"],
     ["unique_csize", "deduplicated_size"],
     ["total_chunks", "total_chunks"],
     ["total_unique_chunks", "unique_chunks"],
   ];
-  const out: Record<string, number> = {};
+  const out: RepositoryStats = {};
   for (const [source, target] of fields) {
     const value = stats[source];
     if (typeof value === "number") out[target] = value;

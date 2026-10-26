@@ -233,19 +233,19 @@ describe("freshness", () => {
   it("calls a recent archive online", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 3600), ""));
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("calls a stale archive failed", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 3 * 24 * 3600), ""));
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("calls an empty repo failed", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(null), ""));
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 });
 
@@ -313,7 +313,7 @@ describe("failures", () => {
   ])("calls %s %s", (_label, result, status) => {
     const harness = make();
     collect(harness, result);
-    expect(harness.metrics.latest_status()).toBe(status);
+    expect(harness.outcomes.latest_status()).toBe(status);
   });
 
   it("fails without a repo", () => {
@@ -321,24 +321,24 @@ describe("failures", () => {
     const harness = make(config);
     expect(harness.repository.commands()).toEqual([]);
     harness.run_cycle();
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 });
 
-// ── Metrics ──────────────────────────────────────────────────────────────────
+// ── State ────────────────────────────────────────────────────────────────────
 
-describe("metrics", () => {
+describe("state", () => {
   it("records the newest archive's time", () => {
     const harness = make();
     const epoch = now() - 500;
     collect(harness, cmd_result(0, list_json(epoch), ""));
-    expect(Math.abs(harness.metrics.latest_metric("last_backup_epoch")!.value - epoch)).toBeLessThanOrEqual(1);
+    expect(Math.abs(harness.repository.state.last_backup_epoch! - epoch)).toBeLessThanOrEqual(1);
   });
 
   it("records the archive count", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now()), ""));
-    expect(harness.metrics.latest_metric("archive_count")!.value).toBe(1);
+    expect(harness.repository.state.archive_count).toBe(1);
   });
 });
 
@@ -883,17 +883,17 @@ describe("repository stats", () => {
     expect(command).toContain("--json");
   });
 
-  it("records the stats as metrics", () => {
+  it("records the stats", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 60), ""), cmd_result(0, info_json(), ""));
-    expect(harness.metrics.latest_metric("original_size")!.value).toBe(1000);
-    expect(harness.metrics.latest_metric("deduplicated_size")!.value).toBe(250);
+    expect(harness.repository.state.stats!.original_size).toBe(1000);
+    expect(harness.repository.state.stats!.deduplicated_size).toBe(250);
   });
 
   it("derives the dedup ratio", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 60), ""), cmd_result(0, info_json(1000, 500, 250), ""));
-    expect(harness.metrics.latest_metric("dedup_ratio")!.value).toBeCloseTo(4);
+    expect(harness.repository.state.stats!.dedup_ratio).toBeCloseTo(4);
   });
 
   it("skips the info call with stats off", () => {
@@ -906,25 +906,25 @@ describe("repository stats", () => {
   ])("tolerates %s", (_label, info) => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 60), ""), info);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("still fails an empty repo", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(null), ""));
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("records no stats when the cache stats are missing", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 60), ""), cmd_result(0, JSON.stringify({ repository: {} }), ""));
-    expect(harness.metrics.latest_metric("original_size")).toBeNull();
+    expect(harness.repository.state.stats).toBeNull();
   });
 
   it("logs to the events the page reads", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 60), ""));
-    expect(harness.metrics.events.length).toBeGreaterThan(0);
+    expect(harness.outcomes.events.length).toBeGreaterThan(0);
   });
 });
 
@@ -934,13 +934,14 @@ describe("archive cache", () => {
   it("caches the archives for the page", () => {
     const harness = make({ ...BASE_CFG, collect_stats: false });
     harness.run_cycle(() => cmd_result(0, multi_json(now() - 3600, now() - 7200), ""));
-    const [archives, info] = harness.repository.cached_archives();
+    const { archives, repository } = harness.repository.state;
     expect(archives.map((archive) => archive.name)).toEqual(["archive-0", "archive-1"]);
-    expect(info.location).toBe("/srv/repo");
+    expect(repository.location).toBe("/srv/repo");
   });
 
   it("is empty before the first poll", () => {
-    expect(make().repository.cached_archives()).toEqual([[], {}]);
+    const { archives, repository } = make().repository.state;
+    expect([archives, repository]).toEqual([[], {}]);
   });
 
   it("merges each archive's sizes from info", () => {
@@ -950,7 +951,7 @@ describe("archive cache", () => {
       archives: [{ name: "archive-0", stats: { original_size: 400000, compressed_size: 300000, deduplicated_size: 1024, nfiles: 42 } }],
     });
     collect(harness, cmd_result(0, multi_json(now() - 3600), ""), cmd_result(0, info, ""));
-    const first = harness.repository.cached_archives()[0].find((archive) => archive.name === "archive-0")!;
+    const first = harness.repository.state.archives.find((archive) => archive.name === "archive-0")!;
     expect(first.original).toBe(400000);
     expect(first.deduplicated).toBe(1024);
     expect(first.nfiles).toBe(42);
@@ -963,7 +964,7 @@ describe("archive cache", () => {
   it("keeps archive names when info has no per-archive stats", () => {
     const harness = make();
     collect(harness, cmd_result(0, multi_json(now() - 3600), ""), cmd_result(0, JSON.stringify({ cache: { stats: { total_size: 10, unique_csize: 5 } } }), ""));
-    const [archives] = harness.repository.cached_archives();
+    const { archives } = harness.repository.state;
     expect(archives.map((archive) => archive.name)).toEqual(["archive-0"]);
     expect(archives[0]).not.toHaveProperty("original");
   });
@@ -1006,8 +1007,8 @@ describe("restore canary", () => {
     cycle_with(harness);
     harness.repository.commands();
     cycle_with(harness, { canary: cmd_result(0, "token", ""), canary_live: cmd_result(0, "token\n", "") });
-    expect(harness.metrics.latest_metric("canary_ok")!.value).toBe(1);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.repository.state.canary!.ok).toBe(true);
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("fails on a differing canary", () => {
@@ -1015,8 +1016,8 @@ describe("restore canary", () => {
     cycle_with(harness);
     harness.repository.commands();
     cycle_with(harness, { canary: cmd_result(0, "old", ""), canary_live: cmd_result(0, "new", "") });
-    expect(harness.metrics.latest_metric("canary_ok")!.value).toBe(0);
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.repository.state.canary!.ok).toBe(false);
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("stays failed after a failed canary until one passes", () => {
@@ -1027,7 +1028,7 @@ describe("restore canary", () => {
     harness.repository.commands();
     expect(harness.repository.poll_calls).not.toContain("canary");
     cycle_with(harness);
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("reaches no verdict on a locked repo", () => {
@@ -1035,8 +1036,8 @@ describe("restore canary", () => {
     cycle_with(harness);
     harness.repository.commands();
     cycle_with(harness, { canary: cmd_result(2, "", "Failed to create/acquire the lock /r/lock (timeout)."), canary_live: cmd_result(0, "t", "") });
-    expect(harness.metrics.latest_metric("canary_ok")).toBeNull();
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.repository.state.canary).toBeNull();
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("records the verdict of the Verify Restore action", () => {
@@ -1050,7 +1051,7 @@ describe("restore canary", () => {
     harness.apply(outcome);
     expect(outcome.success).toBe(true);
     expect(outcome.status).toBeNull();
-    expect(harness.metrics.latest_metric("canary_ok")!.value).toBe(1);
+    expect(harness.repository.state.canary!.ok).toBe(true);
   });
 });
 
@@ -1061,37 +1062,37 @@ describe("check freshness", () => {
     const harness = make(CHECK_CFG);
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ ok: now() - 3600 }) });
-    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(1);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.repository.state.checks!.passed).toBe(true);
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("fails a stale success", () => {
     const harness = make(CHECK_CFG);
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ ok: now() - 10 * 86400 }) });
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("fails with no record", () => {
     const harness = make(CHECK_CFG);
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out() });
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("fails on a failure naming this repo", () => {
     const harness = make(CHECK_CFG);
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ ok: now() - 86400, end: now() - 60, start: now() - 600, errs: [[now() - 70, "/srv/local"]] }) });
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("passes a failure naming only another repo", () => {
     const harness = make(CHECK_CFG);
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ end: now() - 60, start: now() - 600, errs: [[now() - 70, "ssh://borg@far/srv/local"]] }) });
-    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(1);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.repository.state.checks!.passed).toBe(true);
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("keeps the last success after the journal rotates", () => {
@@ -1100,7 +1101,7 @@ describe("check freshness", () => {
     cycle_with(harness, { checks: checks_out({ ok: now() - 3600 }) });
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out() });
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("reads only systemd's own lines", () => {
@@ -1129,7 +1130,7 @@ describe("prune preview", () => {
 
   it("lists what would go", () => {
     const harness = make({ ...BASE_CFG, keep_daily: 1 });
-    const content = outcome_of(harness, "prune_preview", framed(cmd_result(0, "", PRUNE_OUTPUT))).metadata.content;
+    const content = outcome_of(harness, "prune_preview", framed(cmd_result(0, "", PRUNE_OUTPUT))).content!;
     expect(content).toContain("Would prune 1 of 3");
     expect(content.split("Keeping")[0]).toContain("backup-2026-09-22T00:00:00");
   });
@@ -1139,7 +1140,7 @@ describe("prune preview", () => {
     const outcome = outcome_of(harness, "prune_preview", framed(cmd_result(2, "", "Failed to create/acquire the lock")));
     expect(outcome.success).toBe(false);
     expect(outcome.status).toBeNull();
-    expect(outcome.metadata.content).toContain("locked");
+    expect(outcome.content).toContain("locked");
   });
 });
 
@@ -1204,7 +1205,7 @@ describe("browse", () => {
     const outcome = harness.repository.plan_action("browse_archive", { archive: "a1", path: "Storage/System" }) as CollectResult;
     expect(outcome).toBeInstanceOf(CollectResult);
     expect(outcome.success).toBe(true);
-    expect(outcome.metadata.content).toContain("3 entries");
+    expect(outcome.content).toContain("3 entries");
   });
 
   it("lets a real item beat a made-up folder", () => {
@@ -1217,7 +1218,7 @@ describe("browse", () => {
     const harness = make({ ...BASE_CFG, browse_limit: 2 });
     expect(plan_of(harness, "browse_archive", { archive: "a1", path: "" }).command).toContain("head -n 3");
     const lines = ["a", "b", "c"].map((name) => `-\t1\t\t${name}`).join("\n");
-    const content = outcome_of(harness, "browse_archive", framed(cmd_result(0, lines, "")), { archive: "a1", path: "" }).metadata.content;
+    const content = outcome_of(harness, "browse_archive", framed(cmd_result(0, lines, "")), { archive: "a1", path: "" }).content;
     expect(content).toContain("first 2 entries");
     expect(content).not.toContain("\nc ");
   });
@@ -1249,7 +1250,7 @@ describe("restore", () => {
     const outcome = outcome_of(harness, "restore_archive", cmd_result(0, "77\n", ""));
     harness.apply(outcome);
     expect(harness.jobs.running()!.kind).toBe("restore");
-    expect(outcome.metadata.content).toContain("/var/tmp/r/a1-");
+    expect(outcome.content).toContain("/var/tmp/r/a1-");
   });
 
   it("refuses a whole-archive restore", () => {
@@ -1321,7 +1322,7 @@ describe("maintenance", () => {
   it.each(["prune_repo", "delete_archive", "break_lock"])("keeps %s off by default", (action_id) => {
     const outcome = refusal_of(make({ ...BASE_CFG, keep_daily: 7 }), action_id, { archive: "a1" });
     expect(outcome.success).toBe(false);
-    expect(outcome.metadata.content).toContain("allow_delete");
+    expect(outcome.content).toContain("allow_delete");
   });
 
   it("runs one job at a time", () => {
@@ -1381,7 +1382,7 @@ describe("purge", () => {
   it.each(["purge_preview", "purge_excluded"])("keeps %s off by default", (action_id) => {
     const outcome = refusal_of(make({ ...PURGE_CFG, allow_purge: false }), action_id);
     expect(outcome.success).toBe(false);
-    expect(outcome.metadata.content).toContain("allow_purge");
+    expect(outcome.content).toContain("allow_purge");
   });
 
   it("needs something to exclude", () => {
@@ -1402,7 +1403,7 @@ describe("delete", () => {
     const plan = plan_of(harness, "delete_archive", { archive: "b1" });
     expect(plan.command).toContain("delete --stats");
     expect(plan.command).toContain("::b1");
-    expect(outcome_of(harness, "delete_archive", cmd_result(0, "5\n", "")).metadata.content).toContain("for b1");
+    expect(outcome_of(harness, "delete_archive", cmd_result(0, "5\n", "")).content).toContain("for b1");
   });
 
   it("refuses an archive it has not listed", () => {
@@ -1486,8 +1487,8 @@ describe("diff", () => {
     listed(harness, "b2", "b1");
     const out = "added       1.20 kB etc/new\nremoved     0 B etc/old";
     const outcome = outcome_of(harness, "diff_archive", framed(cmd_result(0, out, "")), { archive: "b2" });
-    expect(outcome.metadata.content.startsWith("Changes from b1 to b2: 2")).toBe(true);
-    expect(outcome.metadata.content).toContain("etc/new");
+    expect(outcome.content!.startsWith("Changes from b1 to b2: 2")).toBe(true);
+    expect(outcome.content).toContain("etc/new");
     expect(outcome.logs).toEqual([["Changes from b1 to b2: 2", "INFO"]]);
   });
 
@@ -1528,7 +1529,7 @@ describe("job preflight", () => {
     expect(outcome.success).toBe(true);
     expect(outcome.status).toBeNull();
     expect(harness.jobs.running()).toBeNull();
-    expect(outcome.metadata.content).toBe("Backup skipped: host:22 is not answering SSH");
+    expect(outcome.content).toBe("Backup skipped: host:22 is not answering SSH");
   });
 
   it("skips a closed port and never launches", () => {
@@ -1659,10 +1660,10 @@ describe("check kinds", () => {
   it("renews what a finished check covered", () => {
     const harness = make({ ...TRACKED_CFG, check_kinds: { repository: "8d" } });
     finish_job(harness, "check_repo", 0, { kind: "data" });
-    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(1);
+    expect(harness.repository.state.checks!.passed).toBe(true);
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("gives a kind never run one max age", () => {
@@ -1670,8 +1671,8 @@ describe("check kinds", () => {
     finish_job(harness, "check_repo", 0, { kind: "repository" });
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(1);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.repository.state.checks!.passed).toBe(true);
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("fails a kind never run once its max age has passed", () => {
@@ -1684,16 +1685,16 @@ describe("check kinds", () => {
     finish_job(harness, "check_repo", 0, { kind: "repository" });
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(0);
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.repository.state.checks!.passed).toBe(false);
+    expect(harness.outcomes.latest_status()).toBe("failed");
   });
 
   it("reads a kind never run as pending", () => {
     const harness = make({ ...TRACKED_CFG, check_kinds: { extract: "32d" } });
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(1);
-    expect(harness.metrics.latest_metric("check_ok_epoch")!.value).toBe(0);
+    expect(harness.repository.state.checks!.passed).toBe(true);
+    expect(harness.repository.state.checks!.oldest_ok_epoch).toBe(0);
   });
 
   it("fails after a failed check until one succeeds", () => {
@@ -1701,11 +1702,11 @@ describe("check kinds", () => {
     finish_job(harness, "check_repo", 2, { kind: "repository" });
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
     finish_job(harness, "check_repo", 0, { kind: "repository" });
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 
   it("judges units and kinds together", () => {
@@ -1715,10 +1716,10 @@ describe("check kinds", () => {
     finish_job(harness, "check_repo", 2, { kind: "extract" });
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ ok: now() - 3600 }) });
-    expect(harness.metrics.latest_status()).toBe("failed");
+    expect(harness.outcomes.latest_status()).toBe("failed");
     finish_job(harness, "check_repo", 0, { kind: "extract" });
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ ok: now() - 3600 }) });
-    expect(harness.metrics.latest_status()).toBe("online");
+    expect(harness.outcomes.latest_status()).toBe("online");
   });
 });

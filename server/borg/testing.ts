@@ -1,26 +1,18 @@
 // In-memory stores and a cycle driver, so a repository can be exercised without a host or a database.
 
 import { BorgRepository, type ActionOutcome, type BorgConfig } from "./repository.ts";
-import { cmd_result, type CmdResult, type Command, type JobRecord, type JobState, type JobStore, type LogEntry, type MetricReader, type MetricRecord, type MonitorStatus } from "./types.ts";
+import { cmd_result, type CmdResult, type Command, type JobRecord, type JobState, type JobStore, type LogEntry, type MonitorStatus } from "./types.ts";
 import { CollectResult } from "./types.ts";
 
-// ── Metric store ─────────────────────────────────────────────────────────────
+// ── Outcome log ──────────────────────────────────────────────────────────────
 
-export class MemoryMetricStore implements MetricReader {
-  private metrics = new Map<string, MetricRecord>();
+export class MemoryOutcomeLog {
   statuses: MonitorStatus[] = [];
   events: LogEntry[] = [];
 
-  latest_metric(metric_name: string): MetricRecord | null {
-    return this.metrics.get(metric_name) ?? null;
-  }
-
-  // Records what a result reports: each metric with its matching metadata, its status if it has one, and its logs.
+  // Records what a result reports: its status if it has one, and its logs.
   apply(result: ActionOutcome | null): void {
     if (!(result instanceof CollectResult)) return;
-    for (const [name, value] of Object.entries(result.metrics)) {
-      this.metrics.set(name, { value, metadata: result.metadata[name] ?? null });
-    }
     if (result.status !== null) this.statuses.push(result.status);
     this.events.push(...result.logs);
   }
@@ -88,17 +80,18 @@ export class MemoryJobStore implements JobStore {
 
 export class Harness {
   readonly repository: BorgRepository;
-  readonly metrics = new MemoryMetricStore();
+  readonly outcomes = new MemoryOutcomeLog();
   readonly jobs = new MemoryJobStore();
 
   constructor(name: string, config: BorgConfig) {
     this.repository = new BorgRepository(name, config);
-    this.repository.data = this.metrics;
     this.repository.jobs = this.jobs;
   }
 
+  // Keeps the state a result hands back, the way the store does between polls.
   apply(result: ActionOutcome | null): void {
-    this.metrics.apply(result);
+    if (result instanceof CollectResult && result.state !== null) this.repository.state = result.state;
+    this.outcomes.apply(result);
   }
 
   // Runs one cycle, answering each command with the fake runner, and records what it reports.

@@ -44,7 +44,7 @@ adapted where a task changes a contract.
 
 ### Simplify the ported code
 
-1. [ ] **Typed state.** Replace `MetricReader`, `CollectResult`'s metrics and metadata, and the
+1. [x] **Typed state.** Replace `MetricReader`, `CollectResult`'s metrics and metadata, and the
    JSON-in-metadata fields (`archive_list`, `check_ok_epoch`, `canary_ok`) with one
    `RepositoryState` type that `poll` reads and returns. The X-Monitor UI leftovers are already
    removed. Files: `server/borg/types.ts`, `repository.ts`, `testing.ts`.

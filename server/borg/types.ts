@@ -1,5 +1,8 @@
 // The shapes a borg repository speaks in: commands it asks to run, their results, what it reports back, and the stores it reads.
 
+import type { CheckState } from "./checks.ts";
+import type { ArchiveEntry, RepositoryInfo } from "./parsing.ts";
+
 // ── Commands and their results ───────────────────────────────────────────────
 
 export interface Command {
@@ -29,6 +32,50 @@ export class ActionPlan {
   }
 }
 
+// ── Repository state ─────────────────────────────────────────────────────────
+
+export interface RepositoryStats {
+  original_size?: number;
+  compressed_size?: number;
+  deduplicated_size?: number;
+  total_chunks?: number;
+  unique_chunks?: number;
+  dedup_ratio?: number;
+}
+
+export interface CanaryRecord {
+  ok: boolean;
+  checked_epoch: number;
+  detail: string;
+}
+
+export interface ChecksRecord {
+  // Each tracked check by its unit or kind name.
+  checks: Record<string, CheckState>;
+  passed: boolean;
+  // The oldest success among the checks held to an age, or 0 when none has one.
+  oldest_ok_epoch: number;
+}
+
+// Everything a repository remembers between polls, kept by its owner and handed back before the next one.
+export interface RepositoryState {
+  archives: ArchiveEntry[];
+  repository: RepositoryInfo;
+  archive_count: number | null;
+  last_backup_epoch: number | null;
+  stats: RepositoryStats | null;
+  canary: CanaryRecord | null;
+  checks: ChecksRecord | null;
+  last_poll_epoch: number | null;
+}
+
+export function empty_state(): RepositoryState {
+  return {
+    archives: [], repository: {}, archive_count: null, last_backup_epoch: null,
+    stats: null, canary: null, checks: null, last_poll_epoch: null,
+  };
+}
+
 // ── Reported outcomes ────────────────────────────────────────────────────────
 
 export type LogLevel = "INFO" | "WARNING" | "ERROR";
@@ -38,24 +85,26 @@ export type LogEntry = [message: string, level: LogLevel];
 export type MonitorStatus = "online" | "info" | "unavailable" | "warning" | "failed";
 
 export interface CollectFields {
-  metrics: Record<string, number>;
-  metadata: Record<string, string>;
+  state: RepositoryState | null;
+  content: string | null;
   logs: LogEntry[];
   status: MonitorStatus | null;
   success: boolean;
 }
 
 export class CollectResult implements CollectFields {
-  metrics: Record<string, number>;
-  metadata: Record<string, string>;
+  // The repository's whole state after this result, or null when it left the state as it was.
+  state: RepositoryState | null;
+  // The text an action shows its user.
+  content: string | null;
   logs: LogEntry[];
   status: MonitorStatus | null;
   // Only read when the result answers an action rather than a poll.
   success: boolean;
 
   constructor(fields: Partial<CollectFields> = {}) {
-    this.metrics = fields.metrics ?? {};
-    this.metadata = fields.metadata ?? {};
+    this.state = fields.state ?? null;
+    this.content = fields.content ?? null;
     this.logs = fields.logs ?? [];
     this.status = fields.status ?? null;
     this.success = fields.success ?? false;
@@ -71,15 +120,6 @@ export class CollectResult implements CollectFields {
 }
 
 // ── Stores the repository reads ──────────────────────────────────────────────
-
-export interface MetricRecord {
-  value: number;
-  metadata: string | null;
-}
-
-export interface MetricReader {
-  latest_metric(metric_name: string): MetricRecord | null;
-}
 
 export type JobState = "running" | "succeeded" | "failed" | "cancelled";
 
