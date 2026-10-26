@@ -118,7 +118,7 @@ adapted where a task changes a contract.
       file, the passphrase files, and the listen host and port
 
     Commit `flake.lock`. Reference: `../X-Monitor/nix/module.nix`.
-15. [ ] **CI.** `.github/workflows/ci.yml` runs `npm ci`, build, test and lint. Pushing a workflow
+15. [x] **CI.** `.github/workflows/ci.yml` runs `npm ci`, build, test and lint. Pushing a workflow
     file needs a GitHub token with the `workflow` scope.
 16. [ ] **Cutover.**
     - Deploy beside X-Monitor against the same repositories and compare the two for a few days.
