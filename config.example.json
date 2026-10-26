@@ -1,0 +1,21 @@
+{
+  "repositories": [
+    {
+      "name": "fileserver",
+      "host": "fileserver.example.org",
+      "ssh_user": "backup",
+      "interval": "1h",
+      "repo": "ssh://borg@storage.example.org/./fileserver",
+      "passphrase_file": "/run/secrets/borg-fileserver",
+      "max_age": "1d",
+      "require_sudo": true,
+      "check_units": ["borgmatic-check.service"]
+    },
+    {
+      "name": "local",
+      "repo": "/srv/backups/local",
+      "passphrase_file": "/run/secrets/borg-local",
+      "max_age": "2d"
+    }
+  ]
+}

@@ -73,7 +73,7 @@ adapted where a task changes a contract.
 
 ### Run it
 
-7. [ ] **Config loading.** `server/config.ts` reads the JSON file named by `X_BACKUPS_CONFIG`:
+7. [x] **Config loading.** `server/config.ts` reads the JSON file named by `X_BACKUPS_CONFIG`:
    `{ "repositories": [BorgConfig plus host, ssh_user and interval] }`. It validates on load and
    stops with the repository's name on a bad entry. Add an example file with placeholder hosts.
 8. [ ] **Runner.** `server/runner.ts` runs a command on a host with
