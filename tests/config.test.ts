@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
-import { load_config, parse_config } from "./config.ts";
+import { load_config, parse_config } from "../server/config.ts";
 
 const example_file = fileURLToPath(new URL("../config.example.json", import.meta.url));
 

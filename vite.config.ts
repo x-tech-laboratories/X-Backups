@@ -15,8 +15,8 @@ export default defineConfig({
     },
   },
   test: {
-    // Tests live beside the server code, outside the web page's root.
+    // Tests live in tests/, outside the web page's root.
     root: import.meta.dirname,
-    include: ["server/**/*.test.ts"],
+    include: ["tests/**/*.test.ts"],
   },
 });

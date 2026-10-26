@@ -20,5 +20,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["server", "vite.config.ts"]
+  "include": ["server", "tests", "vite.config.ts"]
 }

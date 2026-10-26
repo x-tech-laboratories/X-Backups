@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { run_command, ssh_arguments } from "./runner.ts";
+import { run_command, ssh_arguments } from "../server/runner.ts";
 
 const local = { host: null, ssh_user: null };
 

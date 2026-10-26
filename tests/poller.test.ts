@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ActionPlan, CollectResult, cmd_result, type CmdResult } from "./borg/types.ts";
-import type { Config } from "./config.ts";
-import { Poller, type Run } from "./poller.ts";
-import { Store } from "./store.ts";
+import { ActionPlan, CollectResult, cmd_result, type CmdResult } from "../server/borg/types.ts";
+import type { Config } from "../server/config.ts";
+import { Poller, type Run } from "../server/poller.ts";
+import { Store } from "../server/store.ts";
 
 const LIST = JSON.stringify({ archives: [{ name: "a1", time: "2026-10-01T10:00:00" }], repository: { location: "/srv/repo" } });
 

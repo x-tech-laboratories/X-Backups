@@ -33,8 +33,6 @@ buildNpmPackage {
     runHook preInstall
 
     npm prune --omit=dev --no-save
-    find server -name '*.test.ts' -delete
-    rm server/borg/testing.ts
 
     mkdir -p $out/lib/x-backups
     cp -r package.json server dist node_modules $out/lib/x-backups/

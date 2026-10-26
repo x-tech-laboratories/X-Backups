@@ -39,7 +39,7 @@ graph, groups, triggers, agent, sync or per-plugin UI contract.
 ## Tasks
 
 One agent and one branch per task. Earlier tasks change the contracts later ones build on, so take
-them in order unless a task says otherwise. `server/borg/repository.test.ts` stays green throughout,
+them in order unless a task says otherwise. `tests/borg/repository.test.ts` stays green throughout,
 adapted where a task changes a contract.
 
 ### Simplify the ported code
@@ -101,7 +101,7 @@ adapted where a task changes a contract.
     - `GET /api/events`
     - `/api/health` adds each repository's status, for X-Monitor.
 
-    Test them with `app.inject` as `server/app.test.ts` does.
+    Test them with `app.inject` as `tests/app.test.ts` does.
 12. [x] **Authentication.** Required before going online, since the API can delete, prune, purge
     and break locks. Smallest fit: one password hash from a secret file and a session cookie, with
     X-Monitor's TOTP login as a reference if a second factor is wanted.

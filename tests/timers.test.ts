@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parse_timers } from "./timers.ts";
+import { parse_timers } from "../server/timers.ts";
 
 const LISTED = JSON.stringify([
   { next: 1793179642364737, left: 0, last: 1792574147452262, passed: 0, unit: "borgmatic.timer", activates: "borgmatic.service" },
