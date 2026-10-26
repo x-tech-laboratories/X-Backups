@@ -127,6 +127,21 @@ adapted where a task changes a contract.
       `x_monitor/core/ui/views/fleet.py`.
     - Add an X-Monitor HTTP check on X-Backups' `/api/health`.
 
+### Then
+
+17. [ ] **Dashboard.** Grow the web page (task 13) into a dashboard drawing on the apps under
+    "Apps to review for features". Configuration stays declarative in the Nix module, so the page
+    shows state and runs actions but never edits repositories, sources or schedules. It covers:
+    - destination repositories: size, deduplication and compression over time, archive counts,
+      last check and canary results
+    - backup jobs: history, durations, outcomes and logs
+    - source locations: which paths each repository backs up and how they change between archives
+    - schedules: each host's backup timers, their next and last runs, and missed runs
+
+    Needs the store (task 9) to keep history, not only the latest state, and the poller (task 10)
+    to read each host's timers (`systemctl list-timers` or borgmatic's config). Review the apps
+    first to pick the graphs and views worth copying.
+
 ## Apps to review for features
 
 Not reviewed yet.
