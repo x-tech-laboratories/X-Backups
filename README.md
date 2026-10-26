@@ -40,6 +40,28 @@ State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `st
 
 `/api/health` stays open, so X-Monitor can poll it without logging in.
 
+## NixOS
+
+The flake's `nixosModules.default` runs X-Backups as a service:
+
+```nix
+services.x-backups = {
+  enable = true;
+  passwordHashFile = "/run/secrets/x-backups-password-hash";
+  sshKeyFile = "/run/secrets/x-backups-ssh-key";
+  repositories.fileserver = {
+    host = "fileserver.example.org";
+    ssh_user = "backup";
+    repo = "ssh://borg@storage.example.org/./fileserver";
+    passphraseFile = "/run/secrets/borg-fileserver";
+  };
+};
+```
+
+Each repository takes the fields of a `config.example.json` entry. Host keys come from
+`programs.ssh.knownHosts`. After changing `package-lock.json`, update `npmDepsHash` in
+`nix/package.nix` to the hash `nix build` reports.
+
 ## Licence
 
 GPL-3.0-or-later.

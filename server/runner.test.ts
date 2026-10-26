@@ -23,9 +23,16 @@ describe("runner", () => {
   });
 
   it("builds a multiplexed ssh call", () => {
-    const arguments_list = ssh_arguments({ host: "nas", ssh_user: "backup" }, "borg list", "/run/ssh");
+    const arguments_list = ssh_arguments({ host: "nas", ssh_user: "backup" }, "borg list", "/run/ssh", "");
 
     expect(arguments_list).toContain("ControlPath=/run/ssh/%C");
+    expect(arguments_list).not.toContain("-i");
     expect(arguments_list.slice(-5)).toEqual(["-l", "backup", "--", "nas", "borg list"]);
+  });
+
+  it("offers only the configured key", () => {
+    const arguments_list = ssh_arguments({ host: "nas", ssh_user: null }, "borg list", "/run/ssh", "/run/key");
+
+    expect(arguments_list.slice(-7)).toEqual(["-i", "/run/key", "-o", "IdentitiesOnly=yes", "--", "nas", "borg list"]);
   });
 });

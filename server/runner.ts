@@ -30,14 +30,22 @@ const kill_grace_in_milliseconds = 5000;
 
 // ── Arguments ────────────────────────────────────────────────────────────────
 
-export function ssh_arguments(target: RunTarget & { host: string }, command: string, control_dir: string): string[] {
+// A key file named by X_BACKUPS_SSH_KEY_FILE is the only key offered; otherwise ssh picks its own.
+export function ssh_arguments(
+  target: RunTarget & { host: string },
+  command: string,
+  control_dir: string,
+  key_file: string | undefined = process.env.X_BACKUPS_SSH_KEY_FILE,
+): string[] {
   const user_arguments = target.ssh_user === null ? [] : ["-l", target.ssh_user];
+  const key_arguments = key_file ? ["-i", key_file, "-o", "IdentitiesOnly=yes"] : [];
   return [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
     "-o", "ControlMaster=auto",
     "-o", `ControlPath=${join(control_dir, "%C")}`,
     "-o", "ControlPersist=10m",
+    ...key_arguments,
     ...user_arguments,
     "--", target.host, command,
   ];

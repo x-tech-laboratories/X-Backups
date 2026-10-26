@@ -114,7 +114,7 @@ adapted where a task changes a contract.
 
 ### Ship it
 
-14. [ ] **Nix package and module.** `packages.default` via `buildNpmPackage`, shipping `server/` and
+14. [x] **Nix package and module.** `packages.default` via `buildNpmPackage`, shipping `server/` and
     the built `dist/`. `nixosModules.default` adds:
     - a systemd service with `DynamicUser` and a state directory
     - `openssh` and `borgbackup` on the service's PATH
