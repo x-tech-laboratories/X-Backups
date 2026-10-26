@@ -53,6 +53,13 @@ describe("state and history", () => {
     expect(archives[1].deduplicated_size).toBe(7);
   });
 
+  it("narrows events by level, a page at a time", () => {
+    store.apply("odin", new CollectResult({ logs: [["one", "INFO"], ["two", "ERROR"], ["three", "ERROR"]] }), { poll: false });
+
+    expect(store.events({ level: "ERROR" }).map((event) => event.message)).toEqual(["three", "two"]);
+    expect(store.events({ level: "ERROR", limit: 1, offset: 1 }).map((event) => event.message)).toEqual(["two"]);
+  });
+
   it("logs events newest first, leaving out a poll's routine lines", () => {
     store.apply("odin", CollectResult.failed("first"), { poll: true, epoch: 1 });
     store.apply("thor", CollectResult.failed("second"), { poll: true, epoch: 2 });
@@ -82,6 +89,33 @@ describe("jobs", () => {
     expect(jobs.running()).toBeNull();
     expect(store.job(job_id)).toMatchObject({ state: "succeeded", exit_code: 0, repository_id: "odin" });
     expect(store.job(job_id)!.ended_epoch).not.toBeNull();
+  });
+
+  it("narrows the job list by repository, kind, state and start, a page at a time", () => {
+    const odin = store.jobs_for("odin");
+    const check = odin.create("check-data", "borg check", null);
+    odin.finish(check, "failed", { exit_code: 2 });
+    odin.create("backup", "borg create", null);
+    store.jobs_for("thor").create("check", "borg check", null);
+
+    expect(store.jobs({ kind: "check" }).map((job) => job.kind)).toEqual(["check", "check-data"]);
+    expect(store.jobs({ repository_id: "odin", state: "failed" }).map((job) => job.id)).toEqual([check]);
+    expect(store.jobs({ limit: 1, offset: 1 }).map((job) => job.kind)).toEqual(["backup"]);
+    expect(store.jobs({ since_epoch: Date.now() / 1000 + 60 })).toEqual([]);
+  });
+
+  it("tells listeners what changed", () => {
+    const changes: unknown[] = [];
+    store.changes.on("change", (change) => changes.push(change));
+    const job_id = store.jobs_for("odin").create("backup", "borg create", null);
+    store.apply("odin", new CollectResult({ logs: [["Backup started", "INFO"]] }), { poll: false });
+    store.replace_timers("odin.example.org", []);
+
+    expect(changes).toEqual([
+      { kind: "job", repository_id: "odin", job_id },
+      { kind: "repository", repository_id: "odin" },
+      { kind: "timers", repository_id: null },
+    ]);
   });
 
   it("finds a detached action's job by its id", () => {

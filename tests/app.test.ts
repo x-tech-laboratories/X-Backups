@@ -102,6 +102,34 @@ describe("repositories", () => {
   });
 });
 
+describe("archives, config and search", () => {
+  it("diffs an archive once and serves its changes after", async () => {
+    await poller.poll("odin");
+    const diffs_before = commands.filter((command) => command.includes(" diff ")).length;
+
+    const first = (await get("/api/repositories/odin/diff?archive=a1")).json();
+    await get("/api/repositories/odin/diff?archive=a1");
+
+    expect(first.success).toBe(true);
+    expect(commands.filter((command) => command.includes(" diff ")).length).toBe(diffs_before + 1);
+  });
+
+  it("shows the declared config without its secrets", async () => {
+    const config = (await get("/api/repositories/odin/config")).json();
+
+    expect(config).toMatchObject({ source: "declared", editable: false, fields: { name: "odin", repo: "/srv/repo", interval: 3600 } });
+  });
+
+  it("finds repositories and archives by name", async () => {
+    await poller.poll("odin");
+
+    const found = (await get("/api/search?q=A1")).json();
+
+    expect(found.archives).toEqual([{ repository_id: "odin", name: "a1", epoch: expect.any(Number) }]);
+    expect((await get("/api/search?q=odi")).json().repositories).toEqual([{ id: "odin", name: "odin" }]);
+  });
+});
+
 // ── Actions and jobs ─────────────────────────────────────────────────────────
 
 describe("actions and jobs", () => {
@@ -129,6 +157,20 @@ describe("actions and jobs", () => {
 
   it("rejects an unknown action", async () => {
     expect((await post("/api/repositories/odin/actions/format_disk")).statusCode).toBe(404);
+  });
+
+  it("runs a finished job's action again", async () => {
+    await post("/api/repositories/odin/actions/run_backup");
+    const [job] = (await get("/api/jobs")).json();
+    expect(job.retry).toBe(false);
+    expect((await post(`/api/jobs/${job.id}/retry`)).statusCode).toBe(409);
+    await post(`/api/jobs/${job.id}/cancel`);
+    expect((await get(`/api/jobs/${job.id}`)).json().retry).toBe(true);
+
+    const retried = (await post(`/api/jobs/${job.id}/retry`)).json();
+
+    expect(retried.success).toBe(true);
+    expect((await get("/api/jobs?kind=backup")).json()).toHaveLength(2);
   });
 
   it("logs events", async () => {

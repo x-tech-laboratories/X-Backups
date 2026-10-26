@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { children_filter, parse_listing } from "../../src/server/borg/parsing.ts";
+import { children_filter, diff_line, parse_diff, parse_listing } from "../../src/server/borg/parsing.ts";
 import { BorgRepository, progress_from_lines, type BorgConfig } from "../../src/server/borg/repository.ts";
 import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
 import { Harness } from "./testing.ts";
@@ -1473,11 +1473,44 @@ describe("diff", () => {
     expect(outcome.logs).toEqual([["Changes from b1 to b2: 2", "INFO"]]);
   });
 
+  it("reads borg's JSON lines into changes and keeps them for the archive", () => {
+    const harness = make();
+    listed(harness, "b2", "b1");
+    const out = [
+      JSON.stringify({ path: "etc/new", changes: [{ type: "added", size: 1200 }] }),
+      JSON.stringify({ path: "etc/conf", changes: [{ type: "modified", added: 7, removed: 2 }, { type: "mode", old_mode: "-rw-r--r--", new_mode: "-rw-------" }] }),
+      JSON.stringify({ path: "etc", changes: [{ type: "mtime" }] }),
+    ].join("\n");
+    const outcome = outcome_of(harness, "diff_archive", [cmd_result(0, out, "")], { archive: "b2" });
+
+    expect(outcome.content).toContain("added 1.2 KB etc/new");
+    expect(outcome.content).toContain("modified +7 B -2 B [mode] etc/conf");
+    expect(harness.repository.diff("b2")!.changes.map((change) => change.kind)).toEqual(["added", "modified", "metadata"]);
+    expect(harness.repository.diff("b3")).toBeNull();
+  });
+
   it("still counts the changes without its archive", () => {
     const harness = make();
     listed(harness, "b2", "b1");
     const outcome = harness.repository.read_diff(cmd_result(0, "added       1.20 kB etc/new", ""), null);
     expect(outcome.logs).toEqual([["Changes in the archive: 1", "INFO"]]);
+  });
+});
+
+describe("parse_diff", () => {
+  it("keeps a line that is not JSON as it is", () => {
+    const [change] = parse_diff("added       1.20 kB etc/new");
+    expect(change).toEqual({ path: "added       1.20 kB etc/new", kind: "other", added_bytes: 0, removed_bytes: 0, details: [] });
+    expect(diff_line(change)).toBe("added       1.20 kB etc/new");
+  });
+
+  it("names removed folders and changed links", () => {
+    const changes = parse_diff([
+      JSON.stringify({ path: "old", changes: [{ type: "removed directory" }] }),
+      JSON.stringify({ path: "link", changes: [{ type: "changed link" }] }),
+    ].join("\n"));
+    expect(changes.map((change) => change.kind)).toEqual(["removed", "modified"]);
+    expect(changes[1].details).toEqual(["changed link"]);
   });
 });
 

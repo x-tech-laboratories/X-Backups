@@ -33,6 +33,17 @@ export interface BrowserRow {
   mtime: string;
 }
 
+// One path a `borg diff --json-lines` reports, reduced to what it means for the files' contents.
+export interface DiffChange {
+  path: string;
+  // Metadata is a change of mode, owner or times only; other is a line that was not borg's JSON.
+  kind: "added" | "removed" | "modified" | "metadata" | "other";
+  added_bytes: number;
+  removed_bytes: number;
+  // The other change types borg named for the path, such as mode, owner or changed link.
+  details: string[];
+}
+
 export const PRUNE_LINE = new RegExp(
   String.raw`^(?:Keeping archive \(rule: (?<rule>[^)]+)\)|(?<prune>Would prune)):\s+` +
   String.raw`(?<name>\S+)\s+(?<date>.+?)\s+\[[0-9a-f]+\]\s*$`,
@@ -213,6 +224,59 @@ export function browser_rows(entries: ListingEntry[], limit: number): BrowserRow
     size_bytes: entry.dir ? null : entry.size,
     mtime: entry.mtime,
   }));
+}
+
+// ── Diff ─────────────────────────────────────────────────────────────────────
+
+// Reads `borg diff --json-lines`, keeping a line that is not JSON as it is so nothing is lost.
+export function parse_diff(stdout: string): DiffChange[] {
+  return split_lines_of(stdout).filter((line) => line.trim()).map((line) => {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      entry = null;
+    }
+    if (!is_object(entry) || typeof entry.path !== "string" || !Array.isArray(entry.changes)) {
+      return { path: line.trim(), kind: "other", added_bytes: 0, removed_bytes: 0, details: [] };
+    }
+    return diff_change(entry.path, entry.changes.filter(is_object));
+  });
+}
+
+function diff_change(path: string, changes: Record<string, unknown>[]): DiffChange {
+  const change: DiffChange = { path, kind: "metadata", added_bytes: 0, removed_bytes: 0, details: [] };
+  for (const item of changes) {
+    const type = String(item.type ?? "");
+    const bytes = (value: unknown) => typeof value === "number" ? value : 0;
+    if (type === "added" || type === "added directory" || type === "added link") {
+      change.kind = "added";
+      change.added_bytes += bytes(item.size);
+    } else if (type === "removed" || type === "removed directory" || type === "removed link") {
+      change.kind = "removed";
+      change.removed_bytes += bytes(item.size);
+    } else if (type === "modified") {
+      change.kind = "modified";
+      change.added_bytes += bytes(item.added);
+      change.removed_bytes += bytes(item.removed);
+    } else if (type === "changed link") {
+      if (change.kind === "metadata") change.kind = "modified";
+      change.details.push(type);
+    } else if (type) {
+      change.details.push(type);
+    }
+  }
+  return change;
+}
+
+// One line of text for a change, in the shape `borg diff` prints without JSON.
+export function diff_line(change: DiffChange): string {
+  if (change.kind === "other") return change.path;
+  const sizes = change.kind === "added" ? format_size(change.added_bytes)
+    : change.kind === "removed" ? format_size(change.removed_bytes)
+    : change.kind === "modified" ? `+${format_size(change.added_bytes)} -${format_size(change.removed_bytes)}` : "";
+  const details = change.details.length > 0 ? `[${change.details.join(", ")}]` : "";
+  return [change.kind, sizes, details].filter(Boolean).concat(change.path).join(" ");
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

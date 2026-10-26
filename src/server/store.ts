@@ -2,6 +2,7 @@
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
+import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -51,6 +52,30 @@ export interface JobRow extends JobRecord {
   repository_id: string;
   started_epoch: number;
   ended_epoch: number | null;
+}
+
+// What changed, so a page that listens can fetch only what it shows.
+export interface Change {
+  kind: "repository" | "job" | "timers";
+  repository_id: string | null;
+  job_id?: number;
+}
+
+export interface JobFilter {
+  repository_id?: string;
+  // A kind matches itself and its variants, so "check" also matches "check-data".
+  kind?: string;
+  state?: string;
+  since_epoch?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface EventFilter {
+  repository_id?: string;
+  level?: string;
+  limit?: number;
+  offset?: number;
 }
 
 // ── Schema ───────────────────────────────────────────────────────────────────
@@ -132,12 +157,20 @@ const SCHEMA = `
 
 export class Store {
   private readonly database: DatabaseSync;
+  // Emits a "change" with a Change after each write a page might show.
+  readonly changes = new EventEmitter();
 
   // A path of ":memory:" keeps everything in memory, for tests.
   constructor(path: string) {
     this.database = new DatabaseSync(path);
     this.database.exec("PRAGMA journal_mode = WAL");
     this.database.exec(SCHEMA);
+    // Every open page listens, so more listeners than Node's default is normal rather than a leak.
+    this.changes.setMaxListeners(0);
+  }
+
+  changed(change: Change): void {
+    this.changes.emit("change", change);
   }
 
   // Opens the database in the folder X_BACKUPS_STATE_DIR names, creating the folder if needed.
@@ -171,6 +204,7 @@ export class Store {
         this.run("INSERT INTO events (repository_id, epoch, level, message) VALUES (?, ?, ?, ?)", repository_id, epoch, level, message);
       }
     });
+    this.changed({ kind: "repository", repository_id });
   }
 
   private save_state(repository_id: string, state: RepositoryState): void {
@@ -237,11 +271,14 @@ export class Store {
     }));
   }
 
-  // The newest events first, for one repository or all of them.
-  events(options: { repository_id?: string; limit?: number } = {}): EventRow[] {
-    const where = options.repository_id === undefined ? "" : "WHERE repository_id = ?";
-    const values = options.repository_id === undefined ? [] : [options.repository_id];
-    return this.all(`SELECT * FROM events ${where} ORDER BY id DESC LIMIT ?`, ...values, options.limit ?? 100).map((row) => ({
+  // The newest events first, for one repository or all of them, at one level or all.
+  events(options: EventFilter = {}): EventRow[] {
+    const [where, values] = conditions([
+      ["repository_id = ?", options.repository_id],
+      ["level = ?", options.level],
+    ]);
+    const sql = `SELECT * FROM events ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
+    return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map((row) => ({
       id: Number(row.id),
       repository_id: String(row.repository_id),
       epoch: Number(row.epoch),
@@ -263,6 +300,7 @@ export class Store {
         );
       }
     });
+    this.changed({ kind: "timers", repository_id: null });
   }
 
   timers(): TimerRow[] {
@@ -289,11 +327,16 @@ export class Store {
     return row ? job_row(row) : null;
   }
 
-  // The newest jobs first, for one repository or all of them.
-  jobs(options: { repository_id?: string; limit?: number } = {}): JobRow[] {
-    const where = options.repository_id === undefined ? "" : "WHERE repository_id = ?";
-    const values = options.repository_id === undefined ? [] : [options.repository_id];
-    return this.all(`SELECT * FROM jobs ${where} ORDER BY id DESC LIMIT ?`, ...values, options.limit ?? 100).map(job_row);
+  // The newest jobs first, narrowed by whatever the filter names.
+  jobs(options: JobFilter = {}): JobRow[] {
+    const [where, values] = conditions([
+      ["repository_id = ?", options.repository_id],
+      ["(kind = ? OR kind LIKE ? || '-%')", options.kind === undefined ? undefined : [options.kind, options.kind]],
+      ["state = ?", options.state],
+      ["started_epoch >= ?", options.since_epoch],
+    ]);
+    const sql = `SELECT * FROM jobs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
+    return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map(job_row);
   }
 
   // The job's output lines after the first skipped ones, so a page can fetch only what is new.
@@ -354,10 +397,12 @@ class RepositoryJobs implements JobStore {
   }
 
   create(kind: string, command: string, workdir: string | null): number {
-    return this.store.run(
+    const job_id = this.store.run(
       "INSERT INTO jobs (repository_id, kind, command, workdir, state, started_epoch) VALUES (?, ?, ?, ?, 'running', ?)",
       this.repository_id, kind, command, workdir, now_seconds(),
     );
+    this.changed(job_id);
+    return job_id;
   }
 
   set_pid(job_id: number, pid: number): void {
@@ -366,6 +411,7 @@ class RepositoryJobs implements JobStore {
 
   set_progress(job_id: number, summary: string): void {
     this.store.run("UPDATE jobs SET progress = ? WHERE id = ?", summary, job_id);
+    this.changed(job_id);
   }
 
   append_output(job_id: number, lines: string[]): void {
@@ -376,6 +422,7 @@ class RepositoryJobs implements JobStore {
         this.store.run("INSERT INTO job_output (job_id, line_number, line) VALUES (?, ?, ?)", job_id, line_number++, line);
       }
     });
+    this.changed(job_id);
   }
 
   bump_output_seq(job_id: number, new_seq: number): void {
@@ -387,6 +434,11 @@ class RepositoryJobs implements JobStore {
       "UPDATE jobs SET state = ?, exit_code = ?, error = ?, ended_epoch = ? WHERE id = ?",
       state, details.exit_code ?? null, details.error ?? null, now_seconds(), job_id,
     );
+    this.changed(job_id);
+  }
+
+  private changed(job_id: number): void {
+    this.store.changed({ kind: "job", repository_id: this.repository_id, job_id });
   }
 }
 
@@ -408,6 +460,13 @@ function job_row(row: Record<string, unknown>): JobRow {
     started_epoch: Number(row.started_epoch),
     ended_epoch: number_or_null(row.ended_epoch),
   };
+}
+
+// A WHERE clause from the conditions whose value is given, with the values in order; an array fills several marks.
+function conditions(parts: [sql: string, value: SQLInputValue | SQLInputValue[] | undefined][]): [string, SQLInputValue[]] {
+  const given = parts.filter(([, value]) => value !== undefined && value !== "");
+  if (given.length === 0) return ["", []];
+  return [`WHERE ${given.map(([sql]) => sql).join(" AND ")}`, given.flatMap(([, value]) => value as SQLInputValue | SQLInputValue[])];
 }
 
 function number_or_null(value: unknown): number | null {

@@ -15,8 +15,8 @@ import {
 import { cancel_command, launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
 import { format_age, format_duration, parse_duration } from "./durations.ts";
 import {
-  LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, format_size, is_object, parse_listing,
-  type ArchiveEntry, type ListingEntry,
+  LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, diff_line, format_size, is_object, parse_diff,
+  parse_listing, type ArchiveEntry, type DiffChange, type ListingEntry,
 } from "./parsing.ts";
 import {
   BASE_DIR_VAR, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
@@ -91,6 +91,9 @@ const TOPMOST_EXCLUDED =
 
 // How many listed folders the browser keeps before forgetting the least recently used.
 const LISTING_CACHE = 256;
+
+// How many archives' diffs are kept for the archive page before forgetting the least recently used.
+const DIFF_CACHE = 16;
 
 // ── Action shapes ────────────────────────────────────────────────────────────
 
@@ -186,6 +189,8 @@ export class BorgRepository {
   private polling_job: JobRecord | null = null;
   // Archives never change once written, so a folder listed once stays true until the archive is deleted.
   private listings = new Map<string, CachedListing>();
+  // Each diffed pair's changes, keyed by both names since a prune can change the archive before one.
+  private diffs = new Map<string, { changes: DiffChange[]; more: boolean }>();
 
   constructor(name: string, config: BorgConfig) {
     this.name = name;
@@ -954,6 +959,7 @@ export class BorgRepository {
     for (const [key, cached] of this.listings) {
       if (cached.archive === archive) this.listings.delete(key);
     }
+
     return this.launch("delete", this.maintenance_command(["delete", "--stats", `${this.repo}::${archive}`]), ` for ${archive}`);
   }
 
@@ -1024,7 +1030,9 @@ export class BorgRepository {
     if (!this.repo || !archive) return BorgRepository.refused("Cannot diff: no archive given");
     const older = this.previous_archive(archive);
     if (older === null) return BorgRepository.refused(`${archive} is the oldest listed archive — there is nothing before it to compare`);
-    const call = this.build([this.borg_bin, "diff", "--lock-wait", String(this.lock_wait), `${this.repo}::${older}`, archive], this.read_options());
+    const call = this.build(
+      [this.borg_bin, "diff", "--json-lines", "--lock-wait", String(this.lock_wait), `${this.repo}::${older}`, archive], this.read_options(),
+    );
     return this.run_detached([call], ([result]) => this.read_diff(result, archive), this.browse_limit + 1);
   }
 
@@ -1035,18 +1043,31 @@ export class BorgRepository {
       const hint = failure_hint(detail);
       return BorgRepository.refused(`borg diff failed (exit ${call.exit_code}): ${detail.slice(0, 300)}` + (hint ? `\n${hint}` : ""));
     }
-    let lines = call.stdout.split(/\r\n|\r|\n/).filter((line) => line.trim());
+    let changes = parse_diff(call.stdout);
     const span = archive ? `from ${this.previous_archive(archive)} to ${archive}` : "in the archive";
-    let header = `Changes ${span}: ${lines.length}`;
-    if (lines.length > this.browse_limit) {
-      lines = lines.slice(0, this.browse_limit);
+    let header = `Changes ${span}: ${changes.length}`;
+    const more = changes.length > this.browse_limit;
+    if (more) {
+      changes = changes.slice(0, this.browse_limit);
       header = `${header.slice(0, header.lastIndexOf(":"))}: first ${this.browse_limit} (raise browse_limit for more)`;
     }
+    const key = archive ? diff_key(this.previous_archive(archive), archive) : null;
+    if (key !== null) {
+      this.diffs.delete(key);
+      this.diffs.set(key, { changes, more });
+      while (this.diffs.size > DIFF_CACHE) this.diffs.delete(this.diffs.keys().next().value!);
+    }
+    const lines = changes.map(diff_line);
     return new CollectResult({
       logs: [[header, "INFO"]],
       content: [header, "", ...(lines.length > 0 ? lines : ["(no changes)"])].join("\n"),
       success: true,
     });
+  }
+
+  // The archive's changes against the one before it as last diffed, or null when it has not been diffed yet.
+  diff(archive: string): { changes: DiffChange[]; more: boolean } | null {
+    return this.diffs.get(diff_key(this.previous_archive(archive), archive)) ?? null;
   }
 
   // ── Cancel ───────────────────────────────────────────────────────────────
@@ -1282,4 +1303,9 @@ function local_minute(date: Date): string {
 function utc_compact_stamp(date: Date): string {
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}` +
     `T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`;
+}
+
+// The diff cache's key for an archive and the one before it.
+function diff_key(older: string | null, archive: string): string {
+  return `${older ?? ""}\n${archive}`;
 }
