@@ -141,6 +141,12 @@ adapted where a task changes a contract.
     Needs the store (task 9) to keep history, not only the latest state, and the poller (task 10)
     to read each host's timers (`systemctl list-timers` or borgmatic's config). Review the apps
     first to pick the graphs and views worth copying.
+18. [ ] **Halon theme.** Theme the web page (tasks 13 and 17) with Halon, as X-Monitor does: a
+    `halon-tokens.css` holding every color for the light and dark schemes, following
+    `prefers-color-scheme`, and a `halon.css` with the component rules, so no other file states a
+    color. Charts take their colors from the same tokens. Sources: `tokens.json` and
+    `THEME-DESIGN-GUIDE.md` in `../../Coding/Halon`, and X-Monitor's
+    `x_monitor/core/ui/static/halon*.css` and `docs/theme.md`.
 
 ## Apps to review for features
 
