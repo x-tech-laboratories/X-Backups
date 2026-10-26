@@ -52,7 +52,7 @@ adapted where a task changes a contract.
    `frame_line`, the `POLL_*` shell variables, the poll deadline and `CUT_SHORT`. `commands()`
    returns separate calls and `parse()` reads one result per call. Timeouts move to the runner
    (task 8). Files: `server/borg/shell.ts`, `repository.ts`.
-3. [ ] **Typed actions.** Replace the string switches in `plan_action` and `interpret_action`, and
+3. [x] **Typed actions.** Replace the string switches in `plan_action` and `interpret_action`, and
    the `pending_launch` field, with one command method and one reader method per action, so each
    API route calls its pair directly.
 4. [ ] **Jobs as systemd units** (if the first open question allows). Launch with

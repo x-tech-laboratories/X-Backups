@@ -24,16 +24,22 @@ export function cmd_result(exit_code: number, stdout: string, stderr: string): C
 export class ActionPlan {
   // Run one after another, each answered by one result in the same order.
   commands: string[];
+  // Reads the commands' results into what the action reports.
+  read: (results: CmdResult[]) => CollectResult;
   timeout: number | null;
   // A detached plan is followed to its end by whoever runs it, so a restart never kills it.
   detached: boolean;
 
-  constructor(commands: string[], options: { timeout?: number | null; detached?: boolean } = {}) {
+  constructor(commands: string[], read: (results: CmdResult[]) => CollectResult, options: { timeout?: number | null; detached?: boolean } = {}) {
     this.commands = commands;
+    this.read = read;
     this.timeout = options.timeout ?? null;
     this.detached = options.detached ?? false;
   }
 }
+
+// What an action asks for: commands to run, or its answer straight away, such as a refusal.
+export type ActionStart = ActionPlan | CollectResult;
 
 // ── Repository state ─────────────────────────────────────────────────────────
 

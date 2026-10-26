@@ -1,6 +1,6 @@
 // In-memory stores and a cycle driver, so a repository can be exercised without a host or a database.
 
-import { BorgRepository, type ActionOutcome, type BorgConfig } from "./repository.ts";
+import { BorgRepository, type BorgConfig } from "./repository.ts";
 import { cmd_result, type CmdResult, type Command, type JobRecord, type JobState, type JobStore, type LogEntry, type MonitorStatus } from "./types.ts";
 import { CollectResult } from "./types.ts";
 
@@ -11,8 +11,7 @@ export class MemoryOutcomeLog {
   events: LogEntry[] = [];
 
   // Records what a result reports: its status if it has one, and its logs.
-  apply(result: ActionOutcome | null): void {
-    if (!(result instanceof CollectResult)) return;
+  apply(result: CollectResult): void {
     if (result.status !== null) this.statuses.push(result.status);
     this.events.push(...result.logs);
   }
@@ -89,8 +88,8 @@ export class Harness {
   }
 
   // Keeps the state a result hands back, the way the store does between polls.
-  apply(result: ActionOutcome | null): void {
-    if (result instanceof CollectResult && result.state !== null) this.repository.state = result.state;
+  apply(result: CollectResult): void {
+    if (result.state !== null) this.repository.state = result.state;
     this.outcomes.apply(result);
   }
 

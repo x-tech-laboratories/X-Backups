@@ -23,7 +23,7 @@ import {
   shell_quote, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job,
 } from "./shell.ts";
 import {
-  ActionPlan, CollectResult, empty_state, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
+  ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
   type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
 } from "./types.ts";
 
@@ -83,12 +83,6 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
   check_kinds?: Record<string, number | string>;
 }
 
-// Actions that start a detached job, whose launch prints the pid that interpret_action records.
-const LAUNCHED = [
-  "run_backup", "dry_run_backup", "restore_archive", "check_repo", "compact_repo",
-  "prune_repo", "delete_archive", "purge_preview", "purge_excluded",
-];
-
 // Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
 const TOPMOST_EXCLUDED =
   "awk '/^__x_backups_rc=/ { rc = substr($0, 16); next } " +
@@ -110,17 +104,6 @@ export interface ActionSpec {
 
 export type ActionState = "normal" | "accent" | "disabled" | "hidden";
 
-export interface ActionParams {
-  archive?: string | null;
-  path?: string | null;
-  paths?: string[] | null;
-  kind?: string | null;
-}
-
-export type ActionPlanResult = ActionPlan | CollectResult | null;
-
-export type ActionOutcome = boolean | CollectResult;
-
 export interface BackupSummary {
   repo: string | null;
   newest_archive_epoch: number | null;
@@ -131,13 +114,6 @@ export interface BackupSummary {
   restore_checked_epoch: number | null;
   repo_checks: boolean | null;
   repo_checked_epoch: number | null;
-}
-
-interface PendingLaunch {
-  kind: string;
-  redacted: string;
-  workdir: string;
-  started: string;
 }
 
 interface CachedListing {
@@ -208,7 +184,6 @@ export class BorgRepository {
 
   poll_calls: string[] = [];
   private polling_job: JobRecord | null = null;
-  private pending_launch: PendingLaunch | null = null;
   // Archives never change once written, so a folder listed once stays true until the archive is deleted.
   private listings = new Map<string, CachedListing>();
 
@@ -679,59 +654,8 @@ export class BorgRepository {
     return kinds.includes(job.kind) ? "accent" : "disabled";
   }
 
-  plan_action(action_id: string, params: ActionParams = {}): ActionPlanResult {
-    switch (action_id) {
-      case "run_backup":
-      case "dry_run_backup":
-        return this.plan_backup(action_id);
-      case "prune_preview":
-        return this.plan_prune_preview();
-      case "verify_restore":
-        return this.plan_verify_restore();
-      case "browse_archive":
-        return this.plan_browse(params);
-      case "restore_archive":
-        return this.plan_restore(params);
-      case "check_repo":
-        return this.plan_check(params);
-      case "compact_repo":
-        return this.plan_compact();
-      case "prune_repo":
-        return this.plan_prune();
-      case "delete_archive":
-        return this.plan_delete(params);
-      case "break_lock":
-        return this.plan_break_lock();
-      case "purge_preview":
-      case "purge_excluded":
-        return this.plan_purge(action_id);
-      case "diff_archive":
-        return this.plan_diff(params);
-      default:
-        return null;
-    }
-  }
-
-  // Reads the results of a plan's commands, one per command in the same order.
-  interpret_action(action_id: string, results: CmdResult[], params: ActionParams = {}): ActionOutcome {
-    const [result] = results;
-    switch (action_id) {
-      case "prune_preview":
-        return this.interpret_prune_preview(result);
-      case "verify_restore":
-        return this.interpret_verify_restore(results);
-      case "browse_archive":
-        return this.interpret_browse(result, params);
-      case "break_lock":
-        return this.interpret_break_lock(result);
-      case "diff_archive":
-        return this.interpret_diff(result, params);
-    }
-    if (!LAUNCHED.includes(action_id)) return result.exit_code === 0;
-
-    const { kind, redacted, workdir, started } = this.pending_launch ?? { kind: "job", redacted: "", workdir: "", started: "" };
-    this.pending_launch = null;
-
+  // Records a launched job from the pid its launch printed, or says why it was skipped or never started.
+  private read_launch(kind: string, redacted: string, workdir: string, started: string, result: CmdResult): CollectResult {
     const skipped = result.exit_code === 0 ? skip_reason(result.stdout) : null;
     if (skipped !== null) {
       const message = `${capitalize(kind)} skipped: ${skipped}`;
@@ -755,21 +679,24 @@ export class BorgRepository {
   }
 
   // A single borg call as an action, bounded like a poll, with its stdout filtered and cut to the first lines.
-  private run_one(call: string, limit?: number, keep?: string): ActionPlan {
-    return new ActionPlan([capped(call, limit, keep)], { timeout: this.timeout || null });
+  private run_one(call: string, read: (result: CmdResult) => CollectResult, limit?: number, keep?: string): ActionPlan {
+    return new ActionPlan([capped(call, limit, keep)], ([result]) => read(result), { timeout: this.timeout || null });
   }
 
   // Borg calls as a detached action whose output reaches its log as it is written, the first one cut to the first lines.
-  private run_detached(calls: string[], limit?: number): ActionPlan {
-    return new ActionPlan(calls.map((call, index) => index === 0 ? capped(call, limit) : call), { detached: true });
+  private run_detached(calls: string[], read: (results: CmdResult[]) => CollectResult, limit?: number): ActionPlan {
+    return new ActionPlan(calls.map((call, index) => index === 0 ? capped(call, limit) : call), read, { detached: true });
   }
 
-  // Launches the command as a detached job; interpret_action records the pid it prints.
+  // Launches the command as a detached job, whose reader records the pid it prints.
   private launch(kind: string, command: string, started = ""): ActionPlan {
     const workdir = workdir_for(`${this.id}-${now_seconds()}`);
     const wrapped = wrap_job(command, this.job_wrappers(kind), this.job_lock);
-    this.pending_launch = { kind, redacted: redact(wrapped), workdir, started };
-    return new ActionPlan([with_preflight(this.preflight(), launch_command(wrapped, workdir))]);
+    const redacted = redact(wrapped);
+    return new ActionPlan(
+      [with_preflight(this.preflight(), launch_command(wrapped, workdir))],
+      ([result]) => this.read_launch(kind, redacted, workdir, started, result),
+    );
   }
 
   // The argv every job runs under: the shared job lock, the sleep inhibitor, then the lowered priority.
@@ -799,14 +726,23 @@ export class BorgRepository {
 
   // ── Backup ─────────────────────────────────────────────────────────────────
 
-  private plan_backup(action_id: string): ActionPlanResult {
+  private backup_refusal(): CollectResult | null {
     if (!this.repo) return CollectResult.failed("Cannot back up: no 'repo' configured");
     if (this.source_paths.length === 0) return CollectResult.failed("Cannot back up: no 'source_paths' configured");
     if (this.running_job() !== null) return CollectResult.failed("A backup is already running for this monitor", "WARNING", null);
-    if (action_id === "dry_run_backup") return this.launch("dry-run", this.backup_command({ dry_run: true }));
+    return null;
+  }
+
+  dry_run_backup(): ActionStart {
+    return this.backup_refusal() ?? this.launch("dry-run", this.backup_command({ dry_run: true }));
+  }
+
+  run_backup(): ActionStart {
+    const refusal = this.backup_refusal();
+    if (refusal) return refusal;
     const steps: [string, string][] = [];
-    if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), this.repo])]);
-    if (this.compact_after_backup) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", this.repo])]);
+    if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), this.repo!])]);
+    if (this.compact_after_backup) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", this.repo!])]);
     return this.launch("backup", then_steps(this.backup_command(), steps));
   }
 
@@ -822,13 +758,13 @@ export class BorgRepository {
     return this.build(args, this.read_options());
   }
 
-  private plan_prune_preview(): ActionPlanResult {
+  prune_preview(): ActionStart {
     if (!this.repo) return BorgRepository.refused("Cannot preview a prune: no 'repo' configured");
     if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot preview a prune: no keep_* retention configured");
-    return this.run_one(this.prune_preview_command());
+    return this.run_one(this.prune_preview_command(), (result) => this.read_prune_preview(result));
   }
 
-  private interpret_prune_preview(call: CmdResult): CollectResult {
+  read_prune_preview(call: CmdResult): CollectResult {
     const text = [call.stdout, call.stderr].filter(Boolean).join("\n");
     if (call.exit_code !== 0) {
       const hint = failure_hint(text);
@@ -859,14 +795,14 @@ export class BorgRepository {
 
   // ── Verify restore ─────────────────────────────────────────────────────────
 
-  private plan_verify_restore(): ActionPlanResult {
+  verify_restore(): ActionStart {
     if (!this.canary_path) return BorgRepository.refused("Cannot verify a restore: no 'canary_path' configured");
     const archive = this.canary_archive();
     if (!archive) return BorgRepository.refused("Cannot verify a restore: no archive has been listed yet");
-    return this.run_detached(this.canary_calls(archive).map(([, command]) => command));
+    return this.run_detached(this.canary_calls(archive).map(([, command]) => command), (results) => this.read_verify_restore(results));
   }
 
-  private interpret_verify_restore(results: CmdResult[]): CollectResult {
+  read_verify_restore(results: CmdResult[]): CollectResult {
     const [canary, canary_live] = results;
     const by_name = new Map([["canary", canary], ["canary_live", canary_live]]);
     const logs: LogEntry[] = [];
@@ -888,9 +824,8 @@ export class BorgRepository {
     return cached.entries;
   }
 
-  private plan_browse(params: ActionParams): ActionPlanResult {
-    const member = archive_member(params.path || "");
-    const archive = params.archive;
+  browse_archive(archive: string | null, path = ""): ActionStart {
+    const member = archive_member(path);
     if (!this.repo || !archive) return BorgRepository.refused("Cannot browse: no archive given");
     if (member === null) return BorgRepository.refused("A path may not contain '.' or '..' components");
     const cached = this.listing(archive, member);
@@ -899,17 +834,17 @@ export class BorgRepository {
     }
     const args = [this.borg_bin, "list", "--format", LIST_FORMAT, "--lock-wait", String(this.lock_wait), `${this.repo}::${archive}`];
     if (member) args.push(member);
-    return this.run_one(this.build(args, this.read_options()), this.browse_limit + 1, children_filter(member));
+    const read = (result: CmdResult) => this.read_browse(result, archive, path);
+    return this.run_one(this.build(args, this.read_options()), read, this.browse_limit + 1, children_filter(member));
   }
 
-  private interpret_browse(call: CmdResult, params: ActionParams): CollectResult {
+  read_browse(call: CmdResult, archive: string, path: string): CollectResult {
     if (call.exit_code !== 0) {
       const detail = (call.stderr || call.stdout).trim();
       const hint = failure_hint(detail);
       return BorgRepository.refused(`borg list failed (exit ${call.exit_code}): ${detail.slice(0, 300)}` + (hint ? `\n${hint}` : ""));
     }
-    const archive = params.archive ?? "";
-    const member = archive_member(params.path || "") || "";
+    const member = archive_member(path) || "";
     const entries = parse_listing(call.stdout);
     // A listing longer than browse_limit is kept one entry over it, which is how the browser knows it was cut short.
     this.listings.set(listing_key(archive, member), { archive, member, entries });
@@ -940,10 +875,8 @@ export class BorgRepository {
     return `${mkdir} && cd ${shell_quote(destination)} && ${extract}`;
   }
 
-  private plan_restore(params: ActionParams): ActionPlanResult {
-    const requested = [...(params.path ? [params.path] : []), ...(params.paths ?? [])];
-    const members = requested.map(archive_member);
-    const archive = params.archive;
+  restore_archive(archive: string | null, paths: string[]): ActionStart {
+    const members = paths.map(archive_member);
     if (!this.repo || !archive) return BorgRepository.refused("Cannot restore: no archive given");
     if (members.some((member) => member === null)) return BorgRepository.refused("A path may not contain '.' or '..' components");
     if (members.length === 0 || !members.every(Boolean)) {
@@ -961,8 +894,7 @@ export class BorgRepository {
     return this.build([this.borg_bin, ...args, "--log-json", "--lock-wait", String(this.backup_lock_wait)], { persistent_cache: true });
   }
 
-  private plan_check(params: ActionParams): ActionPlanResult {
-    const kind = params.kind || (this.check_verify_data ? "data" : "all");
+  check_repo(kind = this.check_verify_data ? "data" : "all"): ActionStart {
     if (!Object.hasOwn(CHECK_KINDS, kind)) {
       return BorgRepository.refused(`Unknown check kind '${kind}': use ${Object.keys(CHECK_KINDS).join(", ")}`);
     }
@@ -978,13 +910,13 @@ export class BorgRepository {
     return this.launch(check_job_kind(kind), this.maintenance_command([...args, this.repo!]));
   }
 
-  private plan_compact(): ActionPlanResult {
+  compact_repo(): ActionStart {
     const refusal = this.job_refusal("compact the repository");
     if (refusal) return refusal;
     return this.launch("compact", this.maintenance_command(["compact", "--progress", this.repo!]));
   }
 
-  private plan_prune(): ActionPlanResult {
+  prune_repo(): ActionStart {
     if (!this.allow_delete) return BorgRepository.refused("Pruning is off for this monitor — set allow_delete: true to enable it");
     if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot prune: no keep_* retention configured");
     const refusal = this.job_refusal("prune");
@@ -997,8 +929,7 @@ export class BorgRepository {
     return ["prune", "--list", "--stats", "--glob-archives", this.prune_match, ...this.retention_args()];
   }
 
-  private plan_delete(params: ActionParams): ActionPlanResult {
-    const archive = params.archive;
+  delete_archive(archive: string | null): ActionStart {
     if (!this.allow_delete) return BorgRepository.refused("Deleting archives is off for this monitor — set allow_delete: true to enable it");
     // Only a listed archive may be deleted, so a stale or hand-typed name cannot reach borg.
     if (!archive || !this.state.archives.some((listed) => listed.name === archive)) {
@@ -1022,17 +953,24 @@ export class BorgRepository {
     return this.job_refusal("purge excluded files");
   }
 
-  private plan_purge(action_id: string): ActionPlanResult {
+  private purge_scope(): string[] {
+    return this.purge_match ? ["--glob-archives", this.purge_match] : [];
+  }
+
+  purge_preview(): ActionStart {
     const refusal = this.purge_refusal();
     if (refusal) return refusal;
-    const scope = this.purge_match ? ["--glob-archives", this.purge_match] : [];
-    if (action_id === "purge_preview") {
-      const recreate = this.build([
-        this.borg_bin, "recreate", "--dry-run", "--list", "--filter=x", ...scope, ...this.exclude_args(),
-        "--lock-wait", String(this.backup_lock_wait), this.repo!,
-      ], { persistent_cache: true });
-      return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_backups_rc=$?"; } | ${TOPMOST_EXCLUDED}`);
-    }
+    const recreate = this.build([
+      this.borg_bin, "recreate", "--dry-run", "--list", "--filter=x", ...this.purge_scope(), ...this.exclude_args(),
+      "--lock-wait", String(this.backup_lock_wait), this.repo!,
+    ], { persistent_cache: true });
+    return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_backups_rc=$?"; } | ${TOPMOST_EXCLUDED}`);
+  }
+
+  purge_excluded(): ActionStart {
+    const refusal = this.purge_refusal();
+    if (refusal) return refusal;
+    const scope = this.purge_scope();
     // An interrupted recreate leaves a <name>.recreate archive that makes the next attempt fail at once.
     const leftovers = this.maintenance_command(["delete", "--glob-archives", "*.recreate", this.repo!]);
     const recreate = this.maintenance_command(["recreate", "--info", "--stats", "--progress", ...scope, ...this.exclude_args(), this.repo!]);
@@ -1043,14 +981,14 @@ export class BorgRepository {
 
   // ── Break lock ─────────────────────────────────────────────────────────────
 
-  private plan_break_lock(): ActionPlanResult {
+  break_lock(): ActionStart {
     if (!this.allow_delete) return BorgRepository.refused("Breaking locks is off for this monitor — set allow_delete: true to enable it");
     const refusal = this.job_refusal("break the lock");
     if (refusal) return refusal;
-    return this.run_one(this.build([this.borg_bin, "break-lock", this.repo!], { persistent_cache: true }));
+    return this.run_one(this.build([this.borg_bin, "break-lock", this.repo!], { persistent_cache: true }), (result) => this.read_break_lock(result));
   }
 
-  private interpret_break_lock(call: CmdResult): CollectResult {
+  read_break_lock(call: CmdResult): CollectResult {
     if (call.exit_code !== 0) {
       return BorgRepository.refused(`borg break-lock failed (exit ${call.exit_code}): ${(call.stderr || call.stdout).trim().slice(0, 300)}`);
     }
@@ -1068,24 +1006,22 @@ export class BorgRepository {
     return index + 1 < names.length ? names[index + 1] : null;
   }
 
-  private plan_diff(params: ActionParams): ActionPlanResult {
-    const archive = params.archive;
+  diff_archive(archive: string | null): ActionStart {
     if (!this.repo || !archive) return BorgRepository.refused("Cannot diff: no archive given");
     const older = this.previous_archive(archive);
     if (older === null) return BorgRepository.refused(`${archive} is the oldest listed archive — there is nothing before it to compare`);
     const call = this.build([this.borg_bin, "diff", "--lock-wait", String(this.lock_wait), `${this.repo}::${older}`, archive], this.read_options());
-    return this.run_detached([call], this.browse_limit + 1);
+    return this.run_detached([call], ([result]) => this.read_diff(result, archive), this.browse_limit + 1);
   }
 
-  private interpret_diff(call: CmdResult, params: ActionParams): CollectResult {
+  // A run adopted after a restart has lost its archive, so it passes null.
+  read_diff(call: CmdResult, archive: string | null): CollectResult {
     if (call.exit_code !== 0) {
       const detail = (call.stderr || call.stdout).trim();
       const hint = failure_hint(detail);
       return BorgRepository.refused(`borg diff failed (exit ${call.exit_code}): ${detail.slice(0, 300)}` + (hint ? `\n${hint}` : ""));
     }
     let lines = call.stdout.split(/\r\n|\r|\n/).filter((line) => line.trim());
-    const archive = params.archive;
-    // A run adopted after a restart has lost its archive argument, so it names no archives.
     const span = archive ? `from ${this.previous_archive(archive)} to ${archive}` : "in the archive";
     let header = `Changes ${span}: ${lines.length}`;
     if (lines.length > this.browse_limit) {

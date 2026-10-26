@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { children_filter, parse_listing } from "./parsing.ts";
-import { BorgRepository, progress_from_lines, type ActionParams, type BorgConfig } from "./repository.ts";
+import { BorgRepository, progress_from_lines, type BorgConfig } from "./repository.ts";
 import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job } from "./shell.ts";
 import { Harness } from "./testing.ts";
-import { ActionPlan, CollectResult, cmd_result, type CmdResult } from "./types.ts";
+import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult } from "./types.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -149,15 +149,40 @@ function job_poll(size: number, exit_code: number | null, alive: boolean, out: s
     `===XBACKUPS_OUT===\n${out}`, "");
 }
 
-// Plans an action and answers its launch with a pid, the way a runner records a detached job.
-function launch(harness: Harness, action_id = "run_backup", pid = 4242, params: ActionParams = {}): CollectResult | boolean | null {
-  const plan = harness.repository.plan_action(action_id, params);
-  if (plan === null) return null;
-  if (plan instanceof CollectResult) {
-    harness.apply(plan);
-    return plan;
-  }
-  const outcome = harness.repository.interpret_action(action_id, [cmd_result(0, `${pid}\n`, "")]);
+interface ActionParams {
+  archive?: string;
+  path?: string;
+  paths?: string[];
+  kind?: string;
+}
+
+// Starts an action by the id the page sends, the way an API route calls its method.
+function start(harness: Harness, action_id: string, params: ActionParams = {}): ActionStart {
+  const repository = harness.repository;
+  const archive = params.archive ?? null;
+  const starts: Record<string, () => ActionStart> = {
+    run_backup: () => repository.run_backup(),
+    dry_run_backup: () => repository.dry_run_backup(),
+    prune_preview: () => repository.prune_preview(),
+    verify_restore: () => repository.verify_restore(),
+    browse_archive: () => repository.browse_archive(archive, params.path),
+    restore_archive: () => repository.restore_archive(archive, [...(params.path ? [params.path] : []), ...(params.paths ?? [])]),
+    check_repo: () => repository.check_repo(params.kind),
+    compact_repo: () => repository.compact_repo(),
+    prune_repo: () => repository.prune_repo(),
+    delete_archive: () => repository.delete_archive(archive),
+    break_lock: () => repository.break_lock(),
+    purge_preview: () => repository.purge_preview(),
+    purge_excluded: () => repository.purge_excluded(),
+    diff_archive: () => repository.diff_archive(archive),
+  };
+  return starts[action_id]();
+}
+
+// Starts an action and answers its launch with a pid, the way a runner records a detached job.
+function launch(harness: Harness, action_id = "run_backup", pid = 4242, params: ActionParams = {}): CollectResult {
+  const plan = start(harness, action_id, params);
+  const outcome = plan instanceof CollectResult ? plan : plan.read([cmd_result(0, `${pid}\n`, "")]);
   harness.apply(outcome);
   return outcome;
 }
@@ -171,27 +196,25 @@ function poll_once(harness: Harness, poll_result: CmdResult): CollectResult {
 }
 
 function finish_job(harness: Harness, action_id: string, exit_code: number, params: ActionParams = {}): void {
-  harness.repository.plan_action(action_id, params);
-  harness.apply(harness.repository.interpret_action(action_id, [cmd_result(0, "91\n", "")]));
+  launch(harness, action_id, 91, params);
   poll_once(harness, job_poll(5, exit_code, false, ""));
 }
 
 function plan_of(harness: Harness, action_id: string, params: ActionParams = {}): ActionPlan {
-  const plan = harness.repository.plan_action(action_id, params);
+  const plan = start(harness, action_id, params);
   expect(plan).toBeInstanceOf(ActionPlan);
   return plan as ActionPlan;
 }
 
 function refusal_of(harness: Harness, action_id: string, params: ActionParams = {}): CollectResult {
-  const plan = harness.repository.plan_action(action_id, params);
+  const plan = start(harness, action_id, params);
   expect(plan).toBeInstanceOf(CollectResult);
   return plan as CollectResult;
 }
 
+// Starts an action and reads the given results as its answer.
 function outcome_of(harness: Harness, action_id: string, results: CmdResult[], params: ActionParams = {}): CollectResult {
-  const outcome = harness.repository.interpret_action(action_id, results, params);
-  expect(outcome).toBeInstanceOf(CollectResult);
-  return outcome as CollectResult;
+  return plan_of(harness, action_id, params).read(results);
 }
 
 // The launched command with its nested quoting removed, so arguments read as typed.
@@ -555,10 +578,6 @@ describe("actions", () => {
     expect(harness.repository.action_state(action(harness, "break_lock"))).toBe("normal");
   });
 
-  it("answers an unknown action with null", () => {
-    expect(make().repository.plan_action("nonsense")).toBeNull();
-  });
-
   it("refuses a backup without source paths", () => {
     const plan = refusal_of(make(), "run_backup");
     expect(plan.success).toBe(false);
@@ -704,7 +723,6 @@ describe("backup launch", () => {
 
   it("records no job when the launch fails", () => {
     const harness = make(BACKUP_CFG);
-    harness.repository.plan_action("run_backup");
     const outcome = outcome_of(harness, "run_backup", [cmd_result(1, "", "boom")]);
     harness.apply(outcome);
     expect(outcome.success).toBe(false);
@@ -1157,8 +1175,8 @@ describe("browse", () => {
 
   it("serves a cached folder without borg", () => {
     const harness = make();
-    harness.repository.interpret_action("browse_archive", [cmd_result(0, LISTING, "")], { archive: "a1", path: "Storage/System" });
-    const outcome = harness.repository.plan_action("browse_archive", { archive: "a1", path: "Storage/System" }) as CollectResult;
+    harness.repository.read_browse(cmd_result(0, LISTING, ""), "a1", "Storage/System");
+    const outcome = refusal_of(harness, "browse_archive", { archive: "a1", path: "Storage/System" });
     expect(outcome).toBeInstanceOf(CollectResult);
     expect(outcome.success).toBe(true);
     expect(outcome.content).toContain("3 entries");
@@ -1185,7 +1203,7 @@ describe("browse", () => {
 
   it("never caches a failed listing", () => {
     const harness = make();
-    harness.repository.interpret_action("browse_archive", [cmd_result(2, "", "boom")], { archive: "a1", path: "" });
+    harness.repository.read_browse(cmd_result(2, "", "boom"), "a1", "");
     expect(harness.repository.listing("a1", "")).toBeNull();
   });
 });
@@ -1202,8 +1220,7 @@ describe("restore", () => {
 
   it("records a restore job", () => {
     const harness = make(RESTORE_CFG);
-    harness.repository.plan_action("restore_archive", { archive: "a1", path: "etc" });
-    const outcome = outcome_of(harness, "restore_archive", [cmd_result(0, "77\n", "")]);
+    const outcome = outcome_of(harness, "restore_archive", [cmd_result(0, "77\n", "")], { archive: "a1", path: "etc" });
     harness.apply(outcome);
     expect(harness.jobs.running()!.kind).toBe("restore");
     expect(outcome.content).toContain("/var/tmp/r/a1-");
@@ -1215,8 +1232,7 @@ describe("restore", () => {
 
   it("is refused while a job runs", () => {
     const harness = make(RESTORE_CFG);
-    harness.repository.plan_action("restore_archive", { archive: "a1", path: "etc" });
-    harness.apply(harness.repository.interpret_action("restore_archive", [cmd_result(0, "77\n", "")]));
+    launch(harness, "restore_archive", 77, { archive: "a1", path: "etc" });
     expect(refusal_of(harness, "restore_archive", { archive: "a1", path: "etc" }).success).toBe(false);
   });
 
@@ -1260,7 +1276,7 @@ describe("maintenance", () => {
     const plan = plan_of(harness, action_id);
     expect(plan.commands[0]).toContain(args);
     expect(plan.commands[0]).toContain("--log-json");
-    harness.apply(harness.repository.interpret_action(action_id, [cmd_result(0, "91\n", "")]));
+    harness.apply(plan.read([cmd_result(0, "91\n", "")]));
     expect(harness.jobs.running()!.kind).toBe(kind);
   });
 
@@ -1283,8 +1299,7 @@ describe("maintenance", () => {
 
   it("runs one job at a time", () => {
     const harness = make(DELETE_CFG);
-    harness.repository.plan_action("check_repo");
-    harness.apply(harness.repository.interpret_action("check_repo", [cmd_result(0, "91\n", "")]));
+    launch(harness, "check_repo", 91);
     expect(refusal_of(harness, "compact_repo").success).toBe(false);
     expect(refusal_of(harness, "break_lock").success).toBe(false);
   });
@@ -1306,8 +1321,7 @@ describe("maintenance", () => {
 describe("purge", () => {
   it.each([["purge_preview", "purge-preview"], ["purge_excluded", "purge"]])("runs %s as a detached %s job", (action_id, kind) => {
     const harness = make(PURGE_CFG);
-    harness.repository.plan_action(action_id);
-    harness.apply(harness.repository.interpret_action(action_id, [cmd_result(0, "91\n", "")]));
+    launch(harness, action_id, 91);
     expect(harness.jobs.running()!.kind).toBe(kind);
   });
 
@@ -1359,7 +1373,7 @@ describe("delete", () => {
     const plan = plan_of(harness, "delete_archive", { archive: "b1" });
     expect(plan.commands[0]).toContain("delete --stats");
     expect(plan.commands[0]).toContain("::b1");
-    expect(outcome_of(harness, "delete_archive", [cmd_result(0, "5\n", "")]).content).toContain("for b1");
+    expect(plan.read([cmd_result(0, "5\n", "")]).content).toContain("for b1");
   });
 
   it("refuses an archive it has not listed", () => {
@@ -1371,8 +1385,8 @@ describe("delete", () => {
   it("forgets the deleted archive's listings", () => {
     const harness = make(DELETE_CFG);
     listed(harness, "b2", "b1");
-    harness.repository.interpret_action("browse_archive", [cmd_result(0, LISTING, "")], { archive: "b1", path: "" });
-    harness.repository.plan_action("delete_archive", { archive: "b1" });
+    harness.repository.read_browse(cmd_result(0, LISTING, ""), "b1", "");
+    harness.repository.delete_archive("b1");
     expect(harness.repository.listing("b1", "")).toBeNull();
   });
 });
@@ -1436,7 +1450,7 @@ describe("diff", () => {
   it("still counts the changes without its archive", () => {
     const harness = make();
     listed(harness, "b2", "b1");
-    const outcome = outcome_of(harness, "diff_archive", [cmd_result(0, "added       1.20 kB etc/new", "")]);
+    const outcome = harness.repository.read_diff(cmd_result(0, "added       1.20 kB etc/new", ""), null);
     expect(outcome.logs).toEqual([["Changes in the archive: 1", "INFO"]]);
   });
 });
@@ -1465,7 +1479,6 @@ describe("job preflight", () => {
 
   it("records no job for a skipped launch and does not call it a failure", () => {
     const harness = make(BACKUP_CFG);
-    harness.repository.plan_action("run_backup");
     const outcome = outcome_of(harness, "run_backup", [cmd_result(0, "__XBACKUPS_SKIP__ host:22 is not answering SSH\n", "")]);
     expect(outcome.success).toBe(true);
     expect(outcome.status).toBeNull();
@@ -1573,8 +1586,9 @@ describe("check kinds", () => {
     ["data", "--verify-data", "check-data"],
   ])("runs a %s check with %s as %s", (kind, option, job) => {
     const harness = make();
-    expect(plan_of(harness, "check_repo", { kind }).commands[0]).toContain(option);
-    harness.apply(harness.repository.interpret_action("check_repo", [cmd_result(0, "91\n", "")]));
+    const plan = plan_of(harness, "check_repo", { kind });
+    expect(plan.commands[0]).toContain(option);
+    harness.apply(plan.read([cmd_result(0, "91\n", "")]));
     expect(harness.jobs.running()!.kind).toBe(job);
   });
 
