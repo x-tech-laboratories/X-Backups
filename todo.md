@@ -208,7 +208,7 @@ mounts) is now in: tasks 35–37 and 47–56.
 29. [ ] **Read-only token and metrics.** A scoped token for read-only API access and a
     token-protected Prometheus `/metrics` (Borg UI, Borg Backup Server, BorgWarehouse). Today the
     API takes only the login session.
-30. [ ] **Job retry and history.** Rerun a failed job with the same action, and filter the job
+30. [x] **Job retry and history.** Rerun a failed job with the same action, and filter the job
     history by repository, kind and outcome (Borg Backup Server, Borgitory). Add a 24-hour and
     7-day job activity chart (Borg Backup Server).
 31. [ ] **Fuller restore verification.** Verify Restore checks one canary path. Add probe paths
@@ -440,6 +440,10 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     The Nix module sets the mode (`services.x-backups.configMode`). A declared repository shadows
     a page-managed one of the same name, and the page flags the shadowed copy. Each repository in
     the API carries `source: "declared" | "page"` and `editable`.
+
+    Started with the UI (tasks 38–46): repository summaries carry `source: "declared"`, and
+    `GET /api/repositories/:id/config` returns the declared fields read-only, with the passphrase
+    fields masked and `config_mode: "declarative"`. The page-managed file and the other modes remain.
 36. [ ] **Config editor.**
     - Build the form from `borg_fields` in `src/server/config.ts`, so a new field appears without
       page changes. Group it into Connection, Sources, Retention, Checks and Jobs.
@@ -453,42 +457,49 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     - Each save is logged as an event.
     - Each page-managed repository has "Show as Nix" and "Show as JSON", so it can be moved into
       the declared file. Once declared it shadows the page copy, which can then be deleted.
+
+    The read-only half is done: the repository page's Config tab shows the fields in these
+    groups under the banner, with "Show as JSON" and "Show as Nix". Editing remains.
 37. [ ] **Settings and their provenance.** Global settings get the same rule: poll interval,
     staleness thresholds (task 27), browse limit and theme. Each setting is tagged Declared, Saved
     or Default, as Borg UI does, and a declared setting is read-only.
-38. [ ] **App shell and routing.**
+38. [x] **App shell and routing.**
     - The header and sidebar from "Recommended layout", with a drawer on phones.
     - Routes for overview, repositories, repository tabs, archive, jobs, job, schedules, events
       and settings.
-    - The theme toggle comes with task 18.
-39. [ ] **Overview.** Clickable tiles, the needs-attention list (reasons from task 26), the jobs
+    - The theme toggle comes with task 18. Done ahead of it over the existing tokens (system,
+      light, dark, kept in localStorage); Halon still replaces the token blocks.
+39. [x] **Overview.** Clickable tiles, the needs-attention list (reasons from task 26), the jobs
     chart (task 30), running jobs beside upcoming timer runs, and total stored over time.
-40. [ ] **Repository page.**
+    The reasons are worked out in the page (`src/web/attention.ts`) until task 26 gives them from
+    the server.
+40. [x] **Repository page.**
     - Split the long page into tabs kept in the URL.
     - Group the actions into repository actions and archive actions.
     - Give each maintenance action a one-line description.
     - Show the outcome as a toast linking to the job, not a panel at the top.
-41. [ ] **Archive page.**
+41. [x] **Archive page.**
     - Breadcrumbs, the prev/next stepper and deltas against the previous archive.
     - A Changes tab built from `borg diff --json-lines`: colour by change type, net size per
       folder, and a Tree/Flat switch.
-    - A Files tab with search, restore and download (task 32).
-42. [ ] **Jobs page.** Jobs across all repositories with filters and paging in the URL, a duration
+    - A Files tab with search, restore and download (task 32). Download waits for task 32.
+42. [x] **Jobs page.** Jobs across all repositories with filters and paging in the URL, a duration
     bar against the median for each kind, retry (task 30), and a job page with a result bar and
     its output.
-43. [ ] **Confirm dialog and toasts.**
+43. [x] **Confirm dialog and toasts.**
     - One dialog component in place of every `confirm()`, naming the target and saying whether the
       action can be undone.
     - A typed name for Purge Excluded and for a forced Break Lock.
     - Toasts for outcomes, with errors also kept inline.
-44. [ ] **Live updates over SSE.**
-    - `GET /api/events/stream` for job state and output, poll results and config changes.
-    - The page refetches after a reconnect, and polls only while a job runs and the tab is
-      visible.
+44. [x] **Live updates over SSE.**
+    - `GET /api/stream` (kept apart from `/api/events`, which lists events) for job state and
+      output, poll results and config changes. Config changes join it with task 36.
+    - The page refetches after a reconnect, and polls only while the stream is down and the tab
+      is visible.
     - Show an error with Retry in place of silent failures.
-45. [ ] **Lists.** Search, sort, filter and paging, kept in the URL, for repositories, archives, jobs
+45. [x] **Lists.** Search, sort, filter and paging, kept in the URL, for repositories, archives, jobs
     and events. The header search goes across repositories and archives.
-46. [ ] **States and accessibility.**
+46. [x] **States and accessibility.**
     - Skeletons while loading, and empty states that say what to do next.
     - Status as text as well as colour, and labelled buttons.
     - Dialogs with a focus trap and Escape, and `aria-live` on job state.

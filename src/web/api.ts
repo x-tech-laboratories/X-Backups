@@ -4,16 +4,21 @@
 
 export type Status = "online" | "info" | "unavailable" | "warning" | "failed";
 
+export type JobState = "running" | "succeeded" | "failed" | "cancelled";
+
 export interface Job {
   id: number;
   repository_id: string;
   kind: string;
-  state: "running" | "succeeded" | "failed" | "cancelled";
+  command: string;
+  state: JobState;
   progress: string | null;
   exit_code: number | null;
   error: string | null;
   started_epoch: number;
   ended_epoch: number | null;
+  // Whether the job's action can be run again from its row.
+  retry: boolean;
   output?: string[];
 }
 
@@ -27,7 +32,7 @@ export interface Stats {
 export interface RepositorySummary {
   id: string;
   name: string;
-  host: string | null;
+  host: string;
   status: Status | null;
   max_age: number;
   last_poll_epoch: number | null;
@@ -37,6 +42,7 @@ export interface RepositorySummary {
   canary: { ok: boolean; checked_epoch: number; detail: string } | null;
   checks_passed: boolean | null;
   running_job: Job | null;
+  source: "declared" | "page";
 }
 
 export interface Archive {
@@ -76,6 +82,7 @@ export interface BrowserRow {
   path: string;
   dir: boolean;
   size: string;
+  size_bytes: number | null;
   mtime: string;
 }
 
@@ -86,11 +93,28 @@ export interface Listing {
   more: boolean;
 }
 
+export interface DiffChange {
+  path: string;
+  kind: "added" | "removed" | "modified" | "metadata" | "other";
+  added_bytes: number;
+  removed_bytes: number;
+  details: string[];
+}
+
+export interface Diff {
+  success: boolean;
+  content: string | null;
+  changes: DiffChange[];
+  more: boolean;
+}
+
+export type Level = "INFO" | "WARNING" | "ERROR";
+
 export interface EventRow {
   id: number;
   repository_id: string;
   epoch: number;
-  level: "INFO" | "WARNING" | "ERROR";
+  level: Level;
   message: string;
 }
 
@@ -129,6 +153,25 @@ export interface TimerRow {
   read_epoch: number;
 }
 
+export interface RepositoryConfig {
+  source: "declared" | "page";
+  editable: boolean;
+  config_mode: "declarative" | "mixed" | "page";
+  fields: Record<string, unknown>;
+}
+
+export interface SearchResults {
+  repositories: { id: string; name: string }[];
+  archives: { repository_id: string; name: string; epoch: number }[];
+}
+
+// What the server's stream says changed; null stands for "anything may have changed".
+export interface Change {
+  kind: "repository" | "job" | "timers";
+  repository_id: string | null;
+  job_id?: number;
+}
+
 // ── Requests ─────────────────────────────────────────────────────────────────
 
 export class LoginNeeded extends Error {}
@@ -144,4 +187,18 @@ export async function api<Answer>(path: string, body?: object): Promise<Answer> 
   const answer = await response.json();
   if (!response.ok) throw new Error(answer.error ?? `${response.status} ${response.statusText}`);
   return answer as Answer;
+}
+
+// A query string from the values that are set, so empty filters leave no trace in the URL.
+export function query(values: Record<string, string | number | null | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(values)) {
+    if (value !== null && value !== undefined && value !== "") params.set(name, String(value));
+  }
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+export function repository_path(id: string): string {
+  return `/api/repositories/${encodeURIComponent(id)}`;
 }

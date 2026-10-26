@@ -5,12 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>X-Backups</title>
   </head>
-  <body>
-    <header>
+  <body class="logged-out">
+    <a class="skip" href="#main" id="skip">Skip to content</a>
+    <header class="topbar">
+      <button id="menu" class="icon menu-button" aria-label="Open the menu" aria-expanded="false" aria-controls="sidebar">☰</button>
       <a href="#/" class="brand">X-Backups</a>
-      <button id="logout" class="link">Log out</button>
+      <div class="search" role="search">
+        <input id="search" type="search" placeholder="Search repositories and archives" aria-label="Search repositories and archives"
+          autocomplete="off" aria-controls="search-results" aria-expanded="false" />
+        <div id="search-results" class="search-results" hidden></div>
+      </div>
+      <a id="running" class="chip chip-info running-chip" href="#/jobs?state=running" hidden></a>
+      <button id="theme" class="icon" aria-label="Theme"></button>
+      <button id="logout">Log out</button>
     </header>
-    <main></main>
+    <div class="layout">
+      <nav id="sidebar" class="sidebar" aria-label="Main">
+        <a href="#/" data-section="">Overview</a>
+        <a href="#/repositories" data-section="repositories">Repositories</a>
+        <a href="#/jobs" data-section="jobs">Jobs</a>
+        <a href="#/schedules" data-section="schedules">Schedules</a>
+        <a href="#/events" data-section="events">Events</a>
+        <a href="#/settings" data-section="settings">Settings</a>
+        <p id="stream-state" class="stream-state muted small" role="status"></p>
+      </nav>
+      <div id="scrim" class="scrim" hidden></div>
+      <main id="main" tabindex="-1"></main>
+    </div>
+    <div id="toasts" class="toasts"></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

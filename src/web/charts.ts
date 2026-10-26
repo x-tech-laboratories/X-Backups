@@ -28,7 +28,9 @@ const margin = { left: 64, right: 8, top: 8, bottom: 20 };
 
 export function line_chart(title: string, series: Series[], format: (value: number) => string): HTMLElement {
   const points = series.flatMap((line) => line.points).filter(([, value]) => value !== null) as [number, number][];
-  if (points.length < 2) return empty(title, "Not enough polls yet to draw a trend.");
+  // A line needs two readings at different times, which one day of polls summed per day does not give.
+  const drawable = series.some((line) => new Set(line.points.filter(([, value]) => value !== null).map(([epoch]) => epoch)).size >= 2);
+  if (!drawable) return empty(title, "Not enough history yet to draw a trend.");
 
   const epochs = points.map(([epoch]) => epoch);
   const values = points.map(([, value]) => value);
@@ -75,6 +77,48 @@ export function bar_chart(title: string, bars: Bar[], format: (value: number) =>
         height: Math.max(1, height - margin.bottom - y(bar.value)).toFixed(1),
         fill: bar.color,
       }, svg("title", {}, `${bar.label}: ${format(bar.value)}`))),
+    ),
+  );
+}
+
+// ── Stacked bar chart ────────────────────────────────────────────────────────
+
+export interface Stack {
+  label: string;
+  parts: Bar[];
+}
+
+// One bar per bucket, its parts stacked in order, such as the jobs of each hour by outcome.
+export function stacked_bar_chart(title: string, stacks: Stack[], legend: [label: string, color: string][], format: (value: number) => string): HTMLElement {
+  const totals = stacks.map((stack) => stack.parts.reduce((sum, part) => sum + part.value, 0));
+  if (totals.every((total) => total === 0)) return empty(title, "Nothing ran in this period.");
+  const top = Math.max(...totals);
+  const slot = (width - margin.left - margin.right) / stacks.length;
+  const scale = (value: number) => value / top * (height - margin.top - margin.bottom);
+
+  const rects = stacks.flatMap((stack, index) => {
+    let base = height - margin.bottom;
+    return stack.parts.filter((part) => part.value > 0).map((part) => {
+      const tall = scale(part.value);
+      base -= tall;
+      return svg("rect", {
+        x: (margin.left + index * slot + slot * 0.15).toFixed(1),
+        y: base.toFixed(1),
+        width: Math.max(1, slot * 0.7).toFixed(1),
+        height: Math.max(1, tall).toFixed(1),
+        fill: part.color,
+      }, svg("title", {}, `${stack.label}: ${format(part.value)} ${part.label}`));
+    });
+  });
+
+  return figure(title, legend,
+    svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `${title}, ${format(totals.reduce((a, b) => a + b, 0))} in all` },
+      ...axis_lines(),
+      label(margin.left - 6, height - margin.bottom - scale(top), format(top), "end"),
+      label(margin.left - 6, height - margin.bottom, format(0), "end"),
+      label(margin.left, height - 4, stacks[0].label, "start"),
+      label(width - margin.right, height - 4, stacks[stacks.length - 1].label, "end"),
+      ...rects,
     ),
   );
 }

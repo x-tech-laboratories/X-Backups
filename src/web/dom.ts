@@ -1,6 +1,6 @@
 // Builds elements without innerHTML, so names from archives and logs are always shown as text.
 
-type Child = Node | string | number | null | undefined | false;
+export type Child = Node | string | number | null | undefined | false | Child[];
 
 type Attributes = Record<string, string | number | boolean | EventListener | null | undefined>;
 
@@ -12,12 +12,18 @@ export function h<Tag extends keyof HTMLElementTagNameMap>(tag: Tag, attributes:
     else if (value === true) element.setAttribute(name, "");
     else element.setAttribute(name, String(value));
   }
-  element.append(...children.filter((child) => child !== null && child !== undefined && child !== false).map(string_or_node));
+  element.append(...nodes(children));
   return element;
 }
 
-function string_or_node(child: Child): Node | string {
-  return child instanceof Node ? child : String(child);
+// The nodes a child stands for, with lists flattened and the empty values dropped.
+export function nodes(children: Child): (Node | string)[] {
+  if (!Array.isArray(children)) children = [children];
+  return children.flatMap((child): (Node | string)[] => {
+    if (Array.isArray(child)) return nodes(child);
+    if (child === null || child === undefined || child === false) return [];
+    return [child instanceof Node ? child : String(child)];
+  });
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -25,13 +31,24 @@ function string_or_node(child: Child): Node | string {
 export function size(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return "—";
   const units = ["B", "kB", "MB", "GB", "TB", "PB"];
-  let value = bytes;
+  let value = Math.abs(bytes);
   let unit = 0;
   while (value >= 1000 && unit < units.length - 1) {
     value /= 1000;
     unit += 1;
   }
-  return `${value.toFixed(value < 10 && unit > 0 ? 1 : 0)} ${units[unit]}`;
+  return `${bytes < 0 ? "−" : ""}${value.toFixed(value < 10 && unit > 0 ? 1 : 0)} ${units[unit]}`;
+}
+
+// A size change with its sign, such as +1.2 GB or −300 MB.
+export function size_change(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined) return "—";
+  return bytes > 0 ? `+${size(bytes)}` : size(bytes);
+}
+
+export function count_change(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return value > 0 ? `+${value.toLocaleString()}` : value < 0 ? `−${Math.abs(value).toLocaleString()}` : "0";
 }
 
 export function age(epoch: number | null | undefined): string {
@@ -43,13 +60,29 @@ export function age(epoch: number | null | undefined): string {
   return `${Math.round(seconds / 86400)}d ago`;
 }
 
+// How long until the epoch, or how long ago when it has passed.
+export function until(epoch: number | null): string {
+  if (epoch === null) return "—";
+  const seconds = epoch - Date.now() / 1000;
+  return seconds < 0 ? age(epoch) : `in ${duration(seconds)}`;
+}
+
 export function duration(seconds: number | null): string {
   if (seconds === null) return "—";
   if (seconds < 120) return `${Math.round(seconds)}s`;
   if (seconds < 7200) return `${Math.round(seconds / 60)}m`;
-  return `${(seconds / 3600).toFixed(1)}h`;
+  if (seconds < 172800) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${Math.round(seconds / 86400)}d`;
 }
 
 export function stamp(epoch: number): string {
   return new Date(epoch * 1000).toLocaleString();
+}
+
+export function plural(count: number, word: string): string {
+  return `${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}`;
+}
+
+export function now_seconds(): number {
+  return Date.now() / 1000;
 }
