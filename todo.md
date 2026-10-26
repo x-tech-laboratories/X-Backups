@@ -46,9 +46,8 @@ adapted where a task changes a contract.
 
 1. [ ] **Typed state.** Replace `MetricReader`, `CollectResult`'s metrics and metadata, and the
    JSON-in-metadata fields (`archive_list`, `check_ok_epoch`, `canary_ok`) with one
-   `RepositoryState` type that `poll` reads and returns. Remove X-Monitor UI leftovers:
-   `DEFAULT_LAYOUT`, `CardPair` and the `*_pair()` methods, and action `icon`, `variant` and `more`.
-   Files: `server/borg/types.ts`, `repository.ts`, `testing.ts`.
+   `RepositoryState` type that `poll` reads and returns. The X-Monitor UI leftovers are already
+   removed. Files: `server/borg/types.ts`, `repository.ts`, `testing.ts`.
 2. [ ] **One borg call per command.** Remove the framing: `sequence_command`, `split_poll`,
    `frame_line`, the `POLL_*` shell variables, the poll deadline and `CUT_SHORT`. `commands()`
    returns separate calls and `parse()` reads one result per call. Timeouts move to the runner

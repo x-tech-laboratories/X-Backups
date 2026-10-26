@@ -99,27 +99,12 @@ const TOPMOST_EXCLUDED =
 // How many listed folders the browser keeps before forgetting the least recently used.
 const LISTING_CACHE = 256;
 
-const DEFAULT_LAYOUT = [
-  ["host_card", "repo_card", "maxage_card", "state_card"],
-  ["size_card", "dedup_card", "count_card", "age_card"],
-  ["canary_card", "checks_card"],
-  ["archives"],
-  ["browser"],
-  ["jobs"],
-  ["events"],
-];
-
 // ── Action shapes ────────────────────────────────────────────────────────────
 
 export interface ActionSpec {
   name: string;
   action_id: string;
-  variant: "primary" | "secondary" | "danger";
-  icon: string;
   job?: string | string[];
-  more?: boolean;
-  kind?: "dialog";
-  dialog?: string;
   confirm?: string;
   detached?: boolean;
 }
@@ -148,8 +133,6 @@ export interface BackupSummary {
   repo_checks: boolean | null;
   repo_checked_epoch: number | null;
 }
-
-type CardPair = [text: string, color: MonitorStatus | null];
 
 interface PendingLaunch {
   kind: string;
@@ -727,34 +710,34 @@ export class BorgRepository {
     const has_retention = Object.keys(this.retention).length > 0;
     if (this.source_paths.length > 0) {
       actions.push(
-        { name: "Run Backup", action_id: "run_backup", job: "backup", variant: "primary", icon: "backup" },
-        { name: "Dry Run", action_id: "dry_run_backup", job: "dry-run", variant: "secondary", icon: "fact_check" },
+        { name: "Run Backup", action_id: "run_backup", job: "backup" },
+        { name: "Dry Run", action_id: "dry_run_backup", job: "dry-run" },
       );
     }
     if (this.canary_path) {
-      actions.push({ name: "Verify Restore", action_id: "verify_restore", more: true, variant: "secondary", icon: "verified", detached: true });
+      actions.push({ name: "Verify Restore", action_id: "verify_restore", detached: true });
     }
     if (this.repo) {
       actions.push(
-        { name: "Check", action_id: "check_repo", job: Object.keys(CHECK_KINDS).map(check_job_kind), variant: "secondary", icon: "health_and_safety" },
-        { name: "Compact", action_id: "compact_repo", job: "compact", variant: "secondary", icon: "compress" },
+        { name: "Check", action_id: "check_repo", job: Object.keys(CHECK_KINDS).map(check_job_kind) },
+        { name: "Compact", action_id: "compact_repo", job: "compact" },
       );
     }
     if (has_retention) {
-      actions.push({ name: "Prune Preview", action_id: "prune_preview", kind: "dialog", more: true, dialog: "prune_preview", variant: "secondary", icon: "content_cut" });
+      actions.push({ name: "Prune Preview", action_id: "prune_preview" });
     }
     if (this.allow_delete && has_retention) {
       actions.push({
-        name: "Prune", action_id: "prune_repo", job: "prune", more: true, variant: "danger", icon: "delete_sweep",
+        name: "Prune", action_id: "prune_repo", job: "prune",
         confirm: `Prune ${this.repo} by its retention policy? Archives it drops are gone for good — run Prune Preview ` +
           "first to see which. Space is freed by a Compact afterwards.",
       });
     }
     if (this.allow_purge) {
       actions.push(
-        { name: "Purge Preview", action_id: "purge_preview", job: "purge-preview", more: true, variant: "secondary", icon: "filter_alt" },
+        { name: "Purge Preview", action_id: "purge_preview", job: "purge-preview" },
         {
-          name: "Purge Excluded", action_id: "purge_excluded", job: "purge", more: true, variant: "danger", icon: "cleaning_services",
+          name: "Purge Excluded", action_id: "purge_excluded", job: "purge",
           confirm: `Rewrite every archive in ${this.repo} without the files its exclude patterns now drop, then compact? ` +
             "Those files are gone from every archive for good — run Purge Preview first to see which. It holds the " +
             "repository lock for the whole run, so backups wait until it ends.",
@@ -763,7 +746,7 @@ export class BorgRepository {
     }
     if (this.allow_delete) {
       actions.push({
-        name: "Break Lock", action_id: "break_lock", more: true, variant: "danger", icon: "lock_open",
+        name: "Break Lock", action_id: "break_lock",
         confirm: `Break the locks on ${this.repo}? Only do this when no borg process is using it; breaking a live lock ` +
           "can corrupt the repository.",
       });
@@ -1277,42 +1260,6 @@ export class BorgRepository {
     return this.data?.latest_metric("last_backup_epoch")?.value ?? null;
   }
 
-  state_pair(): CardPair {
-    const epoch = this.newest_epoch();
-    if (epoch === null) return ["UNKNOWN", "unavailable"];
-    if (Math.trunc(epoch) === 0) return ["NO ARCHIVES", "failed"];
-    return now_seconds() - Math.trunc(epoch) <= this.max_age ? ["OK", "online"] : ["STALE", "failed"];
-  }
-
-  age_pair(): CardPair {
-    const epoch = this.newest_epoch();
-    if (epoch === null) return ["--", "failed"];
-    if (Math.trunc(epoch) === 0) return ["Never", "failed"];
-    const age = now_seconds() - Math.trunc(epoch);
-    return [format_age(age), age <= this.max_age ? "online" : "failed"];
-  }
-
-  canary_pair(): CardPair {
-    if (!this.canary_path) return ["Not configured", null];
-    const ok = this.data?.latest_metric("canary_ok") ?? null;
-    const checked = this.data?.latest_metric("canary_checked_epoch") ?? null;
-    if (ok === null || checked === null) return ["Pending", "unavailable"];
-    const when = format_age(now_seconds() - Math.trunc(checked.value));
-    return ok.value >= 0.5 ? [`Passed ${when}`, "online"] : [`Failed ${when}`, "failed"];
-  }
-
-  checks_pair(): CardPair {
-    if (this.expected_checks().size === 0) return ["Not configured", null];
-    const ok = this.data?.latest_metric("checks_ok") ?? null;
-    const oldest = this.data?.latest_metric("check_ok_epoch") ?? null;
-    if (ok === null || oldest === null) return ["Pending", "unavailable"];
-    if (ok.value < 0.5) {
-      return [Object.values(this.stored_checks()).some((state) => state.failed) ? "Failed" : "Stale", "failed"];
-    }
-    if (!oldest.value) return ["Pending", "unavailable"];
-    return [`Passed ${format_age(now_seconds() - Math.trunc(oldest.value))}`, "online"];
-  }
-
   // This repository's backup health in one flat record, for a roll-up across repositories.
   backup_summary(): BackupSummary {
     const now = now_seconds();
@@ -1347,57 +1294,6 @@ export class BorgRepository {
       added: archive.deduplicated !== undefined ? format_size(archive.deduplicated) : "--",
       files: archive.nfiles !== undefined ? Math.trunc(archive.nfiles).toLocaleString("en-US") : "--",
     }));
-  }
-
-  // The page's cards, dialogs and tables, described as data for whichever front end draws them.
-  get ui_spec() {
-    return {
-      layout: DEFAULT_LAYOUT,
-      cards: {
-        repo_card: { title: "REPO", value: this.repo || "--" },
-        maxage_card: { title: "MAX AGE", value: format_duration(this.max_age) },
-        state_card: { title: "CURRENT STATE", pair: "state_pair" },
-        size_card: { metric: "deduplicated_size", title: "REPO SIZE", format: "bytes_gb" },
-        dedup_card: { metric: "dedup_ratio", title: "DEDUP RATIO", format: "dedup_ratio" },
-        count_card: { metric: "archive_count", title: "ARCHIVES", format: "int" },
-        age_card: { title: "LAST ARCHIVE", pair: "age_pair" },
-        canary_card: { title: "RESTORE CHECK", pair: "canary_pair" },
-        checks_card: { title: "REPO CHECKS", pair: "checks_pair" },
-      },
-      dialogs: {
-        prune_preview: { kind: "read", title: `Prune preview: ${this.name}`, action_id: "prune_preview", render: "textarea_readonly" },
-        diff: { kind: "read", title: "Changes in {row[name]}", action_id: "diff_archive", params: { archive: "name" }, render: "textarea_readonly" },
-        restore: {
-          kind: "form", title: "Restore from {row[name]}", action_id: "restore_archive", params: { archive: "name" }, submit_label: "Restore",
-          fields: [{ name: "path", label: "Path to restore", placeholder: `Extracted into a new folder under ${this.restore_dir}` }],
-        },
-      },
-      tables: {
-        archives: {
-          title: "Archives",
-          row_key: "name",
-          rows: "archive_rows",
-          columns: [
-            { name: "name", label: "Archive", field: "name", align: "left", sortable: true },
-            { name: "created", label: "Created", field: "created", align: "left", sortable: true },
-            { name: "age", label: "Age", field: "age", align: "left" },
-            { name: "size", label: "Size", field: "size", align: "right", sortable: true },
-            { name: "added", label: "Added", field: "added", align: "right", sortable: true },
-            { name: "files", label: "Files", field: "files", align: "right", sortable: true },
-          ],
-          row_actions: [
-            { id: "diff", icon: "difference", tooltip: "Changes since the previous archive", kind: "dialog", dialog: "diff" },
-            { id: "restore", icon: "restore", tooltip: "Restore a path", kind: "dialog", dialog: "restore" },
-            ...(this.allow_delete ? [{
-              id: "delete", icon: "delete", tooltip: "Delete archive", color: "negative", action_id: "delete_archive",
-              params: { archive: "name" }, confirm: "Delete archive {row[name]}? It cannot be recovered.",
-            }] : []),
-          ],
-        },
-      },
-      job_panel: { widget: "jobs", title: "Jobs", history_limit: 10 },
-      events: { title: "Events", limit: 100, full_height: true },
-    };
   }
 }
 

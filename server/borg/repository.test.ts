@@ -569,23 +569,10 @@ describe("actions", () => {
     ]);
   });
 
-  it("puts occasional tools in the more menu", () => {
-    const more = make(FULL_CFG).repository.get_actions().filter((spec) => spec.more).map((spec) => spec.action_id);
-    expect(more).toEqual(["verify_restore", "prune_preview", "prune_repo", "purge_preview", "purge_excluded", "break_lock"]);
-  });
-
-  it("opens the prune preview in its dialog", () => {
-    const harness = make(FULL_CFG);
-    const spec = action(harness, "prune_preview");
-    expect(spec.kind).toBe("dialog");
-    expect(Object.keys(harness.repository.ui_spec.dialogs)).toContain(spec.dialog);
-  });
-
   it("asks before destructive tools and names the repo", () => {
     const harness = make(FULL_CFG);
     for (const action_id of ["prune_repo", "purge_excluded", "break_lock"]) {
       const spec = action(harness, action_id);
-      expect(spec.variant).toBe("danger");
       expect(spec.confirm).toContain(BASE_CFG.repo);
     }
   });
@@ -603,16 +590,6 @@ describe("actions", () => {
   it("leaves Break Lock normal while no job runs", () => {
     const harness = make(FULL_CFG);
     expect(harness.repository.action_state(action(harness, "break_lock"))).toBe("normal");
-  });
-
-  it("keeps job controls out of the job panel", () => {
-    const spec = make().repository.ui_spec;
-    expect(spec).not.toHaveProperty("buttons");
-    expect(spec.job_panel).not.toHaveProperty("run_action_id");
-  });
-
-  it("titles the archives table", () => {
-    expect(make().repository.ui_spec.tables.archives.title).toBe("Archives");
   });
 
   it("answers an unknown action with null", () => {
@@ -1715,7 +1692,8 @@ describe("check kinds", () => {
     const harness = make({ ...TRACKED_CFG, check_kinds: { extract: "32d" } });
     harness.repository.commands();
     cycle_with(harness);
-    expect(harness.repository.checks_pair()).toEqual(["Pending", "unavailable"]);
+    expect(harness.metrics.latest_metric("checks_ok")!.value).toBe(1);
+    expect(harness.metrics.latest_metric("check_ok_epoch")!.value).toBe(0);
   });
 
   it("fails after a failed check until one succeeds", () => {
