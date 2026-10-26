@@ -22,19 +22,20 @@ graph, groups, triggers, agent, sync or per-plugin UI contract.
 - Long jobs run as transient systemd units on the target (`systemd-run`): they survive an X-Backups
   restart, `journalctl` gives their output, and `systemctl stop` cancels them. Verify Restore and
   Diff are read-only, so they run as ordinary calls.
-- Backups stay scheduled by each host's own timers (borgmatic or NixOS `services.borgbackup`).
-  X-Backups watches them and runs actions on demand.
-- No notifications of its own: `/api/health` reports each repository's status and X-Monitor alerts
-  on it.
+- Declared repositories stay scheduled by each host's own timers (borgmatic or NixOS
+  `services.borgbackup`), which X-Backups watches. Page-managed repositories can be scheduled by
+  X-Backups itself (task 49).
+- `/api/health` reports each repository's status and X-Monitor alerts on it; X-Backups' own
+  notifications (task 50) sit beside that.
 
 ## Open questions
 
 - Do all repository hosts have systemd and allow `sudo systemd-run` for the SSH user? If not, keep
   the `setsid` jobs in `src/server/borg/detached.ts` and skip task 4.
 - Are there repositories on hosts SSH cannot reach, such as a laptop that sleeps (X-Monitor reaches
-  those through its agent today)? Each one needs a plan before cutover.
-- Does any host lack its own backup timer? Only then does X-Backups need a scheduler (cron parsing is
-  in `../X-Monitor/x_monitor/core/coordination/schedule.py`).
+  those through its agent today)? Task 56's agent covers them.
+- Does any host lack its own backup timer? Task 49's scheduler covers it (cron parsing is in
+  `../X-Monitor/x_monitor/core/coordination/schedule.py`).
 
 ## Tasks
 
@@ -191,11 +192,10 @@ agent per app, read-only, notes into this file. Ordered by value to X-Backups.
 
 ### Features the review found missing
 
-Flagged for another session; each wants its source review (tasks 19–25) first. Left out as out of
-scope: notifications (X-Monitor alerts), schedulers and backup plans, repository creation, users
-and roles, OIDC, cloud sync, hooks, database dumps, agents, and FUSE mounts. Editing config from the
-page is back in as tasks 35–37, and the rest is reweighed under "Feature parity" in the UI layout
-review below.
+Flagged for another session; each wants its source review (tasks 19–25) first. What was once left
+out as out of scope (editing config from the page, notifications, schedulers and backup plans,
+repository creation, users and roles, OIDC, cloud sync, hooks, database dumps, agents and FUSE
+mounts) is now in: tasks 35–37 and 47–56.
 
 26. [ ] **Health levels.** `/api/health` answers `status: "ok"` whatever the repositories say. Give
     it an overall ok, warning or critical with each repository's reasons, so X-Monitor can alert on
@@ -422,22 +422,8 @@ Home Assistant entity defined in YAML "cannot be managed from the UI".
 
 #### Feature parity
 
-The out-of-scope list above, weighed against having every capability the other apps have. Each one
-is the user's call; the suggestion follows the dash.
-
-- Repository creation (`borg init`, Borg UI and Borgitory): add in `page` and `mixed` modes, with
-  task 36.
-- Schedules (all but BorgWarehouse):
-  - Now: show the host timers as a weekly calendar, as Borg Backup Server does.
-  - Later: optionally write a systemd timer on the host for page-managed repositories.
-- Notifications (all but Vorta and BorgWeb): X-Monitor alerts on `/api/health` (task 26). Add an
-  Apprise URL list with a Test button only if X-Monitor cannot reach someone.
-- Users and roles, OIDC and TOTP (Borg UI, Borg Backup Server, BorgWarehouse): add TOTP first,
-  taking X-Monitor's as the reference. Roles fit once task 29's read-only token exists.
-- FUSE mount (Borg UI, Borgitory, Vorta): download through `export-tar` (task 32) covers its use
-  from a browser, so leave it out.
-- Cloud sync, hooks, database dumps and agents: these belong to the hosts' own backup jobs, so
-  leave them out.
+Decided on 2026-10-26: everything on the old out-of-scope list comes in, so X-Backups does at least
+what each of the other apps does. These are tasks 47–56, to be built after the UI (tasks 38–46).
 
 #### Tasks
 
@@ -507,6 +493,42 @@ is the user's call; the suggestion follows the dash.
     - Status as text as well as colour, and labelled buttons.
     - Dialogs with a focus trap and Escape, and `aria-live` on job state.
     - Mobile layouts for the tables, as card lists or with columns dropped.
+
+#### Parity tasks
+
+47. [ ] **Repository creation.** `borg init` from the page in `mixed` and `page` modes (task 35),
+    with the encryption mode, the passphrase handled as in task 36, and a preview of the command
+    that will run (Borg UI, Borgitory). Also import an existing repository by opening it with its
+    passphrase before saving.
+48. [ ] **Schedule calendar.** A weekly calendar of every host timer and its runs, with missed and
+    failed runs marked and a day switcher on phones (Borg Backup Server).
+49. [ ] **Scheduler and backup plans.** For page-managed repositories, X-Backups owns the schedule:
+    a cron or `OnCalendar` expression with presets and a readable description, written as a
+    systemd timer on the host or run by X-Backups itself, with "Run now", enable and disable. A
+    plan chains backup, prune, compact and check, each with its own frequency, as borgmatic's
+    `checks` do (Borg UI, Borgitory, Vorta). Declared repositories keep their host timers.
+50. [ ] **Notifications.** Apprise URLs, an SMTP sender and a webhook with a secret, each with a
+    Test button. Events: backup failed, completed with warnings, missed schedule, stale, check or
+    canary failed, recovered. Failure alerts are deduplicated until the state changes (Borg Backup
+    Server, Borg UI, BorgWarehouse, Borgitory). This sits alongside X-Monitor's alert on
+    `/api/health`.
+51. [ ] **Users, roles and login.** Several users with roles (admin, operator, viewer) and
+    per-repository access, TOTP with recovery codes (X-Monitor's login as the reference), OIDC,
+    and login from a reverse proxy's header. Builds on task 29's tokens (Borg UI, Borg Backup
+    Server, BorgWarehouse).
+52. [ ] **FUSE mount.** Mount an archive or the whole repository on its host with `borg mount`,
+    show the mount point and Unmount, and unmount when the job ends or X-Backups starts (Borg UI,
+    Borgitory, Vorta).
+53. [ ] **Cloud sync.** Mirror a repository to an rclone remote after each backup or on a schedule,
+    with a Test button and the last sync's state on the card (Borg UI, Borgitory).
+54. [ ] **Hooks.** Commands before and after a backup or plan run on the host, ordered, each with a
+    timeout and with a choice to stop the run if it fails (Borgitory, Vorta).
+55. [ ] **Database dumps.** Dump PostgreSQL, MySQL, MariaDB, MongoDB or SQLite into the archive as
+    borgmatic's data sources do, and restore one database from an archive (borgmatic, Borg Backup
+    Server).
+56. [ ] **Agents.** A small agent for hosts SSH cannot reach, such as a sleeping laptop: it calls
+    in over HTTPS with a token, picks up queued actions, and reports results and progress (Borg
+    Backup Server, Borg UI). This settles the second open question.
 
 ## Apps to review for features
 
