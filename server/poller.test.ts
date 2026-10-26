@@ -53,7 +53,7 @@ describe("polling", () => {
 
     expect(first).toBe(second);
     await first;
-    expect(commands).toHaveLength(1);
+    expect(commands.filter((command) => !command.startsWith("systemctl"))).toHaveLength(1);
   });
 
   it("reports a failing run as a failed poll", async () => {
@@ -75,6 +75,20 @@ describe("polling", () => {
 
     expect(restarted.repositories.get("odin")!.repository.state.archive_count).toBe(1);
     expect(restarted.repositories.get("odin")!.status).toBe(first.status);
+  });
+});
+
+describe("timers", () => {
+  it("reads the host's backup timers once however often it polls", async () => {
+    const timers = '[{"next": 2000000000, "last": 1000000000, "unit": "borgbackup-job-home.timer", "activates": "borgbackup-job-home.service"}]' +
+      "\n===XBACKUPS_SERVICES===\nId=borgbackup-job-home.service\nResult=success\nExecMainStatus=0\n";
+    poller = make((command) => cmd_result(0, command.startsWith("systemctl") ? timers : LIST, ""));
+
+    await poller.poll("odin");
+    await poller.poll("odin");
+
+    expect(store.timers()).toMatchObject([{ host: "local", unit: "borgbackup-job-home.timer", next_epoch: 2000, last_epoch: 1000, result: "success" }]);
+    expect(commands.filter((command) => command.startsWith("systemctl"))).toHaveLength(1);
   });
 });
 

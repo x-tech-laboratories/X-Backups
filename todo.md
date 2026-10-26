@@ -129,7 +129,7 @@ adapted where a task changes a contract.
 
 ### Then
 
-17. [ ] **Dashboard.** Grow the web page (task 13) into a dashboard drawing on the apps under
+17. [x] **Dashboard.** Grow the web page (task 13) into a dashboard drawing on the apps under
     "Apps to review for features". Configuration stays declarative in the Nix module, so the page
     shows state and runs actions but never edits repositories, sources or schedules. It covers:
     - destination repositories: size, deduplication and compression over time, archive counts,
@@ -141,6 +141,9 @@ adapted where a task changes a contract.
     Needs the store (task 9) to keep history, not only the latest state, and the poller (task 10)
     to read each host's timers (`systemctl list-timers` or borgmatic's config). Review the apps
     first to pick the graphs and views worth copying.
+
+    Left for later: poll history grows without bound (downsample rows older than 90 days), and
+    source changes between archives are shown only through Diff, not counted per archive.
 18. [ ] **Halon theme.** Theme the web page (tasks 13 and 17) with Halon, as X-Monitor does: a
     `halon-tokens.css` holding every color for the light and dark schemes, following
     `prefers-color-scheme`, and a `halon.css` with the component rules, so no other file states a

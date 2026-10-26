@@ -6,6 +6,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
+import type { Timer } from "./timers.ts";
 import type { CollectResult, JobRecord, JobState, JobStore, LogLevel, MonitorStatus, RepositoryState } from "./borg/types.ts";
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
@@ -39,6 +40,11 @@ export interface EventRow {
   epoch: number;
   level: LogLevel;
   message: string;
+}
+
+export interface TimerRow extends Timer {
+  host: string;
+  read_epoch: number;
 }
 
 export interface JobRow extends JobRecord {
@@ -107,6 +113,17 @@ const SCHEMA = `
     line TEXT NOT NULL,
     PRIMARY KEY (job_id, line_number)
   );
+  CREATE TABLE IF NOT EXISTS timers (
+    host TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    service TEXT NOT NULL,
+    next_epoch INTEGER,
+    last_epoch INTEGER,
+    result TEXT,
+    exit_status INTEGER,
+    read_epoch INTEGER NOT NULL,
+    PRIMARY KEY (host, unit)
+  );
   CREATE INDEX IF NOT EXISTS events_by_repository ON events (repository_id, id);
   CREATE INDEX IF NOT EXISTS jobs_by_repository ON jobs (repository_id, id);
 `;
@@ -147,7 +164,10 @@ export class Store {
     this.transaction(() => {
       if (result.state !== null) this.save_state(repository_id, result.state);
       if (options.poll && result.state !== null) this.add_poll(repository_id, epoch, result.state, result.status);
+      // A repository poll's routine lines would bury everything else, so only its warnings and errors are kept.
+      const routine = options.poll && result.status !== null;
       for (const [message, level] of result.logs) {
+        if (routine && level === "INFO") continue;
         this.run("INSERT INTO events (repository_id, epoch, level, message) VALUES (?, ?, ?, ?)", repository_id, epoch, level, message);
       }
     });
@@ -227,6 +247,34 @@ export class Store {
       epoch: Number(row.epoch),
       level: row.level as LogLevel,
       message: String(row.message),
+    }));
+  }
+
+  // ── Timers ───────────────────────────────────────────────────────────────
+
+  // Replaces what is known of a host's timers with a fresh read.
+  replace_timers(host: string, timers: Timer[], epoch = now_seconds()): void {
+    this.transaction(() => {
+      this.run("DELETE FROM timers WHERE host = ?", host);
+      for (const timer of timers) {
+        this.run(
+          "INSERT INTO timers (host, unit, service, next_epoch, last_epoch, result, exit_status, read_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          host, timer.unit, timer.service, timer.next_epoch, timer.last_epoch, timer.result, timer.exit_status, epoch,
+        );
+      }
+    });
+  }
+
+  timers(): TimerRow[] {
+    return this.all("SELECT * FROM timers ORDER BY host, unit").map((row) => ({
+      host: String(row.host),
+      unit: String(row.unit),
+      service: String(row.service),
+      next_epoch: number_or_null(row.next_epoch),
+      last_epoch: number_or_null(row.last_epoch),
+      result: row.result === null ? null : String(row.result),
+      exit_status: number_or_null(row.exit_status),
+      read_epoch: Number(row.read_epoch),
     }));
   }
 

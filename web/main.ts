@@ -1,12 +1,19 @@
 // The page: a login, the repository grid, and each repository's archives, browser, jobs and events.
 
-import { api, LoginNeeded, type Action, type EventRow, type Job, type Listing, type Outcome, type RepositoryDetail, type RepositorySummary } from "./api.ts";
+import {
+  api, LoginNeeded, type Action, type EventRow, type History, type Job, type Listing, type Outcome, type RepositoryDetail,
+  type RepositorySummary, type TimerRow,
+} from "./api.ts";
+import { bar_chart, line_chart, strip } from "./charts.ts";
 import { age, duration, h, size, stamp } from "./dom.ts";
 import "./style.css";
 
 const main = document.querySelector<HTMLElement>("main")!;
 const refresh_interval_in_milliseconds = 15_000;
 const job_follow_interval_in_milliseconds = 2_000;
+const history_span_in_seconds = 90 * 86400;
+// A timer whose next run is this far in the past has missed it.
+const missed_grace_in_seconds = 3600;
 
 let refresh_timer: number | undefined;
 
@@ -64,26 +71,84 @@ document.querySelector("#logout")?.addEventListener("click", async () => {
 // ── Overview ─────────────────────────────────────────────────────────────────
 
 async function show_overview(): Promise<void> {
+  const totals = h("div");
   const grid = h("div", { class: "grid" });
+  const schedules = h("div");
   const jobs = h("div");
   const events = h("div");
   const update = async () => {
-    const [repositories, recent_jobs, recent_events] = await Promise.all([
+    const [repositories, recent_jobs, recent_events, timers] = await Promise.all([
       api<RepositorySummary[]>("/api/repositories"),
       api<Job[]>("/api/jobs?limit=15"),
       api<EventRow[]>("/api/events?limit=30"),
+      api<TimerRow[]>("/api/timers"),
     ]);
+    totals.replaceChildren(totals_row(repositories, timers));
     grid.replaceChildren(...repositories.map(repository_card));
+    schedules.replaceChildren(timers_table(timers, true));
     jobs.replaceChildren(jobs_table(recent_jobs, true));
     events.replaceChildren(events_list(recent_events, true));
   };
   await update();
   main.replaceChildren(
+    totals,
     h("h2", {}, "Repositories"), grid,
+    h("section", {}, h("h2", {}, "Schedules"), schedules),
     h("section", {}, h("h2", {}, "Recent jobs"), jobs),
     h("section", {}, h("h2", {}, "Events"), events),
   );
   keep_refreshing(update);
+}
+
+// The fleet at a glance: how many repositories are healthy, failing or overdue, and what they store.
+function totals_row(repositories: RepositorySummary[], timers: TimerRow[]): HTMLElement {
+  const failing = repositories.filter((repository) => repository.status === "failed" || repository.status === "unavailable").length;
+  const late = repositories.filter(overdue).length;
+  const stored = repositories.reduce((sum, repository) => sum + (repository.stats?.deduplicated_size ?? 0), 0);
+  const running = repositories.filter((repository) => repository.running_job).length;
+  const missed = timers.filter((timer) => timer_problem(timer) !== null).length;
+  const tile = (label: string, value: string | number, bad = false) =>
+    h("div", { class: bad ? "tile tile-bad" : "tile" }, h("div", { class: "tile-value" }, value), h("div", { class: "muted" }, label));
+  return h("div", { class: "tiles" },
+    tile("repositories", repositories.length),
+    tile("failing", failing, failing > 0),
+    tile("overdue", late, late > 0),
+    tile("timer problems", missed, missed > 0),
+    tile("jobs running", running),
+    tile("stored", size(stored)),
+  );
+}
+
+// Why a timer needs attention: it missed its run, its last run failed, or it never ran; null when it is fine.
+function timer_problem(timer: TimerRow): string | null {
+  const now = Date.now() / 1000;
+  if (timer.next_epoch !== null && timer.next_epoch < now - missed_grace_in_seconds) return "missed";
+  if (timer.result !== null && timer.result !== "success") return `last run: ${timer.result}${timer.exit_status ? ` (exit ${timer.exit_status})` : ""}`;
+  if (timer.last_epoch === null) return "never ran";
+  return null;
+}
+
+function until(epoch: number | null): string {
+  if (epoch === null) return "—";
+  const seconds = epoch - Date.now() / 1000;
+  return seconds < 0 ? age(epoch) : `in ${duration(seconds)}`;
+}
+
+function timers_table(timers: TimerRow[], with_host: boolean): HTMLElement {
+  if (timers.length === 0) return h("p", { class: "muted" }, "No backup timers found on the hosts.");
+  return h("table", {},
+    h("thead", {}, h("tr", {}, with_host && h("th", {}, "Host"), h("th", {}, "Timer"), h("th", {}, "Last run"), h("th", {}, "Next run"), h("th", {}, "State"))),
+    h("tbody", {}, ...timers.map((timer) => {
+      const problem = timer_problem(timer);
+      return h("tr", {},
+        with_host && h("td", {}, timer.host),
+        h("td", { title: timer.service }, timer.unit),
+        h("td", { title: timer.last_epoch ? stamp(timer.last_epoch) : "" }, age(timer.last_epoch)),
+        h("td", { title: timer.next_epoch ? stamp(timer.next_epoch) : "" }, until(timer.next_epoch)),
+        h("td", {}, h("span", { class: `badge ${problem ? "status-failed" : "status-online"}` }, problem ?? "ok")),
+      );
+    })),
+  );
 }
 
 function overdue(repository: RepositorySummary): boolean {
@@ -102,7 +167,7 @@ function verdict(ok: boolean | null | undefined, label: string): HTMLElement {
 function repository_card(repository: RepositorySummary): HTMLElement {
   return h("a", { class: "card", href: `#/repositories/${encodeURIComponent(repository.id)}` },
     h("div", { class: "card-head" }, h("strong", {}, repository.name), status_badge(repository.status)),
-    h("div", { class: "muted" }, repository.host ?? "this machine"),
+    h("div", { class: "muted" }, repository.host),
     h("dl", {},
       h("dt", {}, "Last backup"),
       h("dd", { class: overdue(repository) ? "overdue" : "" }, age(repository.last_backup_epoch), overdue(repository) ? " · overdue" : ""),
@@ -122,6 +187,9 @@ async function show_repository(id: string): Promise<void> {
   const header = h("div");
   const actions = h("div", { class: "actions" });
   const output = h("div", { class: "output-panel" });
+  const history = h("div", { class: "charts" });
+  const sources = h("div");
+  const schedules = h("div");
   const archives = h("div");
   const browser = h("div");
   const jobs = h("div");
@@ -135,11 +203,17 @@ async function show_repository(id: string): Promise<void> {
   };
 
   const update = async () => {
-    const [repository, repository_jobs, repository_events] = await Promise.all([
+    const since = Math.floor(Date.now() / 1000) - history_span_in_seconds;
+    const [repository, repository_jobs, repository_events, repository_history, timers] = await Promise.all([
       api<RepositoryDetail>(base),
-      api<Job[]>(`/api/jobs?repository=${encodeURIComponent(id)}&limit=20`),
+      api<Job[]>(`/api/jobs?repository=${encodeURIComponent(id)}&limit=50`),
       api<EventRow[]>(`/api/events?repository=${encodeURIComponent(id)}&limit=50`),
+      api<History>(`${base}/history?since=${since}`),
+      api<TimerRow[]>("/api/timers"),
     ]);
+    history.replaceChildren(...history_charts(repository_history, repository_jobs));
+    sources.replaceChildren(sources_list(repository));
+    schedules.replaceChildren(timers_table(timers.filter((timer) => timer.host === repository.host), false));
     header.replaceChildren(repository_header(repository));
     actions.replaceChildren(...repository.actions.filter((action) => action.state !== "hidden").map((action) => action_button(action, run)));
     archives.replaceChildren(archives_table(repository, run, (archive) => void open_browser(browser, base, archive, "", run)));
@@ -151,12 +225,56 @@ async function show_repository(id: string): Promise<void> {
   main.replaceChildren(
     h("p", {}, h("a", { href: "#/" }, "← All repositories")),
     header, actions, output,
+    h("section", {}, h("h2", {}, "History"), history),
     h("section", {}, h("h2", {}, "Archives"), archives),
     browser,
     h("section", {}, h("h2", {}, "Jobs"), jobs),
+    h("section", {}, h("h2", {}, "Sources"), sources),
+    h("section", {}, h("h2", {}, "Schedules on this host"), schedules),
     h("section", {}, h("h2", {}, "Events"), events),
   );
   keep_refreshing(update);
+}
+
+const job_colors: Record<Job["state"], string> = {
+  succeeded: "var(--good)",
+  failed: "var(--bad)",
+  cancelled: "var(--warn)",
+  running: "var(--accent)",
+};
+
+function history_charts(history: History, jobs: Job[]): HTMLElement[] {
+  const polls = history.polls;
+  const archives = history.archives.slice(0, 40).reverse();
+  const finished = jobs.filter((job) => job.ended_epoch !== null).slice(0, 40).reverse();
+  return [
+    line_chart("Repository size", [
+      { label: "original", color: "var(--chart-1)", points: polls.map((poll) => [poll.epoch, poll.original_size]) },
+      { label: "compressed", color: "var(--chart-2)", points: polls.map((poll) => [poll.epoch, poll.compressed_size]) },
+      { label: "stored", color: "var(--chart-3)", points: polls.map((poll) => [poll.epoch, poll.deduplicated_size]) },
+    ], size),
+    line_chart("Archives", [
+      { label: "archives", color: "var(--chart-1)", points: polls.map((poll) => [poll.epoch, poll.archive_count]) },
+    ], (value) => String(Math.round(value))),
+    bar_chart("Data unique to each archive", archives.map((archive) => ({
+      label: archive.name, value: archive.deduplicated_size ?? 0, color: "var(--chart-3)",
+    })), size),
+    bar_chart("Job durations", finished.map((job) => ({
+      label: `${job.kind} #${job.id} ${job.state}`, value: job.ended_epoch! - job.started_epoch, color: job_colors[job.state],
+    })), duration),
+    strip("Checks", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.checks_passed }))),
+    strip("Restore canary", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.canary_ok }))),
+  ];
+}
+
+function sources_list(repository: RepositoryDetail): HTMLElement {
+  const retention = Object.entries(repository.retention).map(([key, value]) => `${key.replace("keep_", "")} ${value}`).join(", ");
+  return h("dl", { class: "facts sources" },
+    h("dt", {}, "Backs up"), h("dd", {}, repository.source_paths.length > 0 ? repository.source_paths.join(", ") : "set by the host's own backup job"),
+    h("dt", {}, "Excludes"), h("dd", {}, repository.exclude.length > 0 ? repository.exclude.join(", ") : "none"),
+    h("dt", {}, "Keeps"), h("dd", {}, retention || "no retention set"),
+    h("dt", {}, "Changes"), h("dd", { class: "muted" }, "use Diff on an archive to see what changed since the one before"),
+  );
 }
 
 function repository_header(repository: RepositoryDetail): HTMLElement {
@@ -170,6 +288,7 @@ function repository_header(repository: RepositoryDetail): HTMLElement {
       h("dt", {}, "Stored"), h("dd", {}, size(repository.stats?.deduplicated_size)),
       h("dt", {}, "Compressed"), h("dd", {}, size(repository.stats?.compressed_size)),
       h("dt", {}, "Original"), h("dd", {}, size(repository.stats?.original_size)),
+      h("dt", {}, "Saved"), h("dd", {}, savings(repository)),
     ),
     h("div", { class: "verdicts" },
       verdict(repository.checks_passed, "checks"),
@@ -177,6 +296,13 @@ function repository_header(repository: RepositoryDetail): HTMLElement {
       repository.canary && h("span", { class: "muted" }, ` canary checked ${age(repository.canary.checked_epoch)}`),
     ),
   );
+}
+
+// How many times smaller the stored data is than the original, after deduplication and compression.
+function savings(repository: RepositoryDetail): string {
+  const original = repository.stats?.original_size;
+  const stored = repository.stats?.deduplicated_size;
+  return original && stored ? `${(original / stored).toFixed(1)}×` : "—";
 }
 
 function action_button(action: Action, run: (action_id: string) => Promise<void>): HTMLElement {
@@ -202,7 +328,7 @@ function outcome_panel(outcome: Outcome, close: () => void): HTMLElement {
 function archives_table(repository: RepositoryDetail, run: (action_id: string, body?: object) => Promise<void>, browse: (archive: string) => void): HTMLElement {
   if (repository.archives.length === 0) return h("p", { class: "muted" }, "No archives listed yet.");
   return h("table", {},
-    h("thead", {}, h("tr", {}, h("th", {}, "Archive"), h("th", {}, "Created"), h("th", { class: "number" }, "Original"), h("th", { class: "number" }, "New data"), h("th", { class: "number" }, "Files"), h("th", {}))),
+    h("thead", {}, h("tr", {}, h("th", {}, "Archive"), h("th", {}, "Created"), h("th", { class: "number" }, "Original"), h("th", { class: "number", title: "Data no other archive shares" }, "Unique"), h("th", { class: "number" }, "Files"), h("th", {}))),
     h("tbody", {}, ...repository.archives.map((archive, index) => h("tr", {},
       h("td", {}, archive.name),
       h("td", { title: stamp(archive.epoch) }, age(archive.epoch)),

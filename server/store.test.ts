@@ -53,9 +53,10 @@ describe("state and history", () => {
     expect(archives[1].deduplicated_size).toBe(7);
   });
 
-  it("logs events newest first", () => {
+  it("logs events newest first, leaving out a poll's routine lines", () => {
     store.apply("odin", CollectResult.failed("first"), { poll: true, epoch: 1 });
     store.apply("thor", CollectResult.failed("second"), { poll: true, epoch: 2 });
+    store.apply("thor", new CollectResult({ logs: [["Listed 3 archives", "INFO"]], status: "online" }), { poll: true, epoch: 3 });
 
     expect(store.events().map((event) => event.message)).toEqual(["second", "first"]);
     expect(store.events({ repository_id: "odin" })).toHaveLength(1);

@@ -8,7 +8,7 @@ import { register_auth } from "./auth.ts";
 import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
-import type { Poller, Watched } from "./poller.ts";
+import { host_name, type Poller, type Watched } from "./poller.ts";
 import type { Store } from "./store.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -157,6 +157,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return outcome(job.repository_id, await settle(job.repository_id, watched.repository.cancel_job()));
   });
 
+  app.get("/api/timers", async () => store.timers());
+
   app.get<{ Querystring: { repository?: string; limit?: string } }>("/api/events", async (request) =>
     store.events({ repository_id: request.query.repository, limit: Number(request.query.limit ?? 100) }));
 
@@ -177,7 +179,7 @@ function summary(watched: Watched) {
   return {
     id: repository.id,
     name: repository.name,
-    host: watched.config.host,
+    host: host_name(watched),
     status: watched.status,
     max_age: repository.max_age,
     last_poll_epoch: state.last_poll_epoch,

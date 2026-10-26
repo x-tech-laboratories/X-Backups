@@ -94,6 +94,41 @@ export interface EventRow {
   message: string;
 }
 
+export interface PollRow {
+  epoch: number;
+  status: Status | null;
+  original_size: number | null;
+  compressed_size: number | null;
+  deduplicated_size: number | null;
+  archive_count: number | null;
+  canary_ok: boolean | null;
+  checks_passed: boolean | null;
+}
+
+export interface ArchiveRow {
+  name: string;
+  epoch: number;
+  original_size: number | null;
+  deduplicated_size: number | null;
+  file_count: number | null;
+}
+
+export interface History {
+  polls: PollRow[];
+  archives: ArchiveRow[];
+}
+
+export interface TimerRow {
+  host: string;
+  unit: string;
+  service: string;
+  next_epoch: number | null;
+  last_epoch: number | null;
+  result: string | null;
+  exit_status: number | null;
+  read_epoch: number;
+}
+
 // ── Requests ─────────────────────────────────────────────────────────────────
 
 export class LoginNeeded extends Error {}

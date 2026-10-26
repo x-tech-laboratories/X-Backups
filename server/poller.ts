@@ -7,6 +7,7 @@ import { CollectResult, type ActionPlan, type CmdResult, type MonitorStatus } fr
 import type { Config, RepositoryConfig } from "./config.ts";
 import { run_command, type RunOptions, type RunTarget } from "./runner.ts";
 import type { Store } from "./store.ts";
+import { parse_timers, timers_command } from "./timers.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -21,6 +22,9 @@ export interface Watched {
 
 const job_poll_interval_in_seconds = 10;
 
+// A host's timers are read again at most this often, however many of its repositories poll.
+const timer_read_interval_in_seconds = 300;
+
 // A plan with no timeout of its own, such as a diff, is still stopped after this long.
 const longest_action_in_seconds = 6 * 60 * 60;
 
@@ -34,6 +38,7 @@ export class Poller {
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly pending_polls = new Map<string, Promise<CollectResult>>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly timers_read = new Map<string, number>();
   private stopped = true;
 
   constructor(config: Config, store: Store, run: Run = run_command) {
@@ -107,7 +112,23 @@ export class Poller {
       result = failed_result(error);
     }
     this.keep(watched, result, true);
+    await this.read_timers(watched);
     return result;
+  }
+
+  // Reads the backup timers on the repository's host, keeping the last good read when one fails.
+  private async read_timers(watched: Watched): Promise<void> {
+    const host = host_name(watched);
+    const now = Date.now() / 1000;
+    if (now - (this.timers_read.get(host) ?? 0) < timer_read_interval_in_seconds) return;
+    this.timers_read.set(host, now);
+    try {
+      const result = await this.run(watched.config, timers_command(), { timeout_in_seconds: 30 });
+      const timers = parse_timers(result.stdout);
+      if (timers !== null) this.store.replace_timers(host, timers);
+    } catch {
+      // A host without systemd simply shows no timers.
+    }
   }
 
   private keep(watched: Watched, result: CollectResult, poll: boolean): void {
@@ -140,6 +161,11 @@ export class Poller {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// The host a repository's commands run on, with this machine called local.
+export function host_name(watched: Watched): string {
+  return watched.config.host ?? "local";
+}
 
 // Answers a failed run as the repository's own failure, so one broken host never stops the others.
 function failed_result(error: unknown): CollectResult {
