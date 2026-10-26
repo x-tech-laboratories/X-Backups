@@ -4,12 +4,14 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance } from "fastify";
 import fastify_static from "@fastify/static";
+import { register_auth } from "./auth.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export interface app_options {
   serve_web: boolean;
   logger: boolean;
+  password_hash: string;
 }
 
 const web_build_directory = fileURLToPath(new URL("../dist", import.meta.url));
@@ -18,6 +20,8 @@ const web_build_directory = fileURLToPath(new URL("../dist", import.meta.url));
 
 export async function build_app(options: app_options): Promise<FastifyInstance> {
   const app = fastify({ logger: options.logger });
+
+  register_auth(app, options.password_hash);
 
   app.get("/api/health", async () => ({ status: "ok" }));
 

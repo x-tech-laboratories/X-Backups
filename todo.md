@@ -69,7 +69,8 @@ adapted where a task changes a contract.
 6. [ ] **Passphrase off the command line.** `env_prefix` reads `passphrase_file` and writes
    `BORG_PASSPHRASE=<secret>` into the command, where the target's process list shows it. Send it
    on the SSH command's stdin with `BORG_PASSPHRASE_FD=0` instead. For systemd jobs, use
-   `passphrase_command` on the target or a systemd credential.
+   `passphrase_command` on the target or a systemd credential. Needs task 2 first: a framed command
+   runs several borg calls, and only the first one would read the passphrase from stdin.
 
 ### Run it
 
@@ -98,7 +99,7 @@ adapted where a task changes a contract.
     - `/api/health` adds each repository's status, for X-Monitor.
 
     Test them with `app.inject` as `server/app.test.ts` does.
-12. [ ] **Authentication.** Required before going online, since the API can delete, prune, purge
+12. [x] **Authentication.** Required before going online, since the API can delete, prune, purge
     and break locks. Smallest fit: one password hash from a secret file and a session cookie, with
     X-Monitor's TOTP login as a reference if a second factor is wanted.
 13. [ ] **Web page.** Plain TypeScript, adding a framework only if the page needs one:

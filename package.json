@@ -9,11 +9,12 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev:server": "X_BACKUPS_CONFIG=${X_BACKUPS_CONFIG:-config.example.json} node --watch server/main.ts",
+    "dev:server": "X_BACKUPS_CONFIG=${X_BACKUPS_CONFIG:-config.example.json} X_BACKUPS_PASSWORD_HASH_FILE=${X_BACKUPS_PASSWORD_HASH_FILE:-password.hash} node --watch server/main.ts",
     "dev:web": "vite",
     "build": "tsc -b && vite build",
     "start": "NODE_ENV=production node server/main.ts",
     "test": "vitest run",
+    "hash-password": "node server/hash_password.ts",
     "lint": "oxlint"
   },
   "dependencies": {
