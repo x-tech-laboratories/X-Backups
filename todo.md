@@ -61,7 +61,7 @@ adapted where a task changes a contract.
    place of the `nice`/`ionice` wrappers. Read state with `systemctl show`, output with
    `journalctl -u <unit>`, and cancel with `systemctl stop`. Keep `flock` for `job_lock` and
    `systemd-inhibit` for `inhibit_sleep`. Remove `server/borg/detached.ts`.
-5. [ ] **Rename X-Monitor leftovers.** The `__XMONITOR_*` and `__x_monitor_*` shell markers, the
+5. [ ] **Rename X-Monitor leftovers.** Done except the `cache_dir` default, which waits for task 16. The `__XMONITOR_*` and `__x_monitor_*` shell markers, the
    `cache_dir` default `/var/cache/x-monitor-borg` and `restore_dir` default
    `/var/tmp/x-monitor-restore` in `repository.ts`, `$HOME/.cache/x_monitor/jobs`,
    `--who=X-Monitor`, and "X-Monitor" in `failure_hint`. A new `cache_dir` rebuilds each

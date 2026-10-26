@@ -4,17 +4,17 @@ import { cmd_result, type CmdResult } from "./types.ts";
 
 // ── Names the generated shell uses ───────────────────────────────────────────
 
-export const POLL_BASE_DIR_VAR = "__x_monitor_poll_base";
-export const POLL_DEADLINE_VAR = "__x_monitor_poll_end";
-export const POLL_LEFT_FN = "__x_monitor_poll_left";
-export const POLL_RC_VAR = "__x_monitor_poll_rc";
-const JOB_RC_VAR = "__x_monitor_job_rc";
-const STEP_RC_VAR = "__x_monitor_step_rc";
-const SKIP_VAR = "__x_monitor_skip";
-const SKIP_MARK = "__XMONITOR_SKIP__ ";
+export const POLL_BASE_DIR_VAR = "__x_backups_poll_base";
+export const POLL_DEADLINE_VAR = "__x_backups_poll_end";
+export const POLL_LEFT_FN = "__x_backups_poll_left";
+export const POLL_RC_VAR = "__x_backups_poll_rc";
+const JOB_RC_VAR = "__x_backups_job_rc";
+const STEP_RC_VAR = "__x_backups_step_rc";
+const SKIP_VAR = "__x_backups_skip";
+const SKIP_MARK = "__XBACKUPS_SKIP__ ";
 // A job prints this before each step, and the line is its progress until borg reports its own.
 export const STEP_MARK = "==> ";
-const FRAME = "__XMONITOR_BORG__";
+const FRAME = "__XBACKUPS_BORG__";
 export const CUT_SHORT = "no output: the poll ended before this call ran";
 // Only characters a hostname or an IP address can hold may reach a shell probe.
 const safe_host = /^[A-Za-z0-9.:_-]+$/;
@@ -102,7 +102,7 @@ export function failure_hint(stderr: string): string | null {
   const text = (stderr || "").toLowerCase();
   if (text.includes("permission denied (publickey)") || text.includes("publickey")) {
     return "Hint: borg could not authenticate to the repo server — set `ssh_key` to a private key on that host " +
-      "which the borg server authorizes (borg makes its own SSH connection, so X-Monitor's own login key does not apply).";
+      "which the borg server authorizes (borg makes its own SSH connection, so X-Backups's own login key does not apply).";
   }
   if (text.includes("command not found")) {
     return "Hint: the borg binary is not on PATH for that user — under sudo it must be on root's PATH too " +

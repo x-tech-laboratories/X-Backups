@@ -92,7 +92,7 @@ const LAUNCHED = [
 
 // Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
 const TOPMOST_EXCLUDED =
-  "awk '/^__x_monitor_rc=/ { rc = substr($0, 16); next } " +
+  "awk '/^__x_backups_rc=/ { rc = substr($0, 16); next } " +
   "/^x / { p = substr($0, 3); if (top != \"\" && index(p, top \"/\") == 1) next; top = p; print; next } " +
   "{ top = \"\"; print } END { exit rc }'";
 
@@ -263,7 +263,7 @@ export class BorgRepository {
     this.canary_interval = parse_duration(config.canary_interval ?? "1d");
     this.check_units = as_list(config.check_units);
     this.check_max_age = parse_duration(config.check_max_age ?? "8d");
-    this.restore_dir = config.restore_dir ?? "/var/tmp/x-monitor-restore";
+    this.restore_dir = config.restore_dir ?? "/var/tmp/x-backups-restore";
     this.browse_limit = Math.max(1, Math.trunc(Number(config.browse_limit ?? 2000)));
     this.retention = {};
     for (const key of KEEP_OPTIONS) {
@@ -373,8 +373,8 @@ export class BorgRepository {
       // One deadline for the whole poll, so calls in sequence cannot outlast the interval.
       parts.push(`${POLL_DEADLINE_VAR}=$(( $(date +%s) + ${Math.trunc(this.timeout)} ))`);
       parts.push(
-        `${POLL_LEFT_FN}() { __x_monitor_left=$(( ${POLL_DEADLINE_VAR} - $(date +%s) )); ` +
-        `[ "$__x_monitor_left" -lt 1 ] && __x_monitor_left=1; printf %s "$__x_monitor_left"; }`,
+        `${POLL_LEFT_FN}() { __x_backups_left=$(( ${POLL_DEADLINE_VAR} - $(date +%s) )); ` +
+        `[ "$__x_backups_left" -lt 1 ] && __x_backups_left=1; printf %s "$__x_backups_left"; }`,
       );
     }
     calls.forEach((call, index) => {
@@ -883,7 +883,7 @@ export class BorgRepository {
     const argv: string[] = [];
     if (this.job_lock) argv.push("flock", this.job_lock);
     if (this.inhibit_sleep) {
-      argv.push("systemd-inhibit", "--who=X-Monitor", "--what=sleep:shutdown", `--why=X-Monitor borg ${kind} for ${this.name}`);
+      argv.push("systemd-inhibit", "--who=X-Backups", "--what=sleep:shutdown", `--why=X-Backups borg ${kind} for ${this.name}`);
     }
     if (this.job_nice !== null) argv.push("nice", "-n", String(this.job_nice));
     if (this.job_io_idle) argv.push("ionice", "-c", "3");
@@ -1142,7 +1142,7 @@ export class BorgRepository {
         this.borg_bin, "recreate", "--dry-run", "--list", "--filter=x", ...scope, ...this.exclude_args(),
         "--lock-wait", String(this.backup_lock_wait), this.repo!,
       ], { persistent_cache: true });
-      return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_monitor_rc=$?"; } | ${TOPMOST_EXCLUDED}`);
+      return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_backups_rc=$?"; } | ${TOPMOST_EXCLUDED}`);
     }
     // An interrupted recreate leaves a <name>.recreate archive that makes the next attempt fail at once.
     const leftovers = this.maintenance_command(["delete", "--glob-archives", "*.recreate", this.repo!]);

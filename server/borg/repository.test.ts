@@ -153,10 +153,10 @@ function checks_out(options: { ok?: number; end?: number; start?: number; errs?:
 // The raw stdout one job poll gives on the host.
 function job_poll(size: number, exit_code: number | null, alive: boolean, out: string): CmdResult {
   return cmd_result(0,
-    `===XMONITOR_SIZE===\n${size}\n` +
-    `===XMONITOR_EXIT===\n${exit_code ?? ""}\n` +
-    `===XMONITOR_ALIVE===\n${alive ? 1 : 0}\n` +
-    `===XMONITOR_OUT===\n${out}`, "");
+    `===XBACKUPS_SIZE===\n${size}\n` +
+    `===XBACKUPS_EXIT===\n${exit_code ?? ""}\n` +
+    `===XBACKUPS_ALIVE===\n${alive ? 1 : 0}\n` +
+    `===XBACKUPS_OUT===\n${out}`, "");
 }
 
 // Plans an action and answers its launch with a pid, the way a runner records a detached job.
@@ -367,8 +367,8 @@ describe("list command", () => {
 
   it("gives borg a writable base folder", () => {
     const repository = make().repository;
-    expect(repository.list_command()).toContain('BORG_BASE_DIR="$__x_monitor_poll_base"');
-    expect(repository.poll_command()).toContain("__x_monitor_poll_base=$(mktemp -d)");
+    expect(repository.list_command()).toContain('BORG_BASE_DIR="$__x_backups_poll_base"');
+    expect(repository.poll_command()).toContain("__x_backups_poll_base=$(mktemp -d)");
   });
 
   it("passes the passphrase as an environment variable", () => {
@@ -525,7 +525,7 @@ describe("lock hints", () => {
 // ── Poll deadline ────────────────────────────────────────────────────────────
 
 describe("poll deadline", () => {
-  const deadline = 'timeout -k 5 "$(__x_monitor_poll_left)"';
+  const deadline = 'timeout -k 5 "$(__x_backups_poll_left)"';
 
   it("bounds a sudo poll with a timeout root runs", () => {
     const repository = make({ ...BASE_CFG, require_sudo: true, timeout: "30m" }).repository;
@@ -713,7 +713,7 @@ describe("backup command", () => {
     const command = make({ ...BASE_CFG, cache_dir: "/srv/borgcache" }).repository.poll_command();
     expect(command).toContain("$(mktemp -d)");
     expect(command).toContain("BORG_BASE_DIR=/srv/borgcache");
-    expect(command).not.toContain('BORG_BASE_DIR="$__x_monitor_poll_base"');
+    expect(command).not.toContain('BORG_BASE_DIR="$__x_backups_poll_base"');
   });
 
   it("applies a configured cache folder to polls", () => {
@@ -1547,7 +1547,7 @@ describe("job preflight", () => {
   it("records no job for a skipped launch and does not call it a failure", () => {
     const harness = make(BACKUP_CFG);
     harness.repository.plan_action("run_backup");
-    const outcome = outcome_of(harness, "run_backup", cmd_result(0, "__XMONITOR_SKIP__ host:22 is not answering SSH\n", ""));
+    const outcome = outcome_of(harness, "run_backup", cmd_result(0, "__XBACKUPS_SKIP__ host:22 is not answering SSH\n", ""));
     expect(outcome.success).toBe(true);
     expect(outcome.status).toBeNull();
     expect(harness.jobs.running()).toBeNull();

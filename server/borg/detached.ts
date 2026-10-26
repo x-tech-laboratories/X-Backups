@@ -4,10 +4,10 @@ import { shell_quote } from "./shell.ts";
 
 // ── Markers ──────────────────────────────────────────────────────────────────
 
-const size_mark = "===XMONITOR_SIZE===";
-const exit_mark = "===XMONITOR_EXIT===";
-const alive_mark = "===XMONITOR_ALIVE===";
-const output_mark = "===XMONITOR_OUT===";
+const size_mark = "===XBACKUPS_SIZE===";
+const exit_mark = "===XBACKUPS_EXIT===";
+const alive_mark = "===XBACKUPS_ALIVE===";
+const output_mark = "===XBACKUPS_OUT===";
 
 export interface PollResult {
   size: number;
@@ -21,7 +21,7 @@ export interface PollResult {
 // The job's working folder on the target, named before the job has an id.
 export function workdir_for(token: string): string {
   const safe = [...token].filter((character) => /[\p{L}\p{N}._-]/u.test(character)).join("");
-  return `$HOME/.cache/x_monitor/jobs/${safe}`;
+  return `$HOME/.cache/x_backups/jobs/${safe}`;
 }
 
 function quote_workdir(workdir: string): string {
