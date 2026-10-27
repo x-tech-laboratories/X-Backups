@@ -588,6 +588,10 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     past its lock wait. Options: warn when the host's next timer run falls inside the likely
     download time (the timers are already read), cap a download's length, or stop downloads when
     the timer's service starts.
+62. [ ] **Poll status honours the warning ages.** A repository past `warn_age`,
+    `check_warn_age` or `canary_warn_age` shows a warning in `/api/health` and on its card, but its
+    poll status badge still reads online, since only `max_age` sets the status in
+    `src/server/borg/repository.ts`. Let the warning ages set the poll status to warning too.
 
 ## Apps to review for features
 
