@@ -214,8 +214,11 @@ mounts) is now in: tasks 35–37 and 47–56.
     7-day job activity chart (Borg Backup Server).
 31. [ ] **Fuller restore verification.** Verify Restore checks one canary path. Add probe paths
     and a full-archive extract to `/dev/null` as on-demand modes (Borg UI).
-32. [ ] **Archive download.** Download a file or folder from the browser as a tar stream via
+32. [x] **Archive download.** Download a file or folder from the browser as a tar stream via
     `borg export-tar`, and an extract dialog with a target folder (Borg UI, Borgitory, Vorta).
+    Built as `GET /api/repositories/:id/download`, streaming a file through `extract --stdout` or
+    folders and picks as a gzipped `export-tar`, linked from each row and "Download picked" on the
+    Files tab. Restores still go to a new folder under `restore_dir`; there is no target folder choice.
 33. [ ] **Paused repositories and storage.** A declared paused flag that keeps a repository listed
     but silences staleness, an append-only badge, and free space and quota on the storage host
     (BorgWarehouse).
@@ -485,7 +488,7 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     - Breadcrumbs, the prev/next stepper and deltas against the previous archive.
     - A Changes tab built from `borg diff --json-lines`: colour by change type, net size per
       folder, and a Tree/Flat switch.
-    - A Files tab with search, restore and download (task 32). Download waits for task 32.
+    - A Files tab with search, restore and download (task 32).
 42. [x] **Jobs page.** Jobs across all repositories with filters and paging in the URL, a duration
     bar against the median for each kind, retry (task 30), and a job page with a result bar and
     its output.

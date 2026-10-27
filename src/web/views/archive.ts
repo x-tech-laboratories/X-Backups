@@ -260,29 +260,44 @@ function change_tree(changes: DiffChange[]): HTMLElement {
 // ── Files ────────────────────────────────────────────────────────────────────
 
 function files_tab(body: HTMLElement, base: string, archive: string, target: ActionTarget): void {
-  const picked = new Set<string>();
+  // Each picked path, and whether it is a folder, which decides how it downloads.
+  const picked = new Map<string, boolean>();
   const holder = h("div");
-  const restore = h("button", { class: "accent solid", disabled: true, onclick: () => restore_picked(target, archive, picked) }, "Restore picked");
+  const restore = h("button", { class: "accent solid", disabled: true, onclick: () => restore_picked(target, archive, [...picked.keys()]) }, "Restore picked");
+  const download = h("a", { class: "button", download: true, "aria-disabled": "true" }, "Download picked");
   const status = h("span", { class: "muted small", role: "status" }, "Nothing picked.");
   const on_pick = () => {
     restore.disabled = picked.size === 0;
+    download.setAttribute("aria-disabled", String(picked.size === 0));
+    // One file downloads as itself; anything else comes as one tar.gz.
+    const [only_folder] = picked.values();
+    if (picked.size === 0) download.removeAttribute("href");
+    else download.href = download_link(base, archive, [...picked.keys()], picked.size === 1 && !only_folder ? "file" : "tar");
     status.textContent = picked.size === 0 ? "Nothing picked." : `${plural(picked.size, "item")} picked.`;
   };
 
   const open = (path: string) => {
     replace_query({ path: path || null });
-    void load(holder, async () => folder_view(await api<Listing>(`${base}/browse${query({ archive, path })}`), archive, path, picked, open, on_pick));
+    void load(holder, async () => folder_view(await api<Listing>(`${base}/browse${query({ archive, path })}`), base, archive, path, picked, open, on_pick));
   };
 
   body.replaceChildren(section("Files", h("div", {},
-    h("div", { class: "toolbar" }, restore, status),
+    h("div", { class: "toolbar" }, restore, download, status),
     h("p", { class: "muted small" }, "Restoring extracts into a new folder under the repository's restore_dir on its host; live files are never overwritten."),
+    h("p", { class: "muted small" }, "Downloads stream straight from borg to your browser; a folder or several picks come as one tar.gz."),
     holder,
   )));
   open(current_route().query.get("path") ?? "");
 }
 
-function folder_view(listing: Listing, archive: string, path: string, picked: Set<string>, open: (path: string) => void, on_pick: () => void): HTMLElement {
+// A plain link the browser saves to disk as borg sends it, never held in the page's memory.
+function download_link(base: string, archive: string, paths: string[], kind: "file" | "tar"): string {
+  const params = new URLSearchParams({ archive, kind });
+  for (const path of paths) params.append("path", path);
+  return `${base}/download?${params}`;
+}
+
+function folder_view(listing: Listing, base: string, archive: string, path: string, picked: Map<string, boolean>, open: (path: string) => void, on_pick: () => void): HTMLElement {
   let text = "";
   const parts = path.split("/").filter(Boolean);
   const rows_holder = h("div");
@@ -298,7 +313,7 @@ function folder_view(listing: Listing, archive: string, path: string, picked: Se
         label: "Pick", cell: (row) => h("input", {
           type: "checkbox", checked: picked.has(row.path), "aria-label": `Pick ${row.name}`,
           onchange: (event: Event) => {
-            if ((event.target as HTMLInputElement).checked) picked.add(row.path);
+            if ((event.target as HTMLInputElement).checked) picked.set(row.path, row.dir);
             else picked.delete(row.path);
             on_pick();
           },
@@ -307,6 +322,11 @@ function folder_view(listing: Listing, archive: string, path: string, picked: Se
       { label: "Name", cell: (row) => row.dir ? h("button", { class: "link", onclick: () => open(row.path) }, `${row.name}/`) : row.name },
       { label: "Size", class: "number", cell: (row) => row.size },
       { label: "Modified", cell: (row) => row.mtime },
+      {
+        label: "Download", cell: (row) => h("a", {
+          href: download_link(base, archive, [row.path], row.dir ? "tar" : "file"), download: true, "aria-label": `Download ${row.name}`,
+        }, row.dir ? "tar.gz" : "Download"),
+      },
     ], rows, { caption: `Contents of ${path || "the archive"}` }));
   };
   render();
@@ -322,8 +342,7 @@ function folder_view(listing: Listing, archive: string, path: string, picked: Se
   );
 }
 
-function restore_picked(target: ActionTarget, archive: string, picked: Set<string>): void {
-  const paths = [...picked];
+function restore_picked(target: ActionTarget, archive: string, paths: string[]): void {
   confirm_dialog({
     title: `Restore ${plural(paths.length, "item")}?`,
     message: h("div", {},

@@ -49,6 +49,15 @@ export class ActionPlan {
 // What an action asks for: commands to run, or its answer straight away, such as a refusal.
 export type ActionStart = ActionPlan | CollectResult;
 
+// A borg call whose stdout is the file a download saves, and the name and type it is saved with.
+export interface DownloadPlan {
+  command: string;
+  // Fed to the command, carrying the passphrase when its borg call needs one.
+  stdin: string | null;
+  filename: string;
+  content_type: string;
+}
+
 // ── Repository state ─────────────────────────────────────────────────────────
 
 export interface RepositoryStats {

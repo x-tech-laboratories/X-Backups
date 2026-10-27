@@ -199,6 +199,54 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     },
   );
 
+  // Streams one file, or folders and several paths as a gzipped tar, straight from borg to the browser with no timeout.
+  app.get<{ Params: { id: string }; Querystring: { archive?: string; path?: string | string[]; kind?: string } }>(
+    "/api/repositories/:id/download",
+    async (request, reply) => {
+      const watched = find(request.params.id, reply);
+      if (watched === null) return reply;
+      const { archive = "", path = [], kind = "tar" } = request.query;
+      const paths = [path].flat();
+      const download = watched.repository.download(archive || null, paths, kind);
+      if (download instanceof CollectResult) return reply.code(400).send({ error: download.content });
+
+      const stream = poller.stream(watched.repository.id, download.command, download.stdin);
+      // A browser that goes away stops borg, rather than leaving it reading the archive for nobody.
+      reply.raw.on("close", stream.stop);
+      // The answer waits for borg's first bytes, so a borg that fails at once answers with its error instead of an empty file.
+      const first = await new Promise<Buffer | null>((resolve) => {
+        stream.stdout.once("data", (chunk: Buffer) => {
+          stream.stdout.pause();
+          resolve(chunk);
+        });
+        void stream.done.then(() => resolve(null));
+      });
+      if (first === null) {
+        const { exit_code, stderr } = await stream.done;
+        if (exit_code !== 0) return reply.code(502).send({ error: watched.repository.download_failure(exit_code, stderr) });
+      }
+
+      // Characters a quoted header value cannot hold are swapped in the plain name and kept in the RFC 6266 one.
+      const plain_name = download.filename.replace(/[^\x20-\x7e]|["\\]/g, "_");
+      const encoded_name = encodeURIComponent(download.filename).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+      note_actor(request, watched.repository.id, `downloaded ${paths.length > 0 ? paths.join(", ") : "everything"} from ${archive}`);
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": download.content_type,
+        "content-disposition": `attachment; filename="${plain_name}"; filename*=UTF-8''${encoded_name}`,
+        "cache-control": "no-store",
+      });
+      if (first !== null) reply.raw.write(first);
+      stream.stdout.pipe(reply.raw, { end: false });
+      // A borg that fails midway cuts the connection, so the browser marks the download failed instead of keeping a short file.
+      void stream.done.then(({ exit_code }) => {
+        if (exit_code > 1) reply.raw.destroy();
+        else reply.raw.end();
+      });
+      return reply;
+    },
+  );
+
   // The archive's changes against the one before it, diffing it first when that has not been done yet.
   app.get<{ Params: { id: string }; Querystring: { archive?: string } }>("/api/repositories/:id/diff", async (request, reply) => {
     const watched = find(request.params.id, reply);

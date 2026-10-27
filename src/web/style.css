@@ -126,6 +126,7 @@ button, .button {
 }
 button:hover:not(:disabled), .button:hover { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
+.button[aria-disabled="true"] { opacity: 0.5; cursor: default; pointer-events: none; }
 button.accent, .button.accent { border-color: var(--accent); color: var(--accent); }
 button.solid.accent, .button.solid.accent { background: var(--accent); color: var(--on-accent); }
 button.danger { color: var(--bad); }

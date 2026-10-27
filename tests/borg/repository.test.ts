@@ -8,7 +8,7 @@ import { children_filter, diff_line, parse_diff, parse_listing } from "../../src
 import { BorgRepository, progress_from_lines, type BorgConfig } from "../../src/server/borg/repository.ts";
 import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
 import { Harness } from "./testing.ts";
-import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult } from "../../src/server/borg/types.ts";
+import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult, type DownloadPlan } from "../../src/server/borg/types.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -1414,6 +1414,70 @@ describe("delete", () => {
     harness.repository.read_browse(cmd_result(0, LISTING, ""), "b1", "");
     harness.repository.delete_archive("b1");
     expect(harness.repository.listing("b1", "")).toBeNull();
+  });
+});
+
+// ── Download ─────────────────────────────────────────────────────────────────
+
+describe("download", () => {
+  function listed_repository(config: BorgConfig = BASE_CFG): BorgRepository {
+    const harness = make(config);
+    listed(harness, "b2", "b1");
+    return harness.repository;
+  }
+
+  function download_of(repository: BorgRepository, archive: string, paths: string[], kind: string): DownloadPlan {
+    const download = repository.download(archive, paths, kind);
+    expect(download).not.toBeInstanceOf(CollectResult);
+    return download as DownloadPlan;
+  }
+
+  it("streams one file through extract --stdout under its own name", () => {
+    const plan = download_of(listed_repository(), "b1", ["/home/me/notes.txt"], "file");
+    expect(plan.command).toContain("extract --stdout --lock-wait 30 ssh://borg@host/srv/repo::b1 home/me/notes.txt");
+    expect(plan.command).not.toContain("export-tar");
+    expect(plan).toMatchObject({ filename: "notes.txt", content_type: "application/octet-stream", stdin: null });
+  });
+
+  it("streams a folder as a gzipped tar named after the archive and folder", () => {
+    const plan = download_of(listed_repository(), "b1", ["home/me"], "tar");
+    expect(plan.command).toContain("export-tar --tar-filter=gzip --lock-wait 30 ssh://borg@host/srv/repo::b1 - home/me");
+    expect(plan.filename).toBe("b1-me.tar.gz");
+    expect(plan.content_type).toBe("application/gzip");
+  });
+
+  it("puts several paths in one tar named after the archive", () => {
+    const plan = download_of(listed_repository(), "b1", ["etc", "home/it's here"], "tar");
+    expect(plan.command).toContain(`::b1 - etc 'home/it'"'"'s here'`);
+    expect(plan.filename).toBe("b1.tar.gz");
+  });
+
+  it("runs under sudo and feeds the passphrase on stdin", () => {
+    const plan = download_of(listed_repository({ ...BASE_CFG, require_sudo: true, passphrase: "s3cret" }), "b1", ["etc/hosts"], "file");
+    expect(plan.command).toMatch(/^IFS= read -r __x_backups_passphrase; /);
+    expect(plan.command).toContain(`"$__x_backups_passphrase" | sudo -n BORG_PASSPHRASE_FD=0 `);
+    expect(plan.command).not.toContain("s3cret");
+    expect(plan.stdin).toBe("s3cret\n");
+  });
+
+  it("refuses a path that climbs, an unlisted archive and a bad kind", () => {
+    const repository = listed_repository();
+    expect(repository.download("b1", ["etc/../shadow"], "file")).toBeInstanceOf(CollectResult);
+    expect(repository.download("nope", ["etc"], "tar")).toBeInstanceOf(CollectResult);
+    expect(repository.download(null, ["etc"], "tar")).toBeInstanceOf(CollectResult);
+    expect(repository.download("b1", ["etc"], "zip")).toBeInstanceOf(CollectResult);
+  });
+
+  it("refuses a file download that does not name exactly one file", () => {
+    const repository = listed_repository();
+    expect(repository.download("b1", ["a", "b"], "file")).toBeInstanceOf(CollectResult);
+    expect(repository.download("b1", ["/"], "file")).toBeInstanceOf(CollectResult);
+  });
+
+  it("names the failure with a hint", () => {
+    const message = make().repository.download_failure(2, "Repository /srv/repo does not exist.\n");
+    expect(message).toContain("borg failed (exit 2): Repository /srv/repo does not exist.");
+    expect(message).toContain("Hint:");
   });
 });
 

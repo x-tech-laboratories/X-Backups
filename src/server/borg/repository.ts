@@ -4,7 +4,7 @@
 // one after another so the calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
 // failed; an unreachable host, a missing borg, an unreadable repo, a lock borg gave up on, or unparseable output is
 // unavailable. Optional extras are a restore canary, check freshness read from systemd units or tracked per kind, and
-// actions that back up, browse, restore, diff, check, compact, prune, delete and purge, the last ones as detached jobs.
+// actions that back up, browse, restore, download, diff, check, compact, prune, delete and purge, the last ones as detached jobs.
 
 import { readFileSync } from "node:fs";
 
@@ -24,7 +24,7 @@ import {
 } from "./shell.ts";
 import {
   ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
-  type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
+  type DownloadPlan, type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
 } from "./types.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -905,6 +905,48 @@ export class BorgRepository {
     if (refusal) return refusal;
     const destination = `${this.restore_dir.replace(/\/+$/, "")}/${archive}-${utc_compact_stamp(new Date())}`;
     return this.launch("restore", this.restore_command(archive, members as string[], destination), ` into ${destination}`);
+  }
+
+  // ── Download ───────────────────────────────────────────────────────────────
+
+  // One file as itself, or folders and several paths as one gzipped tar, read from the archive to stdout.
+  download(archive: string | null, paths: string[], kind: string): DownloadPlan | CollectResult {
+    if (!this.repo || !archive) return BorgRepository.refused("Cannot download: no archive given");
+    // Only a listed archive may be read, so a stale or hand-typed name cannot reach borg.
+    if (!this.state.archives.some((listed) => listed.name === archive)) {
+      return BorgRepository.refused(`Cannot download from ${archive}: it is not in the archive list`);
+    }
+    const members = paths.map(archive_member);
+    if (members.some((member) => member === null)) return BorgRepository.refused("A path may not contain '.' or '..' components");
+    const named = members.filter(Boolean) as string[];
+    const source = `${this.repo}::${archive}`;
+    const lock_wait = ["--lock-wait", String(this.lock_wait)];
+
+    let call: string;
+    let filename: string;
+    let content_type: string;
+    if (kind === "file") {
+      if (named.length !== 1 || members.length !== 1) return BorgRepository.refused("A file download names exactly one file");
+      call = this.build([this.borg_bin, "extract", "--stdout", ...lock_wait, source, named[0]], this.read_options());
+      filename = named[0].slice(named[0].lastIndexOf("/") + 1);
+      content_type = "application/octet-stream";
+    } else if (kind === "tar") {
+      if (named.length !== members.length) return BorgRepository.refused("Give the paths to download, or none for the whole archive");
+      call = this.build([this.borg_bin, "export-tar", "--tar-filter=gzip", ...lock_wait, source, "-", ...named], this.read_options());
+      const folder = named.length === 1 ? named[0].slice(named[0].lastIndexOf("/") + 1) : "";
+      filename = `${archive}${folder ? `-${folder}` : ""}.tar.gz`;
+      content_type = "application/gzip";
+    } else {
+      return BorgRepository.refused(`Unknown download kind '${kind}': use file or tar`);
+    }
+    return { command: with_passphrase(call), stdin: this.stdin_for([call]), filename, content_type };
+  }
+
+  // What the page shows when borg ended a download before sending anything.
+  download_failure(exit_code: number, stderr: string): string {
+    const detail = stderr.trim();
+    const hint = failure_hint(detail);
+    return `borg failed (exit ${exit_code}): ${detail.slice(0, 300) || "no output"}` + (hint ? `\n${hint}` : "");
   }
 
   // ── Maintenance ────────────────────────────────────────────────────────────

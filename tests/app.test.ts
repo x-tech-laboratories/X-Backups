@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { build_app } from "../src/server/app.ts";
@@ -8,6 +9,7 @@ import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
 import type { Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
+import type { CommandStream } from "../src/server/runner.ts";
 import { ConfigSources } from "../src/server/sources.ts";
 import { Store } from "../src/server/store.ts";
 
@@ -30,15 +32,33 @@ let store: Store;
 let poller: Poller;
 let commands: string[];
 let cookie: string;
+let streamed: { command: string; stdin: string | undefined }[];
+let stream_answer: { chunks: string[]; exit_code: number; stderr: string };
+
+// Writes the chunks the test set, then ends with its exit code once they have all been read.
+function fake_stream(_target: unknown, command: string, options: { stdin?: string }): CommandStream {
+  streamed.push({ command, stdin: options.stdin });
+  const { chunks, exit_code, stderr } = stream_answer;
+  const stdout = new PassThrough();
+  const done = new Promise<{ exit_code: number; stderr: string }>((resolve) => {
+    if (chunks.length === 0) setImmediate(() => resolve({ exit_code, stderr }));
+    else stdout.on("end", () => resolve({ exit_code, stderr }));
+  });
+  for (const chunk of chunks) stdout.write(chunk);
+  stdout.end();
+  return { stdout, done, stop: () => {} };
+}
 
 beforeEach(async () => {
   commands = [];
+  streamed = [];
+  stream_answer = { chunks: [], exit_code: 0, stderr: "" };
   store = new Store(":memory:");
   poller = new Poller(CONFIG, store, async (_target, command) => {
     commands.push(command);
     if (command.includes("kill -0")) return cmd_result(0, RUNNING, "");
     return command.includes("borg") && command.includes("list") ? cmd_result(0, LIST, "") : cmd_result(0, "4242\n", "");
-  });
+  }, fake_stream);
   app = await build_app({ serve_web: false, logger: false, password_hash, poller, store });
   const login = await app.inject({ method: "POST", url: "/api/login", payload: { password: "correct horse" } });
   cookie = String(login.headers["set-cookie"]).split(";")[0];
@@ -131,6 +151,54 @@ describe("archives, config and search", () => {
 
     expect(found.archives).toEqual([{ repository_id: "odin", name: "a1", epoch: expect.any(Number) }]);
     expect((await get("/api/search?q=odi")).json().repositories).toEqual([{ id: "odin", name: "odin" }]);
+  });
+});
+
+// ── Downloads ────────────────────────────────────────────────────────────────
+
+describe("downloads", () => {
+  it("streams a file with its name and type", async () => {
+    await poller.poll("odin");
+    stream_answer = { chunks: ["first ", "second"], exit_code: 0, stderr: "" };
+
+    const response = await get("/api/repositories/odin/download?archive=a1&kind=file&path=etc/r%C3%A9sum%C3%A9.txt");
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("first second");
+    expect(response.headers["content-type"]).toBe("application/octet-stream");
+    expect(response.headers["content-disposition"]).toBe(`attachment; filename="r_sum_.txt"; filename*=UTF-8''r%C3%A9sum%C3%A9.txt`);
+    expect(streamed[0].command).toContain("extract --stdout");
+  });
+
+  it("streams folders as one tar and notes who asked", async () => {
+    await poller.poll("odin");
+    stream_answer = { chunks: ["tar bytes"], exit_code: 0, stderr: "" };
+
+    const response = await get("/api/repositories/odin/download?archive=a1&kind=tar&path=etc&path=home");
+
+    expect(response.headers["content-disposition"]).toContain(`filename="a1.tar.gz"`);
+    expect(streamed[0].command).toContain("export-tar --tar-filter=gzip");
+    expect(streamed[0].command).toContain("::a1 - etc home");
+    expect(store.events({ repository_id: "odin" }).some((event) => event.message.includes("downloaded etc, home from a1"))).toBe(true);
+  });
+
+  it("answers borg's error when it fails before sending anything", async () => {
+    await poller.poll("odin");
+    stream_answer = { chunks: [], exit_code: 2, stderr: "Archive a1 does not exist" };
+
+    const response = await get("/api/repositories/odin/download?archive=a1&kind=file&path=etc/hosts");
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error).toContain("borg failed (exit 2): Archive a1 does not exist");
+  });
+
+  it("refuses an archive it has not listed without running borg", async () => {
+    await poller.poll("odin");
+
+    const response = await get("/api/repositories/odin/download?archive=nope&kind=tar&path=etc");
+
+    expect(response.statusCode).toBe(400);
+    expect(streamed).toEqual([]);
   });
 });
 

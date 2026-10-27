@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { run_command, ssh_arguments } from "../src/server/runner.ts";
+import { run_command, ssh_arguments, stream_command } from "../src/server/runner.ts";
 
 const local = { host: null, ssh_user: null };
 
@@ -20,6 +20,27 @@ describe("runner", () => {
     const result = await run_command(local, "sleep 30", { timeout_in_seconds: 0.2 });
 
     expect(result).toEqual({ exit_code: -1, stdout: "", stderr: "Timed out after 0.2s" });
+  });
+
+  it("streams a local command's stdout and settles with its exit code and stderr", async () => {
+    const stream = stream_command(local, "cat; printf 'more'; echo warn >&2; exit 1", { stdin: "secret\n" });
+    const chunks: Buffer[] = [];
+    stream.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+
+    const ended = await stream.done;
+
+    expect(Buffer.concat(chunks).toString()).toBe("secret\nmore");
+    expect(ended).toEqual({ exit_code: 1, stderr: "warn" });
+  });
+
+  it("stops a streamed command and its children", async () => {
+    const stream = stream_command(local, "sleep 30 & wait");
+    stream.stdout.on("data", () => {});
+
+    stream.stop();
+    const ended = await stream.done;
+
+    expect(ended.exit_code).toBe(-1);
   });
 
   it("builds a multiplexed ssh call", () => {

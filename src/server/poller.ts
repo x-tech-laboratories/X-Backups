@@ -5,13 +5,15 @@
 import { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionPlan, type CmdResult, type MonitorStatus } from "./borg/types.ts";
 import type { Config, RepositoryConfig } from "./config.ts";
-import { run_command, type RunOptions, type RunTarget } from "./runner.ts";
+import { run_command, stream_command, type CommandStream, type RunOptions, type RunTarget, type StreamOptions } from "./runner.ts";
 import type { Store } from "./store.ts";
 import { parse_timers, timers_command } from "./timers.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
 export type Run = (target: RunTarget, command: string, options: RunOptions) => Promise<CmdResult>;
+
+export type Stream = (target: RunTarget, command: string, options: StreamOptions) => CommandStream;
 
 export interface Watched {
   config: RepositoryConfig;
@@ -34,6 +36,7 @@ export class Poller {
   readonly repositories = new Map<string, Watched>();
   private readonly store: Store;
   private readonly run: Run;
+  private readonly stream_run: Stream;
   // Each repository's work runs one piece at a time, since a poll and an action both read and replace its state.
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly pending_polls = new Map<string, Promise<CollectResult>>();
@@ -41,9 +44,10 @@ export class Poller {
   private readonly timers_read = new Map<string, number>();
   private stopped = true;
 
-  constructor(config: Config, store: Store, run: Run = run_command) {
+  constructor(config: Config, store: Store, run: Run = run_command, stream_run: Stream = stream_command) {
     this.store = store;
     this.run = run;
+    this.stream_run = stream_run;
     for (const repository_config of config.repositories) this.watch(repository_config);
   }
 
@@ -122,6 +126,11 @@ export class Poller {
       this.keep(watched, result, false);
       return result;
     }).finally(() => this.schedule(id));
+  }
+
+  // Streams a command outside the queue, since a download can run for hours and borg's lock wait already keeps it apart.
+  stream(id: string, command: string, stdin: string | null): CommandStream {
+    return this.stream_run(this.watched(id).config, command, { stdin: stdin ?? undefined });
   }
 
   private async poll_now(id: string): Promise<CollectResult> {
