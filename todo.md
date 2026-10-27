@@ -559,6 +559,18 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     in over HTTPS with a token, picks up queued actions, and reports results and progress (Borg
     Backup Server, Borg UI). This settles the second open question.
 
+#### Follow-ups from the first build
+
+57. [ ] **Users in the Nix configuration.** Users, roles and per-repository access live in the state
+    database and are managed from the Users page. Let `services.x-backups.users.<name>` declare
+    them too (role, repositories, an optional password hash file), shown as declared and locked
+    on the page like declared repositories, so a NixOS setup can be fully declarative. The
+    module's options were evaluated with `nixpkgs.lib.nixosSystem` on 2026-10-27 and come out
+    right; no VM test has run the service yet.
+58. [ ] **Halon gaps.** Draw the menu, theme and close icons as SVG on a 24 px artboard with a 2 px
+    stroke, sized by `--icon-size-small` as Halon's §4.5 asks, and style the select's dropdown
+    arrow (the tokens file has none, so selects keep the browser's arrow today).
+
 ## Apps to review for features
 
 Reviewed from their online docs on 2026-10-26; source review is tasks 19–25 and the gaps found are
