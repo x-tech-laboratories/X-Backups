@@ -126,7 +126,8 @@ adapted where a task changes a contract.
 15. [x] **CI.** `.github/workflows/ci.yml` runs `npm ci`, build, test and lint. Pushing a workflow
     file needs a GitHub token with the `workflow` scope.
 16. [ ] **Cutover.**
-    - Deploy beside X-Monitor against the same repositories and compare the two for a few days.
+    - [x] Deploy beside X-Monitor against the same repositories (Heimdall, `backups.heimdall.technet`, 2026-10-26).
+    - [ ] Compare the two for a few days.
     - Remove X-Monitor's borg plugin: `x_monitor/plugins/borg/`, its tests, its `config.yaml`
       example, `borgPassphraseFile` in `nix/module.nix`, and the borg meter in
       `x_monitor/core/ui/views/fleet.py`.
