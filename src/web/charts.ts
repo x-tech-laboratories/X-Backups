@@ -1,4 +1,4 @@
-// Small SVG charts: lines over time, bars, and a pass/fail strip, colored from the page's CSS tokens.
+// Small SVG charts: lines over time, bars, meters, and a pass/fail strip, colored from the page's CSS tokens.
 
 import { h } from "./dom.ts";
 
@@ -15,6 +15,25 @@ export interface Bar {
   color: string;
 }
 
+// A level the readings should stay under, drawn as a dashed line across the chart.
+export interface Limit {
+  label: string;
+  value: number;
+  color: string;
+}
+
+export interface Meter {
+  label: string;
+  href: string | null;
+  value_text: string;
+  // How full the meter is, 0 to 100.
+  percent: number;
+  color: string;
+  // Ticks along the meter, as percentages, such as where it starts warning.
+  marks: number[];
+  title: string | null;
+}
+
 export interface Cell {
   label: string;
   ok: boolean | null;
@@ -26,7 +45,7 @@ const margin = { left: 64, right: 8, top: 8, bottom: 20 };
 
 // ── Line chart ───────────────────────────────────────────────────────────────
 
-export function line_chart(title: string, series: Series[], format: (value: number) => string): HTMLElement {
+export function line_chart(title: string, series: Series[], format: (value: number) => string, limits: Limit[] = []): HTMLElement {
   const points = series.flatMap((line) => line.points).filter(([, value]) => value !== null) as [number, number][];
   // A line needs two readings at different times, which one day of polls summed per day does not give.
   const drawable = series.some((line) => new Set(line.points.filter(([, value]) => value !== null).map(([epoch]) => epoch)).size >= 2);
@@ -35,7 +54,8 @@ export function line_chart(title: string, series: Series[], format: (value: numb
   const epochs = points.map(([epoch]) => epoch);
   const values = points.map(([, value]) => value);
   const [first, last] = [Math.min(...epochs), Math.max(...epochs)];
-  const top = Math.max(...values) * 1.05 || 1;
+  const highest = Math.max(...values, ...limits.map((limit) => limit.value));
+  const top = highest * 1.05 || 1;
   const x = (epoch: number) => margin.left + (epoch - first) / Math.max(1, last - first) * (width - margin.left - margin.right);
   const y = (value: number) => height - margin.bottom - value / top * (height - margin.top - margin.bottom);
 
@@ -45,13 +65,19 @@ export function line_chart(title: string, series: Series[], format: (value: numb
     return svg("path", { d: path, fill: "none", stroke: line.color, "stroke-width": 2 }, svg("title", {}, line.label));
   });
 
-  return figure(title, series.map((line) => [line.label, line.color]),
+  const limit_lines = limits.map((limit) => svg("line", {
+    x1: margin.left, y1: y(limit.value).toFixed(1), x2: width - margin.right, y2: y(limit.value).toFixed(1),
+    stroke: limit.color, "stroke-width": 2, "stroke-dasharray": "6 4",
+  }, svg("title", {}, `${limit.label}: ${format(limit.value)}`)));
+
+  return figure(title, [...series, ...limits].map((item): [string, string] => [item.label, item.color]),
     svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": title },
       ...axis_lines(),
-      label(margin.left - 6, y(top / 1.05), format(top / 1.05), "end"),
+      label(margin.left - 6, y(highest), format(highest), "end"),
       label(margin.left - 6, height - margin.bottom, format(0), "end"),
       label(margin.left, height - 4, new Date(first * 1000).toLocaleDateString(), "start"),
       label(width - margin.right, height - 4, new Date(last * 1000).toLocaleDateString(), "end"),
+      ...limit_lines,
       ...lines,
     ),
   );
@@ -121,6 +147,23 @@ export function stacked_bar_chart(title: string, stacks: Stack[], legend: [label
       ...rects,
     ),
   );
+}
+
+// ── Meters ───────────────────────────────────────────────────────────────────
+
+// One labeled bar per row with its value beside the label, such as the time since each repository's last backup.
+export function meters(rows: Meter[], message: string): HTMLElement {
+  if (rows.length === 0) return h("p", { class: "muted" }, message);
+  return h("ul", { class: "meters" }, ...rows.map((row) => h("li", { title: row.title },
+    h("div", { class: "meter-head" },
+      row.href ? h("a", { href: row.href }, row.label) : h("span", {}, row.label),
+      h("span", { class: "meter-value" }, row.value_text),
+    ),
+    h("div", { class: "meter", role: "meter", "aria-label": row.label, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(row.percent), "aria-valuetext": row.value_text },
+      h("span", { class: "meter-fill", style: `width: ${row.percent.toFixed(1)}%; background-color: ${row.color}` }),
+      ...row.marks.map((mark) => h("span", { class: "meter-mark", style: `left: ${mark.toFixed(1)}%` })),
+    ),
+  )));
 }
 
 // ── Strip ────────────────────────────────────────────────────────────────────

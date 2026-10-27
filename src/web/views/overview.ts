@@ -2,18 +2,21 @@
 
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
 import { api, query, repository_path, type History, type Job, type RepositorySummary, type TimerRow } from "../api.ts";
-import { line_chart, stacked_bar_chart, type Stack } from "../charts.ts";
-import { age, h, now_seconds, size, stamp, until } from "../dom.ts";
+import { line_chart, meters, stacked_bar_chart, type Meter, type Stack } from "../charts.ts";
+import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { attempt, empty, job_badge, load, section, skeleton } from "../ui.ts";
 import { repository_card, status_rank, touches, type View } from "./shared.ts";
 
 const day_in_seconds = 86400;
 const stored_span_in_days = 90;
+// A backup meter is full at twice its repository's max age, so the max age sits at its middle.
+const backup_scale = 2;
 
 export function overview_view(): View {
   const tiles = h("div");
   const attention = h("div");
+  const ages = h("div");
   const activity = h("div");
   const running = h("div");
   const upcoming = h("div");
@@ -45,6 +48,7 @@ export function overview_view(): View {
     await Promise.all([
       load(tiles, async () => overview_tiles(repositories, timers, recent), { quiet }),
       load(attention, async () => attention_list(repositories, timers), { quiet }),
+      load(ages, async () => backup_ages(repositories), { quiet }),
       load(activity, async () => jobs_chart(recent, span), { quiet }),
       load(running, async () => running_list(recent), { quiet }),
       load(upcoming, async () => upcoming_list(timers), { quiet }),
@@ -54,7 +58,7 @@ export function overview_view(): View {
     if (with_history) void load(stored, async () => stored_chart(repositories), { quiet });
   };
 
-  for (const target of [tiles, attention, activity, running, upcoming, stored, grid]) target.append(skeleton());
+  for (const target of [tiles, attention, ages, activity, running, upcoming, stored, grid]) target.append(skeleton());
   void update(false);
 
   return {
@@ -66,6 +70,7 @@ export function overview_view(): View {
         section("Needs attention", attention),
         section("Jobs", activity, span_switch),
       ),
+      section("Time since last backup", ages, h("span", { class: "muted small" }, "ticks at the warning and max age")),
       h("div", { class: "columns" },
         h("div", { class: "stack" },
           section("Running now", running, h("a", { href: link(["jobs"], { state: "running" }) }, "All running")),
@@ -121,7 +126,30 @@ function attention_list(repositories: RepositorySummary[], timers: TimerRow[]): 
   )));
 }
 
-const outcome_parts: [state: Job["state"], label: string, color: string][] = [
+// One meter per repository of the time since its newest archive, the stalest against its max age first.
+function backup_ages(repositories: RepositorySummary[]): HTMLElement {
+  const now = now_seconds();
+  const stale = (repository: RepositorySummary) => repository.last_backup_epoch ? (now - repository.last_backup_epoch) / repository.max_age : Infinity;
+  const rows = [...repositories].sort((a, b) => stale(b) - stale(a) || a.name.localeCompare(b.name)).map((repository): Meter => {
+    const scale = repository.max_age * backup_scale;
+    const since = repository.last_backup_epoch ? Math.max(0, now - repository.last_backup_epoch) : null;
+    const warns = repository.warn_age > 0 && repository.warn_age < repository.max_age;
+    const color = since === null || since > repository.max_age ? "var(--status-danger)"
+      : warns && since > repository.warn_age ? "var(--status-warning)" : "var(--accent)";
+    return {
+      label: `${repository.name} · ${repository.host}`,
+      href: link(["repositories", repository.id]),
+      value_text: since === null ? "no archive yet" : age(repository.last_backup_epoch),
+      percent: since === null ? 100 : Math.min(100, since / scale * 100),
+      color,
+      marks: [...(warns ? [repository.warn_age / scale * 100] : []), 100 / backup_scale],
+      title: `Max age ${duration(repository.max_age)}${warns ? `, warning at ${duration(repository.warn_age)}` : ""}${repository.last_backup_epoch ? `; newest archive ${stamp(repository.last_backup_epoch)}` : ""}`,
+    };
+  });
+  return meters(rows, "No repositories yet.");
+}
+
+const outcome_parts:[state: Job["state"], label: string, color: string][] = [
   ["succeeded", "succeeded", "var(--status-success)"],
   ["warning", "with warnings", "var(--status-warning)"],
   ["failed", "failed", "var(--status-danger)"],

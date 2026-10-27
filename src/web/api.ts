@@ -38,6 +38,8 @@ export interface RepositorySummary {
   level: "ok" | "warning" | "critical";
   reasons: { level: "warning" | "critical"; text: string }[];
   max_age: number;
+  // 0 when the repository warns only at max_age.
+  warn_age: number;
   last_poll_epoch: number | null;
   last_backup_epoch: number | null;
   archive_count: number | null;

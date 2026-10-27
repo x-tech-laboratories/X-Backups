@@ -644,6 +644,12 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
 .cell-pass { background-color: var(--status-success); }
 .cell-fail { background-color: var(--status-danger); }
 .cell-none { background-color: var(--border-default); }
+.meters { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.meter-head { display: flex; gap: var(--space-4); justify-content: space-between; margin-bottom: var(--space-1); font-size: var(--text-control); }
+.meter-value { color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.meter { position: relative; height: 6px; border-radius: 3px; background-color: var(--border-default); }
+.meter-fill { display: block; height: 100%; border-radius: 3px; }
+.meter-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background-color: var(--text-tertiary); }
 
 /* ── States ───────────────────────────────────────────────────────────────── */
 

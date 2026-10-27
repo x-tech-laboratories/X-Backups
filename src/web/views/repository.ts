@@ -178,7 +178,7 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
         api<History>(`${context.base}/history${query({ since })}`),
         api<Job[]>(`/api/jobs${query({ repository: context.id, limit: 60 })}`),
       ]);
-      return history_charts(history, jobs);
+      return history_charts(repository, history, jobs, since);
     }, { quiet });
   };
 }
@@ -219,6 +219,8 @@ function repository_facts(repository: RepositoryDetail): HTMLElement {
   return h("div", {},
     facts([
       ["Last backup", h("span", { title: repository.last_backup_epoch ? stamp(repository.last_backup_epoch) : null }, age(repository.last_backup_epoch), late ? " · overdue" : ""), late ? "tone-bad" : undefined],
+      ["Max age", duration(repository.max_age)],
+      ["Warning at", repository.warn_age > 0 && repository.warn_age < repository.max_age ? duration(repository.warn_age) : "max age only"],
       ["Archives", repository.archive_count ?? "—"],
       ["Original", size(original)],
       ["Compressed", size(repository.stats?.compressed_size)],
@@ -250,11 +252,18 @@ const job_colors: Record<Job["state"], string> = {
   running: "var(--accent)",
 };
 
-function history_charts(history: History, jobs: Job[]): HTMLElement[] {
+function history_charts(repository: RepositoryDetail, history: History, jobs: Job[], since: number): HTMLElement[] {
   const polls = history.polls;
   const archives = history.archives.slice(0, 40).reverse();
   const finished = jobs.filter((job) => job.ended_epoch !== null).slice(0, 40).reverse();
+  const warns = repository.warn_age > 0 && repository.warn_age < repository.max_age;
   return [
+    line_chart("Time since last backup", [
+      { label: "since last archive", color: "var(--series-1)", points: backup_age_points(history, since) },
+    ], duration, [
+      ...(warns ? [{ label: "warning age", value: repository.warn_age, color: "var(--status-warning)" }] : []),
+      { label: "max age", value: repository.max_age, color: "var(--status-danger)" },
+    ]),
     line_chart("Repository size", [
       { label: "original", color: "var(--series-1)", points: polls.map((poll) => [poll.epoch, poll.original_size]) },
       { label: "compressed", color: "var(--series-2)", points: polls.map((poll) => [poll.epoch, poll.compressed_size]) },
@@ -272,6 +281,21 @@ function history_charts(history: History, jobs: Job[]): HTMLElement[] {
     strip("Checks", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.checks_passed }))),
     strip("Restore canary", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.canary_ok }))),
   ];
+}
+
+// The age of the newest archive from `since` to now: it climbs until each archive lands, then drops to zero.
+function backup_age_points(history: History, since: number): [number, number | null][] {
+  const epochs = history.archives.map((archive) => archive.epoch).sort((a, b) => a - b);
+  let previous = epochs.filter((epoch) => epoch < since).at(-1) ?? null;
+  const points: [number, number | null][] = [[since, previous === null ? null : since - previous]];
+  for (const epoch of epochs.filter((epoch) => epoch >= since)) {
+    if (previous !== null) points.push([epoch, epoch - previous]);
+    points.push([epoch, 0]);
+    previous = epoch;
+  }
+  const now = now_seconds();
+  if (previous !== null) points.push([now, now - previous]);
+  return points;
 }
 
 // ── Archives tab ─────────────────────────────────────────────────────────────
