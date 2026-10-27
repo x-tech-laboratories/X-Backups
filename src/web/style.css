@@ -479,3 +479,14 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   .sidebar { transition: none; }
 }
+
+/* ── Access ───────────────────────────────────────────────────────────────── */
+
+.account-link { color: var(--muted); text-decoration: none; font-size: 13px; white-space: nowrap; }
+.account-link:hover { color: var(--text); }
+.check-list { display: grid; gap: 4px; margin-top: 6px; max-height: 220px; overflow: auto; }
+.secret-once { font-size: 15px; letter-spacing: 0.05em; user-select: all; }
+.login .button { justify-content: center; }
+@media (max-width: 768px) {
+  .account-link { display: none; }
+}

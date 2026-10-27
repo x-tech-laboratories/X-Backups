@@ -3,9 +3,12 @@
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
-import fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
-import { register_auth } from "./auth.ts";
+import { AccountError, Accounts, has_role } from "./accounts.ts";
+import { register_auth, visible, type ProxyLogin } from "./auth.ts";
+import { metrics_text } from "./metrics.ts";
+import type { OidcClient } from "./oidc.ts";
 import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
@@ -20,6 +23,10 @@ export interface app_options {
   serve_web: boolean;
   logger: boolean;
   password_hash: string;
+  // The name the password hash logs in as; "admin" unless X_BACKUPS_ADMIN_NAME says otherwise.
+  admin_name?: string;
+  oidc?: OidcClient | null;
+  proxy?: ProxyLogin | null;
   poller: Poller;
   store: Store;
   // Where the config comes from; without it the config is the poller's own and read-only.
@@ -90,7 +97,25 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   const app = fastify({ logger: options.logger });
   const { poller, store, sources } = options;
 
-  register_auth(app, options.password_hash);
+  const accounts = new Accounts(store, { name: options.admin_name ?? "admin", password_hash: options.password_hash });
+  register_auth(app, { accounts, oidc: options.oidc, proxy: options.proxy });
+
+  // The repositories this viewer sees.
+  const watched_by = (request: FastifyRequest): Watched[] =>
+    [...poller.repositories.values()].filter((watched) => visible(request, watched.repository.id));
+
+  // The repository ids a list is narrowed to, or undefined when the viewer sees them all.
+  const allowed_ids = (request: FastifyRequest): string[] | undefined => request.viewer?.repositories ?? undefined;
+
+  const visible_job = (request: FastifyRequest, id: string) => {
+    const job = store.job(Number(id));
+    return job !== null && visible(request, job.repository_id) ? job : null;
+  };
+
+  // Keeps who ran an action beside what it did, so the events say who pruned or purged.
+  const note_actor = (request: FastifyRequest, repository_id: string, what: string) => {
+    store.apply(repository_id, new CollectResult({ logs: [[`${request.viewer?.name ?? "someone"} ${what}`, "INFO"]] }), { poll: false });
+  };
 
   const find = (id: string, reply: FastifyReply): Watched | null => {
     const watched = poller.repositories.get(id) ?? null;
@@ -115,7 +140,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 
   // ── Repositories ─────────────────────────────────────────────────────────
 
-  app.get("/api/repositories", async () => [...poller.repositories.values()].map(summary));
+  app.get("/api/repositories", async (request) => watched_by(request).map(summary));
 
   app.get<{ Params: { id: string } }>("/api/repositories/:id", async (request, reply) => {
     const watched = find(request.params.id, reply);
@@ -150,6 +175,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       const start_action = actions[request.params.action];
       if (start_action === undefined) return reply.code(404).send({ error: `No action '${request.params.action}'.` });
       const id = watched.repository.id;
+      note_actor(request, id, `asked for ${request.params.action.replaceAll("_", " ")}${request.body?.archive ? ` on ${request.body.archive}` : ""}`);
       return outcome(id, await settle(id, start_action(watched.repository, request.body ?? {})));
     },
   );
@@ -191,15 +217,16 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     if (watched === null) return reply;
     const { name, host, ssh_user, interval_in_seconds, borg, source } = watched.config;
     const fields = sources?.entry(name) ?? mask({ name, host, ssh_user, interval: interval_in_seconds, ...borg });
-    return { source, editable: Boolean(sources?.editable) && source === "page", config_mode: sources?.mode ?? "declarative", fields };
+    const may_edit = Boolean(sources?.editable) && has_role(request.viewer!.role, "admin");
+    return { source, editable: may_edit && source === "page", config_mode: sources?.mode ?? "declarative", fields };
   });
 
   // ── Config ───────────────────────────────────────────────────────────────
 
   // How the config is kept, the fields a repository takes, and the defaults with where each came from.
-  app.get("/api/config", async () => ({
+  app.get("/api/config", async (request) => ({
     mode: sources?.mode ?? "declarative",
-    editable: Boolean(sources?.editable),
+    editable: Boolean(sources?.editable) && has_role(request.viewer!.role, "admin"),
     fields: field_list(),
     settings: sources?.settings() ?? Object.entries(default_settings).map(([name, { fallback }]) => ({ name, value: fallback, source: "default" })),
     shadowed: sources?.shadowed() ?? [],
@@ -256,6 +283,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // A config the checks refused answers with the message and the field it names, for the page to show beside it.
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ConfigError) return reply.code(400).send({ error: error.message, field: error.field });
+    if (error instanceof AccountError) return reply.code(error.status).send({ error: error.message });
     reply.log.error(error);
     const status = (error as { statusCode?: number }).statusCode ?? 500;
     return reply.code(status).send({ error: (error as Error).message });
@@ -265,7 +293,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Querystring: { q?: string } }>("/api/search", async (request) => {
     const text = (request.query.q ?? "").trim().toLowerCase();
     if (!text) return { repositories: [], archives: [] };
-    const watched = [...poller.repositories.values()].map(({ repository }) => repository);
+    const watched = watched_by(request).map(({ repository }) => repository);
     return {
       repositories: watched
         .filter((repository) => repository.name.toLowerCase().includes(text) || repository.id.toLowerCase().includes(text))
@@ -284,42 +312,52 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Querystring: ListQuery }>("/api/jobs", async (request) => {
     const query = request.query;
     return store.jobs({
-      repository_id: query.repository, kind: query.kind, state: query.state, since_epoch: number_or_undefined(query.since),
+      repository_id: query.repository, repository_ids: allowed_ids(request), kind: query.kind, state: query.state,
+      since_epoch: number_or_undefined(query.since),
       limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
     }).map(with_retry);
   });
 
   app.get<{ Params: { id: string }; Querystring: { skip?: string } }>("/api/jobs/:id", async (request, reply) => {
-    const job = store.job(Number(request.params.id));
+    const job = visible_job(request, request.params.id);
     if (job === null) return reply.code(404).send({ error: "No such job." });
     return { ...with_retry(job), output: store.job_output(job.id, Number(request.query.skip ?? 0)) };
   });
 
   app.post<{ Params: { id: string } }>("/api/jobs/:id/cancel", async (request, reply) => {
-    const job = store.job(Number(request.params.id));
+    const job = visible_job(request, request.params.id);
     const watched = job ? poller.repositories.get(job.repository_id) : undefined;
     if (!job || !watched) return reply.code(404).send({ error: "No such job." });
     if (watched.repository.jobs?.running()?.id !== job.id) return reply.code(409).send({ error: "That job is not running." });
+    note_actor(request, job.repository_id, `cancelled ${job.kind} #${job.id}`);
     return outcome(job.repository_id, await settle(job.repository_id, watched.repository.cancel_job()));
   });
 
   // Runs a finished job's action again, as if its button had been pressed.
   app.post<{ Params: { id: string } }>("/api/jobs/:id/retry", async (request, reply) => {
-    const job = store.job(Number(request.params.id));
+    const job = visible_job(request, request.params.id);
     const watched = job ? poller.repositories.get(job.repository_id) : undefined;
     if (!job || !watched) return reply.code(404).send({ error: "No such job." });
     if (job.state === "running") return reply.code(409).send({ error: "That job is still running." });
     const retry = retry_action(job.kind);
     if (retry === null) return reply.code(409).send({ error: `A ${job.kind} is started again from its archive.` });
     const [action_id, body] = retry;
+    note_actor(request, job.repository_id, `ran ${job.kind} #${job.id} again`);
     return outcome(job.repository_id, await settle(job.repository_id, actions[action_id](watched.repository, body)));
   });
 
-  app.get("/api/timers", async () => store.timers());
+  // A host's timers show to whoever sees one of its repositories.
+  app.get("/api/timers", async (request) => {
+    const hosts = new Set(watched_by(request).map(host_name));
+    return store.timers().filter((timer) => hosts.has(timer.host));
+  });
 
   app.get<{ Querystring: ListQuery }>("/api/events", async (request) => {
     const query = request.query;
-    return store.events({ repository_id: query.repository, level: query.level, limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0) });
+    return store.events({
+      repository_id: query.repository, repository_ids: allowed_ids(request), level: query.level,
+      limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
+    });
   });
 
   // ── Live changes ─────────────────────────────────────────────────────────
@@ -331,7 +369,9 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const stream = reply.raw;
     stream.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     stream.write("retry: 5000\n\n");
-    const send = (change: Change) => stream.write(`data: ${JSON.stringify(change)}\n\n`);
+    const send = (change: Change) => {
+      if (change.repository_id === null || visible(request, change.repository_id)) stream.write(`data: ${JSON.stringify(change)}\n\n`);
+    };
     const keepalive = setInterval(() => stream.write(": keepalive\n\n"), stream_keepalive_in_milliseconds);
     store.changes.on("change", send);
     streams.add(stream);
@@ -345,6 +385,10 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.addHook("onClose", async () => {
     for (const stream of streams) stream.end();
   });
+
+  // ── Metrics ──────────────────────────────────────────────────────────────
+
+  app.get("/metrics", async (request, reply) => reply.type("text/plain; version=0.0.4").send(metrics_text(watched_by(request))));
 
   // In production the server also hands out the built web page.
   if (options.serve_web && existsSync(web_build_directory)) {

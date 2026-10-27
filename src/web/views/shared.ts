@@ -5,6 +5,7 @@ import { overdue, repository_reasons, timer_problem } from "../attention.ts";
 import { api, type Change, type EventRow, type Job, type Outcome, type RepositorySummary, type TimerRow } from "../api.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { link } from "../router.ts";
+import { can } from "../session.ts";
 import { chip, confirm_dialog, data_table, empty, job_badge, level_badge, status_badge, toast, verdict, type Sorting } from "../ui.ts";
 
 // ── Views ────────────────────────────────────────────────────────────────────
@@ -111,7 +112,8 @@ export function jobs_table(jobs: Job[], options: { with_repository: boolean; ref
   ], jobs, { caption: "Jobs" });
 }
 
-export function job_buttons(job: Job, refresh: () => void): HTMLElement {
+export function job_buttons(job: Job, refresh: () => void): HTMLElement | null {
+  if (!can("operator")) return null;
   return h("span", { class: "row-actions" },
     job.state === "running" && h("button", { class: "danger", onclick: () => cancel_job(job, refresh) }, "Cancel"),
     job.retry && h("button", { onclick: () => retry_job(job, refresh) }, "Retry"),

@@ -40,6 +40,34 @@ State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `st
 
 `/api/health` stays open, so X-Monitor can poll it without logging in.
 
+## Users and access
+
+The password hash file logs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds
+other users on the Users page, each with a role and the repositories they see:
+
+- `viewer` sees status, history, jobs and events.
+- `operator` also runs actions, restores, and reads and downloads what is inside archives.
+- `admin` also changes the config, users and API tokens.
+
+Anyone can turn on a second factor (an authenticator app, with recovery codes) on the Account
+page. Five wrong passwords for one name from one address lock that pair out for five minutes.
+
+API tokens, made on the Users page, read like a viewer of every repository and nothing more:
+send one as `Authorization: Bearer <token>`. `/metrics` serves Prometheus metrics to a token or a
+logged-in user.
+
+Two other ways in, both only for users an admin has added:
+
+- **Single sign-on:** `X_BACKUPS_OIDC_ISSUER`, `X_BACKUPS_OIDC_CLIENT_ID`,
+  `X_BACKUPS_OIDC_CLIENT_SECRET_FILE` and `X_BACKUPS_OIDC_REDIRECT_URL` (the public URL of
+  `/api/auth/oidc/callback`). The `preferred_username` claim names the user
+  (`X_BACKUPS_OIDC_USERNAME_CLAIM`).
+- **A reverse proxy's header:** `X_BACKUPS_PROXY_USER_HEADER`, believed only from
+  `X_BACKUPS_TRUSTED_PROXIES` (default `127.0.0.1,::1`). The proxy must strip that header from
+  what clients send.
+
+The NixOS module has the same as `adminName`, `oidc.*` and `proxyLogin.*`.
+
 ## NixOS
 
 The flake's `nixosModules.default` runs X-Backups as a service:

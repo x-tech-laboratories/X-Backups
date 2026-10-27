@@ -3,7 +3,7 @@
 
 import { writeFileSync } from "node:fs";
 import { text } from "node:stream/consumers";
-import { hash_password } from "./auth.ts";
+import { hash_password } from "./passwords.ts";
 
 const file_path = process.argv[2] ?? "password.hash";
 

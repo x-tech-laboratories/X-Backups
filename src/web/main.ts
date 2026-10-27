@@ -1,9 +1,10 @@
 // The page: the login, the shell around every view (header, sidebar, search, running jobs, theme), and the router between views.
 
-import { api, LoginNeeded, query, type Change, type Job, type SearchResults } from "./api.ts";
+import { api, ApiError, LoginNeeded, query, type Change, type Job, type SearchResults } from "./api.ts";
 import { h, stamp } from "./dom.ts";
 import { connect, disconnect, on_changes, stream_up } from "./live.ts";
 import { current_route, link } from "./router.ts";
+import { can, forget_me, load_me } from "./session.ts";
 import { apply, next_theme, theme_choice, type Theme } from "./theme.ts";
 import { archive_view } from "./views/archive.ts";
 import { job_view, jobs_view } from "./views/jobs.ts";
@@ -12,6 +13,7 @@ import { overview_view } from "./views/overview.ts";
 import { events_view, schedules_view, settings_view } from "./views/pages.ts";
 import { repositories_view } from "./views/repositories.ts";
 import { repository_view } from "./views/repository.ts";
+import { account_view, users_view } from "./views/users.ts";
 import type { View } from "./views/shared.ts";
 import "./style.css";
 
@@ -36,6 +38,8 @@ function view_for(parts: string[]): View {
   if (section === "schedules") return schedules_view();
   if (section === "events") return events_view();
   if (section === "settings") return settings_view();
+  if (section === "users") return users_view();
+  if (section === "account") return account_view();
   return overview_view();
 }
 
@@ -80,28 +84,61 @@ window.addEventListener("unhandledrejection", (event) => {
 
 function show_login(): void {
   disconnect();
+  forget_me();
   current?.dispose?.();
   current = null;
   document.body.classList.add("logged-out");
   document.title = "Log in · X-Backups";
+  const name = h("input", { type: "text", name: "username", autocomplete: "username", "aria-label": "User name", autocapitalize: "none" });
   const password = h("input", { type: "password", name: "password", autocomplete: "current-password", required: true, "aria-label": "Password" });
-  const message = h("p", { class: "tone-bad", role: "alert" });
+  const code = h("input", { type: "text", name: "one-time-code", autocomplete: "one-time-code", inputmode: "numeric", "aria-label": "Code from your authenticator app" });
+  const code_field = h("label", { class: "field", hidden: true }, h("span", { class: "field-label" }, "Code from your authenticator app, or a recovery code"), code);
+  // An error the single sign-on callback sent back in the URL.
+  const message = h("p", { class: "tone-bad", role: "alert" }, current_route().query.get("login_error") ?? "");
   const submit = h("button", { type: "submit", class: "accent solid" }, "Log in");
+  const sign_on = h("div");
   const form = h("form", { class: "login", onsubmit: async (event: Event) => {
     event.preventDefault();
     submit.disabled = true;
     message.textContent = "";
     try {
-      await api("/api/login", { password: password.value });
-      start();
+      await login(name.value, password.value, code_field.hidden ? undefined : code.value);
+      history.replaceState(null, "", location.pathname + "#/");
+      await start();
     } catch (error) {
-      message.textContent = error instanceof LoginNeeded ? "Wrong password." : `Could not log in: ${error instanceof Error ? error.message : String(error)}`;
+      // The server asks for the second factor only once the password is right.
+      if (error instanceof ApiError && error.message.includes("authenticator")) {
+        code_field.hidden = false;
+        code.focus();
+      } else {
+        message.textContent = error instanceof Error ? error.message : String(error);
+        (code_field.hidden ? password : code).select();
+      }
       submit.disabled = false;
-      password.select();
     }
-  } }, h("h1", {}, "X-Backups"), h("label", { class: "field" }, h("span", { class: "field-label" }, "Password"), password), submit, message);
+  } },
+    h("h1", {}, "X-Backups"),
+    h("label", { class: "field" }, h("span", { class: "field-label" }, "User name"), name),
+    h("label", { class: "field" }, h("span", { class: "field-label" }, "Password"), password),
+    code_field, submit, message, sign_on);
   main.replaceChildren(form);
-  password.focus();
+  name.focus();
+  void api<{ oidc: { label: string } | null; admin_name: string }>("/api/auth/info").then((info) => {
+    if (!name.value) name.placeholder = info.admin_name;
+    if (info.oidc) sign_on.replaceChildren(h("p", { class: "muted small" }, "or"), h("a", { class: "button", href: "/api/auth/oidc/start" }, `Log in with ${info.oidc.label}`));
+  }).catch(() => {});
+}
+
+// Logs in, telling a wrong password from a missing second factor, which the server answers with totp_required.
+async function login(name: string, password: string, code: string | undefined): Promise<void> {
+  const response = await fetch("/api/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, password, code }),
+  });
+  if (response.ok) return;
+  const answer = await response.json().catch(() => ({}));
+  throw new ApiError(answer.totp_required && !code ? "Enter the code from your authenticator app." : answer.error ?? `${response.status} ${response.statusText}`, null);
 }
 
 document.querySelector("#logout")!.addEventListener("click", async () => {
@@ -109,8 +146,12 @@ document.querySelector("#logout")!.addEventListener("click", async () => {
   show_login();
 });
 
-function start(): void {
+async function start(): Promise<void> {
+  const who = await load_me();
   document.body.classList.remove("logged-out");
+  const account = document.querySelector<HTMLAnchorElement>("#account")!;
+  account.textContent = `${who.name} · ${who.role}`;
+  document.querySelector<HTMLElement>("#nav-users")!.hidden = !can("admin");
   first_view = true;
   show();
   connect();
@@ -244,7 +285,7 @@ document.addEventListener("click", (event) => {
 // ── Start ────────────────────────────────────────────────────────────────────
 
 // The first request tells whether a session is still open.
-void api("/api/repositories").then(start, (error) => {
+void load_me().then(start, (error) => {
   if (error instanceof LoginNeeded) show_login();
-  else start();
+  else void start();
 });

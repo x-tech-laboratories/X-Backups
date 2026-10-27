@@ -8,6 +8,7 @@ import {
   attempt, confirm_dialog, crumbs, data_table, empty, facts, load, pager, search_box, section, select, skeleton, sorting_from, tabs,
   toolbar, type Sorting,
 } from "../ui.ts";
+import { can } from "../session.ts";
 import { delete_archive } from "./repository.ts";
 import { touches, type View } from "./shared.ts";
 
@@ -37,7 +38,9 @@ export function archive_view(id: string, name: string): View {
     // The tabs load once; a later change to the repository only refreshes the header's numbers.
     if (started) return;
     started = true;
-    if (tab === "files") files_tab(body, base, archive.name, target);
+    // What is inside an archive is backed-up data, which the server shows only to operators.
+    if (!can("operator")) body.replaceChildren(empty("Reading what is inside an archive needs the operator role.", "An admin can change your role on the Users page."));
+    else if (tab === "files") files_tab(body, base, archive.name, target);
     else changes_tab(body, base, archive.name, older);
   };
   void update(false);
@@ -80,7 +83,7 @@ function archive_header(repository: RepositoryDetail, archive: Archive, older: A
       ["New data", h("span", { title: "Data no other archive shares, which deleting this archive would free" }, size(archive.deduplicated))],
       ["Files", [archive.nfiles?.toLocaleString() ?? "—", delta(archive.nfiles, older?.nfiles, count_change)]],
     ]),
-    repository.allow_delete && h("div", { class: "head-actions" },
+    can("operator") && repository.allow_delete && h("div", { class: "head-actions" },
       h("button", { class: "danger", onclick: () => delete_archive(target, archive.name, () => { location.hash = link(["repositories", repository.id, "archives"]); }) }, "Delete archive")),
   );
 }

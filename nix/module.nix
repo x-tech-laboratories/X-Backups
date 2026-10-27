@@ -71,7 +71,75 @@ in
     passwordHashFile = mkOption {
       type = types.str;
       example = "/run/secrets/x-backups-password-hash";
-      description = "File holding the login password hash written by `npm run hash-password`.";
+      description = ''
+        File holding the password hash written by `npm run hash-password`, for the admin named by
+        `adminName`. The page cannot change that admin's role or password; other users are added
+        on its Users page.
+      '';
+    };
+
+    adminName = mkOption {
+      type = types.str;
+      default = "admin";
+      description = "The user name `passwordHashFile` logs in as.";
+    };
+
+    oidc = {
+      issuer = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "https://id.example.org/realms/home";
+        description = ''
+          OpenID Connect issuer to log in through. Its user name claim must match an X-Backups
+          user an admin has added; the provider proves who someone is, the user decides their role.
+        '';
+      };
+      clientId = mkOption {
+        type = types.str;
+        default = "x-backups";
+        description = "The client id registered with the provider.";
+      };
+      clientSecretFile = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "File holding the client secret.";
+      };
+      redirectUrl = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "https://backups.example.org/api/auth/oidc/callback";
+        description = "The public URL of X-Backups' callback, as registered with the provider.";
+      };
+      label = mkOption {
+        type = types.str;
+        default = "single sign-on";
+        description = "What the login button names the provider as.";
+      };
+      usernameClaim = mkOption {
+        type = types.str;
+        default = "preferred_username";
+        description = "The ID token claim holding the X-Backups user name.";
+      };
+    };
+
+    proxyLogin = {
+      header = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "X-Remote-User";
+        description = ''
+          Header a reverse proxy that has already logged someone in sets to their user name. It is
+          believed only from `proxyLogin.trustedProxies`, so the proxy must strip it from clients.
+        '';
+      };
+      trustedProxies = mkOption {
+        type = types.listOf types.str;
+        default = [
+          "127.0.0.1"
+          "::1"
+        ];
+        description = "Addresses the proxy connects from.";
+      };
     };
 
     sshKeyFile = mkOption {
@@ -146,7 +214,13 @@ in
   };
 
   config = mkIf cfg.enable {
-    assertions = lib.mapAttrsToList (name: repository: {
+    assertions = [
+      {
+        assertion = cfg.oidc.issuer == null || (cfg.oidc.clientSecretFile != null && cfg.oidc.redirectUrl != null);
+        message = "services.x-backups.oidc: an issuer needs clientSecretFile and redirectUrl too.";
+      }
+    ]
+    ++ lib.mapAttrsToList (name: repository: {
       assertion = !(repository ? passphrase);
       message = "services.x-backups.repositories.${name}: use passphraseFile, since passphrase would land in the Nix store.";
     }) cfg.repositories;
@@ -170,6 +244,19 @@ in
         X_BACKUPS_PASSWORD_HASH_FILE = "${credentials_directory}/password-hash";
         X_BACKUPS_STATE_DIR = "/var/lib/x-backups";
         X_BACKUPS_CONFIG_MODE = cfg.configMode;
+        X_BACKUPS_ADMIN_NAME = cfg.adminName;
+      }
+      // lib.optionalAttrs (cfg.oidc.issuer != null) {
+        X_BACKUPS_OIDC_ISSUER = cfg.oidc.issuer;
+        X_BACKUPS_OIDC_CLIENT_ID = cfg.oidc.clientId;
+        X_BACKUPS_OIDC_CLIENT_SECRET_FILE = "${credentials_directory}/oidc-client-secret";
+        X_BACKUPS_OIDC_REDIRECT_URL = cfg.oidc.redirectUrl;
+        X_BACKUPS_OIDC_LABEL = cfg.oidc.label;
+        X_BACKUPS_OIDC_USERNAME_CLAIM = cfg.oidc.usernameClaim;
+      }
+      // lib.optionalAttrs (cfg.proxyLogin.header != null) {
+        X_BACKUPS_PROXY_USER_HEADER = cfg.proxyLogin.header;
+        X_BACKUPS_TRUSTED_PROXIES = lib.concatStringsSep "," cfg.proxyLogin.trustedProxies;
       }
       // lib.optionalAttrs (cfg.sshKeyFile != null) {
         X_BACKUPS_SSH_KEY_FILE = "${credentials_directory}/ssh-key";
@@ -184,6 +271,7 @@ in
           "password-hash:${cfg.passwordHashFile}"
         ]
         ++ lib.optional (cfg.sshKeyFile != null) "ssh-key:${cfg.sshKeyFile}"
+        ++ lib.optional (cfg.oidc.issuer != null) "oidc-client-secret:${cfg.oidc.clientSecretFile}"
         ++ passphrase_credentials;
         Restart = "on-failure";
         RestartSec = "5s";

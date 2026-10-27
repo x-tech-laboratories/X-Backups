@@ -63,6 +63,8 @@ export interface Change {
 
 export interface JobFilter {
   repository_id?: string;
+  // The repositories a viewer may see; an empty list matches nothing.
+  repository_ids?: string[];
   // A kind matches itself and its variants, so "check" also matches "check-data".
   kind?: string;
   state?: string;
@@ -73,6 +75,7 @@ export interface JobFilter {
 
 export interface EventFilter {
   repository_id?: string;
+  repository_ids?: string[];
   level?: string;
   limit?: number;
   offset?: number;
@@ -151,6 +154,25 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS events_by_repository ON events (repository_id, id);
   CREATE INDEX IF NOT EXISTS jobs_by_repository ON jobs (repository_id, id);
+  CREATE TABLE IF NOT EXISTS users (
+    name TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    repositories TEXT,
+    password_hash TEXT,
+    totp_secret TEXT,
+    totp_pending TEXT,
+    totp_last_step INTEGER,
+    recovery_codes TEXT,
+    created_epoch INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS tokens (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL,
+    created_epoch INTEGER NOT NULL,
+    last_used_epoch INTEGER
+  );
 `;
 
 // ── Store ────────────────────────────────────────────────────────────────────
@@ -273,8 +295,10 @@ export class Store {
 
   // The newest events first, for one repository or all of them, at one level or all.
   events(options: EventFilter = {}): EventRow[] {
+    if (options.repository_ids?.length === 0) return [];
     const [where, values] = conditions([
       ["repository_id = ?", options.repository_id],
+      [in_list("repository_id", options.repository_ids), options.repository_ids],
       ["level = ?", options.level],
     ]);
     const sql = `SELECT * FROM events ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
@@ -329,8 +353,10 @@ export class Store {
 
   // The newest jobs first, narrowed by whatever the filter names.
   jobs(options: JobFilter = {}): JobRow[] {
+    if (options.repository_ids?.length === 0) return [];
     const [where, values] = conditions([
       ["repository_id = ?", options.repository_id],
+      [in_list("repository_id", options.repository_ids), options.repository_ids],
       ["(kind = ? OR kind LIKE ? || '-%')", options.kind === undefined ? undefined : [options.kind, options.kind]],
       ["state = ?", options.state],
       ["started_epoch >= ?", options.since_epoch],
@@ -467,6 +493,11 @@ function conditions(parts: [sql: string, value: SQLInputValue | SQLInputValue[] 
   const given = parts.filter(([, value]) => value !== undefined && value !== "");
   if (given.length === 0) return ["", []];
   return [`WHERE ${given.map(([sql]) => sql).join(" AND ")}`, given.flatMap(([, value]) => value as SQLInputValue | SQLInputValue[])];
+}
+
+// `column IN (?, ?, …)` with a mark per value.
+function in_list(column: string, values: string[] | undefined): string {
+  return `${column} IN (${(values ?? []).map(() => "?").join(", ")})`;
 }
 
 function number_or_null(value: unknown): number | null {

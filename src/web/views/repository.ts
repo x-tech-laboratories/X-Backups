@@ -13,6 +13,7 @@ import {
   attempt, chip, confirm_dialog, crumbs, data_table, empty, facts, load, pager, search_box, section, select, skeleton, sorting_from,
   status_badge, tabs, toast, toolbar, verdict, type Sorting,
 } from "../ui.ts";
+import { can } from "../session.ts";
 import { config_form, config_read_only, config_tools } from "./config_form.ts";
 import { events_list, jobs_table, timers_table, touches, type View } from "./shared.ts";
 
@@ -120,7 +121,7 @@ function repository_header(repository: RepositoryDetail, target: ActionTarget): 
         `${repository.running_job.kind} running${repository.running_job.progress ? ` · ${repository.running_job.progress}` : ""}`),
     ),
     h("p", { class: "muted" }, repository.repo ?? "", ` on ${repository.host}`, ` · polled ${age(repository.last_poll_epoch)}`),
-    h("div", { class: "head-actions" },
+    can("operator") && h("div", { class: "head-actions" },
       ...buttons.map((action, index) => action_button(action, target, index === 0 ? "accent solid" : "")),
       h("button", { onclick: () => void poll_now(target) }, "Poll now"),
     ),
@@ -156,11 +157,11 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   const summary = h("div");
   const charts = h("div", { class: "charts" }, skeleton(4));
   const maintenance = h("div", { class: "maintenance" });
-  context.body.replaceChildren(
+  context.body.replaceChildren(...nodes([
     section("Summary", summary),
     section("History", charts, h("span", { class: "muted small" }, "last 90 days")),
-    section("Maintenance", maintenance),
-  );
+    can("operator") && section("Maintenance", maintenance),
+  ]));
   return async (quiet) => {
     const repository = context.detail();
     summary.replaceChildren(repository_facts(repository));
@@ -302,9 +303,9 @@ function archives_table(repository: RepositoryDetail, archives: Archive[], sorti
     { label: "Files", class: "number", cell: (archive) => archive.nfiles?.toLocaleString() ?? "—", sort: () => 0 },
     {
       label: "", class: "actions-cell", cell: (archive) => h("span", { class: "row-actions" },
-        archive.name !== oldest && h("a", { class: "button", href: archive_link(archive, "changes") }, "Changes"),
-        h("a", { class: "button", href: archive_link(archive, "files") }, "Files"),
-        repository.allow_delete && h("button", { class: "danger", onclick: () => delete_archive(target, archive.name) }, "Delete"),
+        can("operator") && archive.name !== oldest && h("a", { class: "button", href: archive_link(archive, "changes") }, "Changes"),
+        can("operator") && h("a", { class: "button", href: archive_link(archive, "files") }, "Files"),
+        can("operator") && repository.allow_delete && h("button", { class: "danger", onclick: () => delete_archive(target, archive.name) }, "Delete"),
       ),
     },
   ], archives, { sorting, on_sort, caption: "Archives" });

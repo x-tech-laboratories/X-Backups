@@ -205,9 +205,10 @@ mounts) is now in: tasks 35–37 and 47–56.
 28. [ ] **Warning job state.** `JobState` has no warning, so a borg exit 1 is `succeeded` with a log
     line. Add a completed-with-warnings state shown apart from success (Borg Backup Server,
     BorgWeb).
-29. [ ] **Read-only token and metrics.** A scoped token for read-only API access and a
-    token-protected Prometheus `/metrics` (Borg UI, Borg Backup Server, BorgWarehouse). Today the
-    API takes only the login session.
+29. [x] **Read-only token and metrics.** A scoped token for read-only API access and a
+    token-protected Prometheus `/metrics` (Borg UI, Borg Backup Server, BorgWarehouse). Built
+    with task 51: admins create tokens on the Users page; a token reads like a viewer of every
+    repository and scrapes `/metrics` (`src/server/metrics.ts`).
 30. [x] **Job retry and history.** Rerun a failed job with the same action, and filter the job
     history by repository, kind and outcome (Borg Backup Server, Borgitory). Add a 24-hour and
     7-day job activity chart (Borg Backup Server).
@@ -525,10 +526,16 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     canary failed, recovered. Failure alerts are deduplicated until the state changes (Borg Backup
     Server, Borg UI, BorgWarehouse, Borgitory). This sits alongside X-Monitor's alert on
     `/api/health`.
-51. [ ] **Users, roles and login.** Several users with roles (admin, operator, viewer) and
+51. [x] **Users, roles and login.** Several users with roles (admin, operator, viewer) and
     per-repository access, TOTP with recovery codes (X-Monitor's login as the reference), OIDC,
     and login from a reverse proxy's header. Builds on task 29's tokens (Borg UI, Borg Backup
     Server, BorgWarehouse).
+
+    Built in `src/server/accounts.ts`, `auth.ts`, `totp.ts` and `oidc.ts`, with the Users and
+    Account pages. The password hash file stays the declared admin, whose role and password the
+    page cannot change. OIDC and the proxy header only log in users an admin has added. Users
+    live in the state database, not in the Nix configuration; declaring them there is left for
+    later if wanted.
 52. [ ] **FUSE mount.** Mount an archive or the whole repository on its host with `borg mount`,
     show the mount point and Unmount, and unmount when the job ends or X-Backups starts (Borg UI,
     Borgitory, Vorta).
