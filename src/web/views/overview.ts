@@ -123,8 +123,9 @@ function attention_list(repositories: RepositorySummary[], timers: TimerRow[]): 
 
 const outcome_parts: [state: Job["state"], label: string, color: string][] = [
   ["succeeded", "succeeded", "var(--status-success)"],
+  ["warning", "with warnings", "var(--status-warning)"],
   ["failed", "failed", "var(--status-danger)"],
-  ["cancelled", "cancelled", "var(--status-warning)"],
+  ["cancelled", "cancelled", "var(--text-tertiary)"],
   ["running", "running", "var(--accent)"],
 ];
 

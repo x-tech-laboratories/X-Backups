@@ -50,6 +50,7 @@ export const job_states: [value: string, text: string][] = [
   ["", "Any outcome"],
   ["running", "Running"],
   ["succeeded", "Succeeded"],
+  ["warning", "Finished with warnings"],
   ["failed", "Failed"],
   ["cancelled", "Cancelled"],
 ];
@@ -243,8 +244,9 @@ function maintenance_cards(repository: RepositoryDetail, target: ActionTarget): 
 
 const job_colors: Record<Job["state"], string> = {
   succeeded: "var(--status-success)",
+  warning: "var(--status-warning)",
   failed: "var(--status-danger)",
-  cancelled: "var(--status-warning)",
+  cancelled: "var(--text-tertiary)",
   running: "var(--accent)",
 };
 

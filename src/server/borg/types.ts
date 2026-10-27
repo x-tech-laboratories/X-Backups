@@ -147,7 +147,7 @@ export class CollectResult implements CollectFields {
 
 // ── Stores the repository reads ──────────────────────────────────────────────
 
-export type JobState = "running" | "succeeded" | "failed" | "cancelled";
+export type JobState = "running" | "succeeded" | "warning" | "failed" | "cancelled";
 
 export interface JobRecord {
   id: number;

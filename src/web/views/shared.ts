@@ -75,7 +75,7 @@ const level_tone = { critical: "bad", warning: "warn", ok: "good" } as const;
 export function medians(jobs: Job[]): Map<string, number> {
   const by_kind = new Map<string, number[]>();
   for (const job of jobs) {
-    if (job.ended_epoch === null || job.state !== "succeeded") continue;
+    if (job.ended_epoch === null || job.state !== "succeeded" && job.state !== "warning") continue;
     const list = by_kind.get(job.kind) ?? [];
     list.push(job.ended_epoch - job.started_epoch);
     by_kind.set(job.kind, list);

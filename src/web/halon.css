@@ -397,6 +397,7 @@ body.logged-out main { margin-left: var(--space-2); }
 .tone-fill-warn { background-color: color-mix(in srgb, var(--status-warning) 15%, transparent); color: var(--text-body); }
 .tone-fill-bad { background-color: color-mix(in srgb, var(--status-danger) 15%, transparent); color: var(--text-body); }
 .tone-fill-info { background-color: color-mix(in srgb, var(--status-info) 15%, transparent); color: var(--text-body); }
+.tone-fill-none { background-color: var(--surface-secondary); color: var(--text-body); }
 
 /* Badges are chips: solid status fills under their on-color, neutral otherwise. */
 .badge, .chip {

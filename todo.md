@@ -209,9 +209,10 @@ mounts) is now in: tasks 35–37 and 47–56.
     the same pair for the last check and canary ages (Borg UI warns at 14 days, critical at 30).
     Built as `warn_age`, `check_warn_age`, `canary_warn_age` and `canary_max_age`, each off by
     default, settable per repository or in `defaults`, and judged in `src/server/health.ts`.
-28. [ ] **Warning job state.** `JobState` has no warning, so a borg exit 1 is `succeeded` with a log
+28. [x] **Warning job state.** `JobState` has no warning, so a borg exit 1 is `succeeded` with a log
     line. Add a completed-with-warnings state shown apart from success (Borg Backup Server,
-    BorgWeb).
+    BorgWeb). Built as the `warning` state, amber on the page and in the jobs chart, with
+    cancelled jobs moved to grey so the two stay apart.
 29. [x] **Read-only token and metrics.** A scoped token for read-only API access and a
     token-protected Prometheus `/metrics` (Borg UI, Borg Backup Server, BorgWarehouse). Built
     with task 51: admins create tokens on the Users page; a token reads like a viewer of every

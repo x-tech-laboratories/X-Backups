@@ -24,7 +24,7 @@ export function status_tone(status: Status | null): "good" | "warn" | "bad" | "n
   return "none";
 }
 
-const job_tones: Record<JobState, string> = { running: "info", succeeded: "good", failed: "bad", cancelled: "warn" };
+const job_tones: Record<JobState, string> = { running: "info", succeeded: "good", warning: "warn", failed: "bad", cancelled: "none" };
 
 export function job_badge(state: JobState): HTMLElement {
   return h("span", { class: `badge tone-${job_tones[state]}` }, state);

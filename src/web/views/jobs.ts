@@ -74,11 +74,12 @@ export function jobs_view(): View {
 const result_text: Record<Job["state"], string> = {
   running: "Running",
   succeeded: "Finished",
+  warning: "Finished with warnings",
   failed: "Failed",
   cancelled: "Cancelled",
 };
 
-const result_tones: Record<Job["state"], string> = { running: "info", succeeded: "good", failed: "bad", cancelled: "warn" };
+const result_tones: Record<Job["state"], string> = { running: "info", succeeded: "good", warning: "warn", failed: "bad", cancelled: "none" };
 
 export function job_view(job_id: number): View {
   const head = h("div", {}, skeleton(3));

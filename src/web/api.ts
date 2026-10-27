@@ -4,7 +4,7 @@
 
 export type Status = "online" | "info" | "unavailable" | "warning" | "failed";
 
-export type JobState = "running" | "succeeded" | "failed" | "cancelled";
+export type JobState = "running" | "succeeded" | "warning" | "failed" | "cancelled";
 
 export interface Job {
   id: number;

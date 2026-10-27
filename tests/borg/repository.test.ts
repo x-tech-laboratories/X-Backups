@@ -820,11 +820,11 @@ describe("backup polling", () => {
     expect(harness.jobs.output(job_id)).toEqual(["first line", "half a line"]);
   });
 
-  it("counts borg's warning exit as success", () => {
+  it("marks borg's warning exit as finished with warnings", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(5, 1, false, ""));
-    expect(harness.jobs.recent()[0].state).toBe("succeeded");
+    expect(harness.jobs.recent()[0].state).toBe("warning");
   });
 
   it("counts borg's error exit as failure", () => {

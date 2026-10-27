@@ -1227,7 +1227,8 @@ export class BorgRepository {
 
     const exit_code = poll.exit_code;
     const succeeded = exit_code === 0 || exit_code === 1;
-    jobs.finish(job.id, succeeded ? "succeeded" : "failed", { exit_code, error: succeeded ? null : `Exited with status ${exit_code}` });
+    const state = exit_code === 0 ? "succeeded" : exit_code === 1 ? "warning" : "failed";
+    jobs.finish(job.id, state, { exit_code, error: succeeded ? null : `Exited with status ${exit_code}` });
 
     let outcome: CollectResult;
     if (exit_code === 0) {
