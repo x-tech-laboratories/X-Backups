@@ -119,7 +119,13 @@ cannot open a borg 1 repository, so each repository keeps the version it was mad
 The page keeps its part in `config.json` under `X_BACKUPS_STATE_DIR`, and a passphrase typed there in
 `passphrases/<name>`, both readable only by X-Backups. A declared repository replaces a page one of
 the same name. A file's top-level `defaults` (the module's `defaults`) sets `interval`, `max_age`,
-`check_max_age` and `browse_limit` for every repository that does not set its own.
+`warn_age`, `check_max_age`, `check_warn_age`, `canary_max_age`, `canary_warn_age` and
+`browse_limit` for every repository that does not set its own.
+
+Each `*_max_age` makes a repository critical and each `*_warn_age` gives a warning before it:
+`max_age` and `warn_age` for the newest archive, `check_*` for the oldest passing check, and
+`canary_*` for when the restore canary last ran. A warning age of 0 is off, as is `canary_max_age`
+by default.
 
 Anyone who can log in to a page that edits the config can make X-Backups run commands as its user,
 through fields such as `rsh`, `borg_bin` and `passphrase_command`.

@@ -129,7 +129,11 @@ describe("defaults", () => {
     expect(mixed.settings()).toEqual([
       { name: "interval", value: "30m", source: "saved" },
       { name: "max_age", value: "2d", source: "declared" },
+      { name: "warn_age", value: 0, source: "default" },
       { name: "check_max_age", value: "8d", source: "default" },
+      { name: "check_warn_age", value: 0, source: "default" },
+      { name: "canary_max_age", value: 0, source: "default" },
+      { name: "canary_warn_age", value: 0, source: "default" },
       { name: "browse_limit", value: 2000, source: "default" },
     ]);
     expect(mixed.config().repositories[0]).toMatchObject({ interval_in_seconds: 1800, borg: { max_age: "2d" } });

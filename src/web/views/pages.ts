@@ -111,7 +111,11 @@ const mode_text: Record<ConfigInfo["mode"], [title: string, text: string]> = {
 const setting_hints: Record<string, string> = {
   interval: "How often each repository is polled, such as 1h.",
   max_age: "The newest archive older than this fails a repository, such as 1d.",
+  warn_age: "The newest archive older than this gives a warning, such as 20h. 0 leaves it off.",
   check_max_age: "A check older than this fails a repository, such as 8d.",
+  check_warn_age: "The oldest passing check older than this gives a warning, such as 14d. 0 leaves it off.",
+  canary_max_age: "A restore canary that last ran longer ago than this fails a repository, such as 3d. 0 leaves it off.",
+  canary_warn_age: "A restore canary that last ran longer ago than this gives a warning, such as 2d. 0 leaves it off.",
   browse_limit: "How many entries a folder, diff or listing shows at most.",
 };
 

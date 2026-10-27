@@ -205,8 +205,10 @@ mounts) is now in: tasks 35–37 and 47–56.
     one field (Borg Backup Server, Borg UI). Built in `src/server/health.ts`: the reasons the page
     showed now come from the server, each repository summary carries its `level` and `reasons`,
     and `/api/health` answers 503 when critical, so X-Monitor's HTTP check needs no `expect`.
-27. [ ] **Two-level staleness.** One `max_age` decides failed. Add a warning threshold before it, and
+27. [x] **Two-level staleness.** One `max_age` decides failed. Add a warning threshold before it, and
     the same pair for the last check and canary ages (Borg UI warns at 14 days, critical at 30).
+    Built as `warn_age`, `check_warn_age`, `canary_warn_age` and `canary_max_age`, each off by
+    default, settable per repository or in `defaults`, and judged in `src/server/health.ts`.
 28. [ ] **Warning job state.** `JobState` has no warning, so a borg exit 1 is `succeeded` with a log
     line. Add a completed-with-warnings state shown apart from success (Borg Backup Server,
     BorgWeb).

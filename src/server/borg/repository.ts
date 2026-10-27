@@ -41,6 +41,7 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
   timeout?: number | string;
   repo?: string;
   max_age?: number | string;
+  warn_age?: number | string;
   passphrase?: string;
   passphrase_file?: string;
   passphrase_command?: string;
@@ -64,8 +65,11 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
   backup_lock_wait?: number | string;
   canary_path?: string;
   canary_interval?: number | string;
+  canary_warn_age?: number | string;
+  canary_max_age?: number | string;
   check_units?: string | string[];
   check_max_age?: number | string;
+  check_warn_age?: number | string;
   restore_dir?: string;
   browse_limit?: number;
   prune_match?: string;
@@ -140,6 +144,8 @@ export class BorgRepository {
 
   repo: string | null;
   max_age: number;
+  // Each warning age gives a warning before its maximum age turns critical; zero leaves it off.
+  warn_age: number;
   passphrase: string | null;
   passphrase_file: string | null;
   passphrase_command: string | null;
@@ -166,8 +172,11 @@ export class BorgRepository {
   backup_lock_wait: number | string;
   canary_path: string | null;
   canary_interval: number;
+  canary_warn_age: number;
+  canary_max_age: number;
   check_units: string[];
   check_max_age: number;
+  check_warn_age: number;
   restore_dir: string;
   browse_limit: number;
   retention: Partial<Record<KeepOption, number | string>>;
@@ -202,6 +211,8 @@ export class BorgRepository {
 
     this.repo = config.repo ?? null;
     this.max_age = parse_duration(config.max_age ?? "1d");
+    this.warn_age = parse_duration(config.warn_age ?? 0);
+    if (this.warn_age > 0 && this.warn_age >= this.max_age) throw new Error("warn_age must be shorter than max_age");
     this.passphrase = config.passphrase ?? null;
     this.passphrase_file = config.passphrase_file ?? null;
     this.passphrase_command = config.passphrase_command ?? null;
@@ -229,8 +240,12 @@ export class BorgRepository {
     this.backup_lock_wait = config.backup_lock_wait ?? 600;
     this.canary_path = config.canary_path ?? null;
     this.canary_interval = parse_duration(config.canary_interval ?? "1d");
+    this.canary_warn_age = parse_duration(config.canary_warn_age ?? 0);
+    this.canary_max_age = parse_duration(config.canary_max_age ?? 0);
+    if (this.canary_warn_age > 0 && this.canary_max_age > 0 && this.canary_warn_age >= this.canary_max_age) throw new Error("canary_warn_age must be shorter than canary_max_age");
     this.check_units = as_list(config.check_units);
     this.check_max_age = parse_duration(config.check_max_age ?? "8d");
+    this.check_warn_age = parse_duration(config.check_warn_age ?? 0);
     this.restore_dir = config.restore_dir ?? "/var/tmp/x-backups-restore";
     this.browse_limit = Math.max(1, Math.trunc(Number(config.browse_limit ?? 2000)));
     this.retention = {};

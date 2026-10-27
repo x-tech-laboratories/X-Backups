@@ -27,7 +27,8 @@ export function overdue(watched: Watched, now = now_seconds()): boolean {
 }
 
 export function repository_reasons(watched: Watched, now = now_seconds()): Reason[] {
-  const state = watched.repository.state;
+  const repository = watched.repository;
+  const state = repository.state;
   const reasons: Reason[] = [];
   if (watched.status === "unavailable") reasons.push({ level: "warning", text: "the repository could not be reached" });
   if (watched.status === null) reasons.push({ level: "warning", text: "not polled yet" });
@@ -35,17 +36,37 @@ export function repository_reasons(watched: Watched, now = now_seconds()): Reaso
     reasons.push({
       level: "critical",
       text: state.last_backup_epoch
-        ? `last backup ${format_age(now - Math.trunc(state.last_backup_epoch))}, limit ${format_duration(watched.repository.max_age)}`
+        ? `last backup ${format_age(now - Math.trunc(state.last_backup_epoch))}, limit ${format_duration(repository.max_age)}`
         : "no backup yet",
     });
+  } else if (state.last_backup_epoch && aged(now - state.last_backup_epoch, repository.warn_age)) {
+    reasons.push({ level: "warning", text: `last backup ${format_age(now - Math.trunc(state.last_backup_epoch))}, warning at ${format_duration(repository.warn_age)}` });
   }
-  if (state.checks?.passed === false) reasons.push({ level: "critical", text: "a check failed or is overdue" });
-  if (state.canary?.ok === false) reasons.push({ level: "critical", text: "the restore canary failed" });
+  if (state.checks?.passed === false) {
+    reasons.push({ level: "critical", text: "a check failed or is overdue" });
+  } else if (state.checks?.oldest_ok_epoch && aged(now - state.checks.oldest_ok_epoch, repository.check_warn_age)) {
+    reasons.push({ level: "warning", text: `oldest check passed ${format_age(now - Math.trunc(state.checks.oldest_ok_epoch))}, warning at ${format_duration(repository.check_warn_age)}` });
+  }
+  if (state.canary?.ok === false) {
+    reasons.push({ level: "critical", text: "the restore canary failed" });
+  } else if (repository.canary_path && state.canary) {
+    const since = now - Math.trunc(state.canary.checked_epoch);
+    if (aged(since, repository.canary_max_age)) {
+      reasons.push({ level: "critical", text: `restore canary last ran ${format_age(since)}, limit ${format_duration(repository.canary_max_age)}` });
+    } else if (aged(since, repository.canary_warn_age)) {
+      reasons.push({ level: "warning", text: `restore canary last ran ${format_age(since)}, warning at ${format_duration(repository.canary_warn_age)}` });
+    }
+  }
   // A failed poll the reasons above do not explain is named on its own, pointing at the events that say why.
   if (watched.status === "failed" && !reasons.some((reason) => reason.level === "critical")) {
     reasons.push({ level: "critical", text: "the last poll failed; its events say why" });
   }
   return reasons;
+}
+
+// Whether an age is past a limit that is set; a limit of zero is off.
+function aged(age: number, limit: number): boolean {
+  return limit > 0 && age > limit;
 }
 
 // ── Roll-up ──────────────────────────────────────────────────────────────────

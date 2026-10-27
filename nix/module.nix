@@ -181,7 +181,8 @@ in
       example = literalExpression ''{ interval = "30m"; max_age = "2d"; }'';
       description = ''
         Settings for every repository that does not set its own: `interval`, `max_age`,
-        `check_max_age` and `browse_limit`. The page shows these as declared and leaves them locked.
+        `warn_age`, `check_max_age`, `check_warn_age`, `canary_max_age`, `canary_warn_age` and
+        `browse_limit`. The page shows these as declared and leaves them locked.
       '';
     };
 
