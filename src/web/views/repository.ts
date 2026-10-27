@@ -208,9 +208,9 @@ function maintenance_cards(repository: RepositoryDetail, target: ActionTarget): 
 }
 
 const job_colors: Record<Job["state"], string> = {
-  succeeded: "var(--good)",
-  failed: "var(--bad)",
-  cancelled: "var(--warn)",
+  succeeded: "var(--status-success)",
+  failed: "var(--status-danger)",
+  cancelled: "var(--status-warning)",
   running: "var(--accent)",
 };
 
@@ -220,15 +220,15 @@ function history_charts(history: History, jobs: Job[]): HTMLElement[] {
   const finished = jobs.filter((job) => job.ended_epoch !== null).slice(0, 40).reverse();
   return [
     line_chart("Repository size", [
-      { label: "original", color: "var(--chart-1)", points: polls.map((poll) => [poll.epoch, poll.original_size]) },
-      { label: "compressed", color: "var(--chart-2)", points: polls.map((poll) => [poll.epoch, poll.compressed_size]) },
-      { label: "stored", color: "var(--chart-3)", points: polls.map((poll) => [poll.epoch, poll.deduplicated_size]) },
+      { label: "original", color: "var(--series-1)", points: polls.map((poll) => [poll.epoch, poll.original_size]) },
+      { label: "compressed", color: "var(--series-2)", points: polls.map((poll) => [poll.epoch, poll.compressed_size]) },
+      { label: "stored", color: "var(--series-3)", points: polls.map((poll) => [poll.epoch, poll.deduplicated_size]) },
     ], size),
     line_chart("Archives", [
-      { label: "archives", color: "var(--chart-1)", points: polls.map((poll) => [poll.epoch, poll.archive_count]) },
+      { label: "archives", color: "var(--series-1)", points: polls.map((poll) => [poll.epoch, poll.archive_count]) },
     ], (value) => String(Math.round(value))),
     bar_chart("New data in each archive", archives.map((archive) => ({
-      label: archive.name, value: archive.deduplicated_size ?? 0, color: "var(--chart-3)",
+      label: archive.name, value: archive.deduplicated_size ?? 0, color: "var(--series-3)",
     })), size),
     bar_chart("Job durations", finished.map((job) => ({
       label: `${job.kind} #${job.id} ${job.state}`, value: job.ended_epoch! - job.started_epoch, color: job_colors[job.state],

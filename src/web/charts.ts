@@ -4,7 +4,7 @@ import { h } from "./dom.ts";
 
 export interface Series {
   label: string;
-  // A CSS color, normally one of the --chart-* tokens.
+  // A CSS color, normally one of the --series-* tokens.
   color: string;
   points: [epoch: number, value: number | null][];
 }

@@ -15,7 +15,8 @@ import { repositories_view } from "./views/repositories.ts";
 import { repository_view } from "./views/repository.ts";
 import { account_view, users_view } from "./views/users.ts";
 import type { View } from "./views/shared.ts";
-import "./style.css";
+import "./halon-tokens.css";
+import "./halon.css";
 
 const main = document.querySelector<HTMLElement>("main")!;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;

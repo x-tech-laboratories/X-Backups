@@ -122,9 +122,9 @@ function attention_list(repositories: RepositorySummary[], timers: TimerRow[]): 
 }
 
 const outcome_parts: [state: Job["state"], label: string, color: string][] = [
-  ["succeeded", "succeeded", "var(--good)"],
-  ["failed", "failed", "var(--bad)"],
-  ["cancelled", "cancelled", "var(--warn)"],
+  ["succeeded", "succeeded", "var(--status-success)"],
+  ["failed", "failed", "var(--status-danger)"],
+  ["cancelled", "cancelled", "var(--status-warning)"],
   ["running", "running", "var(--accent)"],
 ];
 
@@ -191,7 +191,7 @@ async function stored_chart(repositories: RepositorySummary[]): Promise<HTMLElem
     return [day, total];
   });
   return line_chart("All repositories", [
-    { label: "original", color: "var(--chart-1)", points: sums("original_size") },
-    { label: "stored", color: "var(--chart-3)", points: sums("deduplicated_size") },
+    { label: "original", color: "var(--series-1)", points: sums("original_size") },
+    { label: "stored", color: "var(--series-3)", points: sums("deduplicated_size") },
   ], size);
 }

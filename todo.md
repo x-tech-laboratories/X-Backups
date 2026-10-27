@@ -150,12 +150,14 @@ adapted where a task changes a contract.
 
     Left for later: poll history grows without bound (downsample rows older than 90 days), and
     source changes between archives are shown only through Diff, not counted per archive.
-18. [ ] **Halon theme.** Theme the web page (tasks 13 and 17) with Halon, as X-Monitor does: a
+18. [x] **Halon theme.** Theme the web page (tasks 13 and 17) with Halon, as X-Monitor does: a
     `halon-tokens.css` holding every color for the light and dark schemes, following
     `prefers-color-scheme`, and a `halon.css` with the component rules, so no other file states a
     color. Charts take their colors from the same tokens. Sources: `tokens.json` and
     `THEME-DESIGN-GUIDE.md` in `../../Coding/Halon`, and X-Monitor's
     `x_monitor/core/ui/static/halon*.css` and `docs/theme.md`.
+
+    Done: `src/web/halon-tokens.css` is X-Monitor's token file verbatim and `src/web/halon.css` holds every rule.
 
 ### Review the apps' source
 
