@@ -38,7 +38,9 @@ The API asks for a login, checked against the hash in the file `X_BACKUPS_PASSWO
 `npm run hash-password -- <file>` asks for the password and writes that file, readable only by you.
 State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `state/` by default.
 
-`/api/health` stays open, so X-Monitor can poll it without logging in.
+`/api/health` stays open, so X-Monitor can poll it without logging in. Its `status` is `ok`,
+`warning` or `critical`, the worst of the repositories', each listed with its reasons; it answers
+503 when critical, so a plain HTTP check alerts on that without reading the body.
 
 ## Users and access
 

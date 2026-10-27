@@ -1,7 +1,7 @@
 // What several pages show the same way: repository cards, the jobs table, the events list and the timers table.
 
 import { show_outcome } from "../actions.ts";
-import { overdue, repository_reasons, timer_problem } from "../attention.ts";
+import { overdue, timer_problem } from "../attention.ts";
 import { api, type Change, type EventRow, type Job, type Outcome, type RepositorySummary, type TimerRow } from "../api.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { link } from "../router.ts";
@@ -28,8 +28,7 @@ export function touches(changes: Change[] | null, repository_id: string | null, 
 
 export function repository_card(repository: RepositorySummary): HTMLElement {
   const late = repository.last_poll_epoch !== null && overdue(repository);
-  const reasons = repository_reasons(repository);
-  return h("a", { class: `card tone-edge-${reasons.some((reason) => reason.tone === "bad") ? "bad" : reasons.length > 0 ? "warn" : "good"}`, href: link(["repositories", repository.id]) },
+  return h("a", { class: `card tone-edge-${level_tone[repository.level]}`, href: link(["repositories", repository.id]) },
     h("div", { class: "card-head" }, h("strong", {}, repository.name), status_badge(repository.status)),
     h("div", { class: "muted card-host" }, repository.host),
     h("dl", {},
@@ -65,10 +64,10 @@ export function repositories_table(repositories: RepositorySummary[], sorting: S
 
 // Worst first: failing, then needing attention, then fine.
 export function status_rank(repository: RepositorySummary): number {
-  const reasons = repository_reasons(repository);
-  if (reasons.some((reason) => reason.tone === "bad")) return 0;
-  return reasons.length > 0 ? 1 : 2;
+  return { critical: 0, warning: 1, ok: 2 }[repository.level];
 }
+
+const level_tone = { critical: "bad", warning: "warn", ok: "good" } as const;
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 

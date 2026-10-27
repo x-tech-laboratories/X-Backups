@@ -34,6 +34,9 @@ export interface RepositorySummary {
   name: string;
   host: string;
   status: Status | null;
+  // How healthy the server judges the repository, and why.
+  level: "ok" | "warning" | "critical";
+  reasons: { level: "warning" | "critical"; text: string }[];
   max_age: number;
   last_poll_epoch: number | null;
   last_backup_epoch: number | null;

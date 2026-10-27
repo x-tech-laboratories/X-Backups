@@ -7,6 +7,7 @@ import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastify_static from "@fastify/static";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import { register_auth, visible, type ProxyLogin } from "./auth.ts";
+import { health, repository_health } from "./health.ts";
 import { metrics_text } from "./metrics.ts";
 import type { OidcClient } from "./oidc.ts";
 import { browser_rows } from "./borg/parsing.ts";
@@ -138,10 +139,11 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return { success: result.success, content: result.content, logs: result.logs };
   };
 
-  app.get("/api/health", async () => ({
-    status: "ok",
-    repositories: [...poller.repositories.values()].map((watched) => ({ id: watched.repository.id, status: watched.status })),
-  }));
+  // Answers 503 when any repository is critical, so a plain HTTP check alerts without reading the body.
+  app.get("/api/health", async (_request, reply) => {
+    const report = health([...poller.repositories.values()]);
+    return reply.code(report.status === "critical" ? 503 : 200).send(report);
+  });
 
   // ── Repositories ─────────────────────────────────────────────────────────
 
@@ -483,6 +485,7 @@ function summary(watched: Watched) {
     name: repository.name,
     host: host_name(watched),
     status: watched.status,
+    ...repository_health(watched),
     max_age: repository.max_age,
     last_poll_epoch: state.last_poll_epoch,
     last_backup_epoch: state.last_backup_epoch,

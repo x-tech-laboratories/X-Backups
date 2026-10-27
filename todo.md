@@ -200,9 +200,11 @@ out as out of scope (editing config from the page, notifications, schedulers and
 repository creation, users and roles, OIDC, cloud sync, hooks, database dumps, agents and FUSE
 mounts) is now in: tasks 35–37 and 47–56.
 
-26. [ ] **Health levels.** `/api/health` answers `status: "ok"` whatever the repositories say. Give
+26. [x] **Health levels.** `/api/health` answers `status: "ok"` whatever the repositories say. Give
     it an overall ok, warning or critical with each repository's reasons, so X-Monitor can alert on
-    one field (Borg Backup Server, Borg UI).
+    one field (Borg Backup Server, Borg UI). Built in `src/server/health.ts`: the reasons the page
+    showed now come from the server, each repository summary carries its `level` and `reasons`,
+    and `/api/health` answers 503 when critical, so X-Monitor's HTTP check needs no `expect`.
 27. [ ] **Two-level staleness.** One `max_age` decides failed. Add a warning threshold before it, and
     the same pair for the last check and canary ages (Borg UI warns at 14 days, critical at 30).
 28. [ ] **Warning job state.** `JobState` has no warning, so a borg exit 1 is `succeeded` with a log

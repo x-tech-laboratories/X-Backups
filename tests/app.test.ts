@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { build_app } from "../src/server/app.ts";
 import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
@@ -84,13 +84,46 @@ function post(url: string, payload: object = {}) {
 // ── Health ───────────────────────────────────────────────────────────────────
 
 describe("health check", () => {
-  it("reports the server and each repository's status without a login", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is critical with a 503 when a repository's last backup is too old", async () => {
+    await poller.poll("odin");
+
+    const response = await app.inject({ method: "GET", url: "/api/health" });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      status: "critical",
+      repositories: [{ id: "odin", poll: "failed", level: "critical", reasons: [{ level: "critical", text: expect.stringMatching(/^last backup .* ago, limit 1 Day$/) }] }],
+    });
+  });
+
+  it("is ok when every repository has a fresh backup", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T12:00:00"));
     await poller.poll("odin");
 
     const response = await app.inject({ method: "GET", url: "/api/health" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: "ok", repositories: [{ id: "odin", status: "failed" }] });
+    expect(response.json()).toEqual({ status: "ok", repositories: [{ id: "odin", poll: "online", level: "ok", reasons: [] }] });
+  });
+
+  it("warns, still answering 200, before a repository is polled", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/health" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "warning", repositories: [{ id: "odin", poll: null, level: "warning", reasons: [{ level: "warning", text: "not polled yet" }] }] });
+  });
+
+  it("gives each repository in the list its level and reasons", async () => {
+    await poller.poll("odin");
+
+    const [odin] = (await get("/api/repositories")).json();
+
+    expect(odin).toMatchObject({ level: "critical", reasons: [{ level: "critical" }] });
   });
 });
 
