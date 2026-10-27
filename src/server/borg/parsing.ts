@@ -157,7 +157,7 @@ export class RepoView {
       info.last_modified = String(repository.last_modified || "");
     }
     const encryption = data.encryption;
-    if (is_object(encryption)) info.encryption = String(encryption.mode || "");
+    if (is_object(encryption)) info.encryption = String(encryption.mode || encryption.encryption || "");
 
     return new RepoView({ valid: true, raw_count: raw.length, newest_epoch: newest, archives, info });
   }
@@ -249,12 +249,13 @@ function diff_change(path: string, changes: Record<string, unknown>[]): DiffChan
   for (const item of changes) {
     const type = String(item.type ?? "");
     const bytes = (value: unknown) => typeof value === "number" ? value : 0;
+    // Borg 1 gives an added or removed file's size as size, and borg 2 as added or removed.
     if (type === "added" || type === "added directory" || type === "added link") {
       change.kind = "added";
-      change.added_bytes += bytes(item.size);
+      change.added_bytes += bytes(item.size ?? item.added);
     } else if (type === "removed" || type === "removed directory" || type === "removed link") {
       change.kind = "removed";
-      change.removed_bytes += bytes(item.size);
+      change.removed_bytes += bytes(item.size ?? item.removed);
     } else if (type === "modified") {
       change.kind = "modified";
       change.added_bytes += bytes(item.added);

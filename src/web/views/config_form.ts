@@ -6,7 +6,7 @@ import { facts, section, text_dialog, toolbar } from "../ui.ts";
 
 // The fields in groups, in the order a reader looks for them; anything unlisted lands in Other.
 export const field_groups: [title: string, fields: string[]][] = [
-  ["Connection", ["name", "id", "host", "ssh_user", "repo", "rsh", "ssh_key", "borg_bin", "require_sudo", "passphrase", "passphrase_file", "passphrase_command", "lock_wait", "timeout", "interval", "skip_when_unreachable"]],
+  ["Connection", ["name", "id", "host", "ssh_user", "repo", "borg_version", "rsh", "ssh_key", "borg_bin", "require_sudo", "passphrase", "passphrase_file", "passphrase_command", "lock_wait", "timeout", "interval", "skip_when_unreachable"]],
   ["Sources", ["source_paths", "exclude", "exclude_from", "exclude_caches", "exclude_if_present", "one_file_system", "compression", "archive_prefix"]],
   ["Retention", ["keep_within", "keep_last", "keep_secondly", "keep_minutely", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly", "prune_match", "prune_after_backup", "compact_after_backup"]],
   ["Checks", ["max_age", "check_units", "check_max_age", "check_kinds", "check_verify_data", "canary_path", "canary_interval"]],
@@ -25,6 +25,7 @@ const field_hints: Record<string, string> = {
   host: "The SSH host the borg commands run on. Leave empty for this machine.",
   ssh_user: "The user X-Backups logs in to the host as.",
   repo: "The repository as borg names it, such as ssh://borg@storage/./host or /srv/backups/host.",
+  borg_version: "1 or 2, empty for 1. Borg 2 runs borg2 and needs ssh://host//srv/repo for an absolute path.",
   passphrase: "Stored once in the state directory, readable only by X-Backups, and never shown again.",
   passphrase_file: "A file on the host holding the passphrase.",
   passphrase_command: "A command on the host that prints the passphrase.",

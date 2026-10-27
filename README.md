@@ -92,6 +92,20 @@ Each repository takes the fields of a `config.example.json` entry. Host keys com
 `programs.ssh.knownHosts`. After changing `package-lock.json`, update `npmDepsHash` in
 `nix/package.nix` to the hash `nix build` reports.
 
+## Borg 2
+
+A repository with `borg_version: 2` is driven with borg 2, which the flake packages as `borg2`
+(`packages.borg2`, the 2.0 beta) so it sits beside borg 1. Its host runs `borg2` unless
+`borg_bin` says otherwise, and its repository server needs borg 2 for `borg serve` too. Borg 2
+cannot open a borg 1 repository, so each repository keeps the version it was made with until
+`borg2 transfer --from-borg1` copies it into a new one.
+
+- Borg 2 reads `ssh://host/path` as relative to the login folder; an absolute path is
+  `ssh://host//srv/repo`.
+- Borg 2 keeps no repository-wide sizes, so its repositories show each archive's size and file
+  count but no deduplication figures.
+- Borg 2 has one `--keep` for both `keep_within` and `keep_last`, so set only one of them.
+
 ## Editing the config from the page
 
 `X_BACKUPS_CONFIG_MODE` (the module's `configMode`) decides whether the page may change the config:

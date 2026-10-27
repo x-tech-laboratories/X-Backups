@@ -13,6 +13,7 @@
       in
       {
         packages.default = pkgs.callPackage ./nix/package.nix { };
+        packages.borg2 = pkgs.callPackage ./nix/borg2.nix { };
         devShells.default = import ./shell.nix { inherit pkgs; };
       }
     ) // {

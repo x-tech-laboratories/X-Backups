@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { children_filter, diff_line, parse_diff, parse_listing } from "../../src/server/borg/parsing.ts";
-import { BorgRepository, progress_from_lines, type BorgConfig } from "../../src/server/borg/repository.ts";
+import { BorgRepository, progress_from_lines, topmost_excluded, type BorgConfig } from "../../src/server/borg/repository.ts";
 import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
 import { Harness } from "./testing.ts";
 import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult, type DownloadPlan } from "../../src/server/borg/types.ts";
@@ -1848,5 +1848,101 @@ describe("check kinds", () => {
     harness.repository.commands();
     cycle_with(harness, { checks: checks_out({ ok: now() - 3600 }) });
     expect(harness.outcomes.latest_status()).toBe("online");
+  });
+});
+
+// ── Borg 2 ───────────────────────────────────────────────────────────────────
+
+describe("borg 2", () => {
+  const BORG2_CFG: BorgConfig = { ...FULL_CFG, borg_version: 2, repo: "ssh://borg@host//srv/repo", keep_within: "6H" };
+
+  it("runs borg2 with legacy exit codes unless borg_bin says otherwise", () => {
+    const command = make(BORG2_CFG).repository.list_command();
+    expect(command).toContain("BORG_EXIT_CODES=legacy ");
+    expect(command).toContain(" borg2 repo-list ");
+    expect(make({ ...BORG2_CFG, borg_bin: "/opt/borg" }).repository.list_command()).toContain(" /opt/borg repo-list");
+    expect(make().repository.list_command()).not.toContain("BORG_EXIT_CODES");
+  });
+
+  it("names the repository with -r and an archive by its bare name", () => {
+    const repository = make(BORG2_CFG).repository;
+    expect(repository.list_command()).toContain("borg2 repo-list --last 10 --json --lock-wait 30 -r ssh://borg@host//srv/repo");
+    expect(repository.info_command()).toContain("borg2 info --json --last 10 --lock-wait 30 -r ssh://borg@host//srv/repo");
+    expect(repository.backup_command({ archive_name: "a1" })).toContain("--lock-wait 600 -r ssh://borg@host//srv/repo a1 /home");
+    expect(repository.canary_calls("a1")[0][1]).toContain("-r ssh://borg@host//srv/repo a1 home/canary");
+    expect(repository.backup_command()).not.toContain("::");
+  });
+
+  it("prunes every matching archive as one group, with --keep for keep_within", () => {
+    const harness = make(BORG2_CFG);
+    const preview = plan_of(harness, "prune_preview").commands[0];
+    expect(preview).toContain("--group-by none -a 'sh:test-borg-*' --keep 6H --keep-daily 7 -r");
+    expect(unquoted(plan_of(harness, "prune_repo"))).toContain("prune --list --group-by none -a sh:test-borg-* --keep 6H");
+    expect(plan_of(harness, "prune_preview").read([cmd_result(0, PRUNE_OUTPUT, "")]).content).toContain("Policy: --keep 6H --keep-daily 7");
+  });
+
+  it("refuses keep_within beside keep_last", () => {
+    expect(() => make({ ...BORG2_CFG, keep_last: 3 })).toThrow("set only one");
+    expect(make({ ...FULL_CFG, keep_within: "6H", keep_last: 3 }).repository.borg_version).toBe(1);
+  });
+
+  it("refuses a version other than 1 or 2", () => {
+    expect(() => make({ ...BASE_CFG, borg_version: 3 })).toThrow("borg_version must be 1 or 2");
+  });
+
+  it("deletes, diffs and checks by archive name after -r", () => {
+    const harness = make(BORG2_CFG);
+    listed(harness, "b2", "b1");
+    expect(unquoted(plan_of(harness, "delete_archive", { archive: "b1" }))).toContain("delete --list -r ssh://borg@host//srv/repo b1");
+    expect(plan_of(harness, "diff_archive", { archive: "b2" }).commands[0]).toContain("-r ssh://borg@host//srv/repo b1 b2");
+    expect(unquoted(plan_of(harness, "check_repo", { kind: "extract" }))).toContain("extract --dry-run --progress -r ssh://borg@host//srv/repo b2");
+    expect(unquoted(plan_of(harness, "compact_repo"))).toContain("compact --progress -r ssh://borg@host//srv/repo");
+  });
+
+  it("downloads from an archive named after -r", () => {
+    const harness = make(BORG2_CFG);
+    listed(harness, "b1");
+    const plan = harness.repository.download("b1", ["etc"], "tar") as DownloadPlan;
+    expect(plan.command).toContain("export-tar --tar-filter=gzip --lock-wait 30 -r ssh://borg@host//srv/repo b1 - etc");
+  });
+
+  it("purges with borg 2's match patterns and previews its - flag", () => {
+    const harness = make({ ...BORG2_CFG, purge_match: "Odin-*" });
+    const purge = unquoted(plan_of(harness, "purge_excluded"));
+    expect(purge).toContain("delete -a sh:*.recreate -r");
+    expect(purge).toContain("recreate --info --stats --progress -a sh:Odin-*");
+    const preview = plan_of(harness, "purge_preview").commands[0];
+    expect(preview).toContain("--filter=-");
+    expect(preview).toContain("awk -v flag=");
+  });
+
+  it("keeps the top-most excluded path from borg 2's preview", () => {
+    const input = "Processing Odin-1 abc\n- home/.cache\n- home/.cache/x\n+ etc\n__x_backups_rc=0\n";
+    const result = spawnSync("sh", ["-c", topmost_excluded("-")], { input, encoding: "utf8" });
+    expect(result.stdout).toBe("Processing Odin-1 abc\n- home/.cache\n+ etc\n");
+    expect(result.status).toBe(0);
+  });
+
+  it("reads archive sizes without warning about the missing repository stats", () => {
+    const harness = make({ ...BASE_CFG, borg_version: 2 });
+    const list = JSON.stringify({
+      repository: { location: "/srv/repo" }, encryption: { encryption: "aes256-ocb" },
+      archives: [{ name: "a1", time: iso(now() - 60) }],
+    });
+    const info = JSON.stringify({ archives: [{ name: "a1", stats: { original_size: 5054, nfiles: 4 } }] });
+    const result = collect(harness, cmd_result(0, list, ""), cmd_result(0, info, ""));
+    expect(result.status).toBe("online");
+    expect(messages(result)).toContain("encryption=aes256-ocb");
+    expect(messages(result)).not.toContain("Could not parse borg info output");
+    expect(harness.repository.state.archives[0]).toMatchObject({ name: "a1", original: 5054, nfiles: 4 });
+    expect(harness.repository.state.stats).toBeNull();
+  });
+
+  it("reads an added or removed file's size from borg 2's diff", () => {
+    const changes = parse_diff([
+      JSON.stringify({ path: "etc/new", changes: [{ added: 44, removed: 0, type: "added" }] }),
+      JSON.stringify({ path: "etc/old", changes: [{ added: 0, removed: 12, type: "removed" }] }),
+    ].join("\n"));
+    expect(changes.map((change) => [change.kind, change.added_bytes, change.removed_bytes])).toEqual([["added", 44, 0], ["removed", 0, 12]]);
   });
 });

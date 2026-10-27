@@ -1,6 +1,6 @@
-// One borg repository watched and driven over a shell on its host.
+// One borg repository watched and driven over a shell on its host, with borg 1 or borg 2 as borg_version says.
 //
-// Each poll runs `borg list --json`, plus `borg info --json` when collect_stats is on, each as its own command; they run
+// Each poll lists the archives as JSON, plus `borg info --json` when collect_stats is on, each as its own command; they run
 // one after another so the calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
 // failed; an unreachable host, a missing borg, an unreadable repo, a lock borg gave up on, or unparseable output is
 // unavailable. Optional extras are a restore canary, check freshness read from systemd units or tracked per kind, and
@@ -44,6 +44,7 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
   passphrase?: string;
   passphrase_file?: string;
   passphrase_command?: string;
+  borg_version?: number;
   borg_bin?: string;
   lock_wait?: number | string;
   require_sudo?: boolean;
@@ -84,10 +85,11 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
 }
 
 // Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
-const TOPMOST_EXCLUDED =
-  "awk '/^__x_backups_rc=/ { rc = substr($0, 16); next } " +
-  "/^x / { p = substr($0, 3); if (top != \"\" && index(p, top \"/\") == 1) next; top = p; print; next } " +
-  "{ top = \"\"; print } END { exit rc }'";
+export function topmost_excluded(flag: string): string {
+  return `awk -v flag=${shell_quote(flag + " ")} '/^__x_backups_rc=/ { rc = substr($0, 16); next } ` +
+    "index($0, flag) == 1 { p = substr($0, 3); if (top != \"\" && index(p, top \"/\") == 1) next; top = p; print; next } " +
+    "{ top = \"\"; print } END { exit rc }'";
+}
 
 // How many listed folders the browser keeps before forgetting the least recently used.
 const LISTING_CACHE = 256;
@@ -141,6 +143,7 @@ export class BorgRepository {
   passphrase: string | null;
   passphrase_file: string | null;
   passphrase_command: string | null;
+  borg_version: 1 | 2;
   borg_bin: string;
   lock_wait: number | string;
   require_sudo: boolean;
@@ -202,7 +205,10 @@ export class BorgRepository {
     this.passphrase = config.passphrase ?? null;
     this.passphrase_file = config.passphrase_file ?? null;
     this.passphrase_command = config.passphrase_command ?? null;
-    this.borg_bin = config.borg_bin ?? "borg";
+    const version = config.borg_version ?? 1;
+    if (version !== 1 && version !== 2) throw new Error(`borg_version must be 1 or 2, not ${version}`);
+    this.borg_version = version;
+    this.borg_bin = config.borg_bin ?? (version === 2 ? "borg2" : "borg");
     this.lock_wait = config.lock_wait ?? 30;
     this.require_sudo = Boolean(config.require_sudo ?? false);
     this.list_archives = Math.max(1, Math.trunc(Number(config.list_archives ?? 10)));
@@ -231,6 +237,9 @@ export class BorgRepository {
     for (const key of KEEP_OPTIONS) {
       const value = config[key];
       if (value !== undefined && value !== null && value !== "" && value !== 0) this.retention[key] = value;
+    }
+    if (version === 2 && this.retention.keep_within !== undefined && this.retention.keep_last !== undefined) {
+      throw new Error("borg 2 takes keep_within and keep_last as one --keep, so set only one of them");
     }
     this.prune_match = config.prune_match ?? `${this.archive_prefix}-*`;
     this.allow_delete = Boolean(config.allow_delete ?? false);
@@ -285,6 +294,8 @@ export class BorgRepository {
       env.push("BORG_PASSCOMMAND=" + shell_quote(this.passphrase_command));
     }
     env.push("BORG_RELOCATED_REPO_ACCESS_IS_OK=no");
+    // Borg 2 reports warnings and errors as many specific codes, and legacy folds them back into borg 1's 1 and 2.
+    if (this.borg_version === 2) env.push("BORG_EXIT_CODES=legacy");
 
     if (this.rsh || this.ssh_key) {
       const rsh = this.rsh || `ssh -i ${shell_quote(this.ssh_key!)} -o IdentitiesOnly=yes -o BatchMode=yes`;
@@ -311,6 +322,21 @@ export class BorgRepository {
     return `${BASE_DIR_VAR}=$(mktemp -d); trap 'rm -rf "$${BASE_DIR_VAR}"' EXIT; ${command}`;
   }
 
+  // The repository as borg takes it: a bare path in borg 1, after -r in borg 2.
+  private repo_args(): string[] {
+    return this.borg_version === 2 ? ["-r", this.repo!] : [this.repo!];
+  }
+
+  // One archive as borg takes it: repo::name in borg 1, -r and the bare name in borg 2.
+  private archive_args(archive: string): string[] {
+    return this.borg_version === 2 ? ["-r", this.repo!, archive] : [`${this.repo}::${archive}`];
+  }
+
+  // The archives whose names match a shell pattern.
+  private match_args(pattern: string): string[] {
+    return this.borg_version === 2 ? ["-a", `sh:${pattern}`] : ["--glob-archives", pattern];
+  }
+
   // The named calls this poll makes, in the order they run.
   poll_plan(): [name: string, command: string][] {
     const calls: [string, string][] = [["list", this.list_command()]];
@@ -327,14 +353,15 @@ export class BorgRepository {
 
   list_command(): string {
     // Never add --bypass-lock to a read: borg rewrites the index on open, and unlocked mid-compaction that corrupts it.
+    const command = this.borg_version === 2 ? "repo-list" : "list";
     return this.build([
-      this.borg_bin, "list", "--last", String(this.list_archives), "--json", "--lock-wait", String(this.lock_wait), this.repo!,
+      this.borg_bin, command, "--last", String(this.list_archives), "--json", "--lock-wait", String(this.lock_wait), ...this.repo_args(),
     ], this.read_options());
   }
 
   info_command(): string {
     return this.build([
-      this.borg_bin, "info", "--json", "--last", String(this.list_archives), "--lock-wait", String(this.lock_wait), this.repo!,
+      this.borg_bin, "info", "--json", "--last", String(this.list_archives), "--lock-wait", String(this.lock_wait), ...this.repo_args(),
     ], this.read_options());
   }
 
@@ -345,7 +372,7 @@ export class BorgRepository {
     if (this.one_file_system) args.push("--one-file-system");
     args.push(...this.exclude_args());
     args.push("--lock-wait", String(this.backup_lock_wait));
-    args.push(`${this.repo}::${name}`);
+    args.push(...this.archive_args(name));
     args.push(...this.source_paths);
     return this.build(args, { persistent_cache: true });
   }
@@ -477,6 +504,8 @@ export class BorgRepository {
     if (sizes.size > 0 && archives.length > 0) {
       merged_archives = archives.map((archive) => ({ ...archive, ...sizes.get(archive.name) }));
     }
+    // Borg 2 keeps no repository-wide sizes, so only the archives' own are read.
+    if (this.borg_version === 2) return { stats: null, logs: [], merged_archives };
 
     const stats = parse_stats(data);
     if (Object.keys(stats).length === 0) {
@@ -511,7 +540,7 @@ export class BorgRepository {
   canary_calls(archive: string): [name: string, command: string][] {
     const extract = this.build([
       this.borg_bin, "extract", "--stdout", "--lock-wait", String(this.lock_wait),
-      `${this.repo}::${archive}`, archive_member(this.canary_path) || this.canary_path!,
+      ...this.archive_args(archive), archive_member(this.canary_path) || this.canary_path!,
     ], this.read_options());
     const path = shell_quote(this.canary_path!);
     // A canary is normally world-readable, and sudo rules allowing only borg would refuse `sudo cat`; braced so one redirect covers both.
@@ -760,20 +789,30 @@ export class BorgRepository {
     const refusal = this.backup_refusal();
     if (refusal) return refusal;
     const steps: [string, string][] = [];
-    if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), this.repo!])]);
-    if (this.compact_after_backup) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", this.repo!])]);
+    if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), ...this.repo_args()])]);
+    if (this.compact_after_backup) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", ...this.repo_args()])]);
     return this.launch("backup", then_steps(this.backup_command(), steps));
   }
 
   // ── Prune preview ──────────────────────────────────────────────────────────
 
-  private retention_args(): string[] {
-    return Object.entries(this.retention).flatMap(([key, value]) => ["--" + key.replaceAll("_", "-"), String(value)]);
+  // Each keep_* setting as its borg option, where borg 2 folds keep_within and keep_last into --keep.
+  private retention_flags(): [option: string, value: string][] {
+    return Object.entries(this.retention).map(([key, value]) => {
+      const keeps_any = this.borg_version === 2 && (key === "keep_within" || key === "keep_last");
+      return [keeps_any ? "--keep" : "--" + key.replaceAll("_", "-"), String(value)];
+    });
+  }
+
+  // The archives prune weighs, which borg 2 would otherwise split by name and so never prune a uniquely named one.
+  private prune_scope(): string[] {
+    const scope = this.match_args(this.prune_match);
+    return this.borg_version === 2 ? ["--group-by", "none", ...scope] : scope;
   }
 
   private prune_preview_command(): string {
-    const args = [this.borg_bin, "prune", "--dry-run", "--list", "--lock-wait", String(this.lock_wait), "--glob-archives", this.prune_match];
-    args.push(...this.retention_args(), this.repo!);
+    const args = [this.borg_bin, "prune", "--dry-run", "--list", "--lock-wait", String(this.lock_wait), ...this.prune_scope()];
+    args.push(...this.retention_flags().flat(), ...this.repo_args());
     return this.build(args, this.read_options());
   }
 
@@ -800,7 +839,7 @@ export class BorgRepository {
         keep.push(`  ${groups.name}  ${groups.date}  (${groups.rule})`);
       }
     }
-    const policy = Object.entries(this.retention).map(([key, value]) => `--${key.replaceAll("_", "-")} ${value}`).join(" ");
+    const policy = this.retention_flags().map(([option, value]) => `${option} ${value}`).join(" ");
     const lines = [`Policy: ${policy}`, `Archives matching: ${this.prune_match}`, ""];
     lines.push(`Would prune ${prune.length} of ${prune.length + keep.length} archive(s):`);
     lines.push(...(prune.length > 0 ? prune : ["  (none)"]));
@@ -851,7 +890,7 @@ export class BorgRepository {
     if (cached !== null) {
       return new CollectResult({ content: this.listing_text(archive, member, cached), success: true });
     }
-    const args = [this.borg_bin, "list", "--format", LIST_FORMAT, "--lock-wait", String(this.lock_wait), `${this.repo}::${archive}`];
+    const args = [this.borg_bin, "list", "--format", LIST_FORMAT, "--lock-wait", String(this.lock_wait), ...this.archive_args(archive)];
     if (member) args.push(member);
     const read = (result: CmdResult) => this.read_browse(result, archive, path);
     return this.run_one(this.build(args, this.read_options()), read, this.browse_limit + 1, children_filter(member));
@@ -889,7 +928,7 @@ export class BorgRepository {
   // before borg starts, which is what keeps a restore into a chosen folder from overwriting it.
   private restore_command(archive: string, members: string[], destination: string): string {
     const extract = this.build([
-      this.borg_bin, "extract", "--log-json", "--progress", "--lock-wait", String(this.backup_lock_wait), `${this.repo}::${archive}`, ...members,
+      this.borg_bin, "extract", "--log-json", "--progress", "--lock-wait", String(this.backup_lock_wait), ...this.archive_args(archive), ...members,
     ], { persistent_cache: true });
     const sudo = this.require_sudo ? "sudo -n " : "";
     const quoted = shell_quote(destination);
@@ -928,7 +967,7 @@ export class BorgRepository {
     // A download holds the repository's lock like a backup would wait on, so it does not start beside a job of ours.
     if (this.running_job() !== null) return BorgRepository.refused("A job is running on this repository; download once it ends");
     const named = members.filter(Boolean) as string[];
-    const source = `${this.repo}::${archive}`;
+    const source = this.archive_args(archive);
     const lock_wait = ["--lock-wait", String(this.lock_wait)];
 
     let call: string;
@@ -936,12 +975,12 @@ export class BorgRepository {
     let content_type: string;
     if (kind === "file") {
       if (named.length !== 1 || members.length !== 1) return BorgRepository.refused("A file download names exactly one file");
-      call = this.build([this.borg_bin, "extract", "--stdout", ...lock_wait, source, named[0]], this.read_options());
+      call = this.build([this.borg_bin, "extract", "--stdout", ...lock_wait, ...source, named[0]], this.read_options());
       filename = named[0].slice(named[0].lastIndexOf("/") + 1);
       content_type = "application/octet-stream";
     } else if (kind === "tar") {
       if (named.length !== members.length) return BorgRepository.refused("Give the paths to download, or none for the whole archive");
-      call = this.build([this.borg_bin, "export-tar", "--tar-filter=gzip", ...lock_wait, source, "-", ...named], this.read_options());
+      call = this.build([this.borg_bin, "export-tar", "--tar-filter=gzip", ...lock_wait, ...source, "-", ...named], this.read_options());
       const folder = named.length === 1 ? named[0].slice(named[0].lastIndexOf("/") + 1) : "";
       filename = `${archive}${folder ? `-${folder}` : ""}.tar.gz`;
       content_type = "application/gzip";
@@ -973,17 +1012,17 @@ export class BorgRepository {
     if (kind === "extract") {
       const newest = this.state.archives[0]?.name ?? null;
       if (!newest) return BorgRepository.refused("Cannot run an extract check: no archive listed yet");
-      const command = this.maintenance_command(["extract", "--dry-run", "--progress", `${this.repo}::${newest}`]);
+      const command = this.maintenance_command(["extract", "--dry-run", "--progress", ...this.archive_args(newest)]);
       return this.launch(check_job_kind(kind), command, ` on ${newest}`);
     }
     const args = ["check", "--progress", ...CHECK_KINDS[kind].options];
-    return this.launch(check_job_kind(kind), this.maintenance_command([...args, this.repo!]));
+    return this.launch(check_job_kind(kind), this.maintenance_command([...args, ...this.repo_args()]));
   }
 
   compact_repo(): ActionStart {
     const refusal = this.job_refusal("compact the repository");
     if (refusal) return refusal;
-    return this.launch("compact", this.maintenance_command(["compact", "--progress", this.repo!]));
+    return this.launch("compact", this.maintenance_command(["compact", "--progress", ...this.repo_args()]));
   }
 
   prune_repo(): ActionStart {
@@ -991,12 +1030,13 @@ export class BorgRepository {
     if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot prune: no keep_* retention configured");
     const refusal = this.job_refusal("prune");
     if (refusal) return refusal;
-    return this.launch("prune", this.maintenance_command([...this.prune_args(), this.repo!]));
+    return this.launch("prune", this.maintenance_command([...this.prune_args(), ...this.repo_args()]));
   }
 
   // The prune that applies the retention policy for real, shared by the Prune action and the one after a backup.
   private prune_args(): string[] {
-    return ["prune", "--list", "--stats", "--glob-archives", this.prune_match, ...this.retention_args()];
+    const stats = this.borg_version === 2 ? [] : ["--stats"];
+    return ["prune", "--list", ...stats, ...this.prune_scope(), ...this.retention_flags().flat()];
   }
 
   delete_archive(archive: string | null): ActionStart {
@@ -1011,7 +1051,8 @@ export class BorgRepository {
       if (cached.archive === archive) this.listings.delete(key);
     }
 
-    return this.launch("delete", this.maintenance_command(["delete", "--stats", `${this.repo}::${archive}`]), ` for ${archive}`);
+    const report = this.borg_version === 2 ? "--list" : "--stats";
+    return this.launch("delete", this.maintenance_command(["delete", report, ...this.archive_args(archive)]), ` for ${archive}`);
   }
 
   // ── Purge ──────────────────────────────────────────────────────────────────
@@ -1025,17 +1066,19 @@ export class BorgRepository {
   }
 
   private purge_scope(): string[] {
-    return this.purge_match ? ["--glob-archives", this.purge_match] : [];
+    return this.purge_match ? this.match_args(this.purge_match) : [];
   }
 
   purge_preview(): ActionStart {
     const refusal = this.purge_refusal();
     if (refusal) return refusal;
+    // Recreate marks an excluded item x in borg 1 and - in borg 2.
+    const flag = this.borg_version === 2 ? "-" : "x";
     const recreate = this.build([
-      this.borg_bin, "recreate", "--dry-run", "--list", "--filter=x", ...this.purge_scope(), ...this.exclude_args(),
-      "--lock-wait", String(this.backup_lock_wait), this.repo!,
+      this.borg_bin, "recreate", "--dry-run", "--list", `--filter=${flag}`, ...this.purge_scope(), ...this.exclude_args(),
+      "--lock-wait", String(this.backup_lock_wait), ...this.repo_args(),
     ], { persistent_cache: true });
-    return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_backups_rc=$?"; } | ${TOPMOST_EXCLUDED}`);
+    return this.launch("purge-preview", `{ ${recreate} 2>&1; echo "__x_backups_rc=$?"; } | ${topmost_excluded(flag)}`);
   }
 
   purge_excluded(): ActionStart {
@@ -1043,9 +1086,9 @@ export class BorgRepository {
     if (refusal) return refusal;
     const scope = this.purge_scope();
     // An interrupted recreate leaves a <name>.recreate archive that makes the next attempt fail at once.
-    const leftovers = this.maintenance_command(["delete", "--glob-archives", "*.recreate", this.repo!]);
-    const recreate = this.maintenance_command(["recreate", "--info", "--stats", "--progress", ...scope, ...this.exclude_args(), this.repo!]);
-    const compact = this.maintenance_command(["compact", "--progress", this.repo!]);
+    const leftovers = this.maintenance_command(["delete", ...this.match_args("*.recreate"), ...this.repo_args()]);
+    const recreate = this.maintenance_command(["recreate", "--info", "--stats", "--progress", ...scope, ...this.exclude_args(), ...this.repo_args()]);
+    const compact = this.maintenance_command(["compact", "--progress", ...this.repo_args()]);
     // A plain exit would leave before the job records its status, so a subshell carries the failure instead.
     return this.launch("purge", `${leftovers}; ${recreate}; rc=$?; if [ "$rc" -le 1 ]; then ${compact}; else (exit "$rc"); fi`);
   }
@@ -1056,7 +1099,7 @@ export class BorgRepository {
     if (!this.allow_delete) return BorgRepository.refused("Breaking locks is off for this monitor — set allow_delete: true to enable it");
     const refusal = this.job_refusal("break the lock");
     if (refusal) return refusal;
-    return this.run_one(this.build([this.borg_bin, "break-lock", this.repo!], { persistent_cache: true }), (result) => this.read_break_lock(result));
+    return this.run_one(this.build([this.borg_bin, "break-lock", ...this.repo_args()], { persistent_cache: true }), (result) => this.read_break_lock(result));
   }
 
   read_break_lock(call: CmdResult): CollectResult {
@@ -1082,7 +1125,7 @@ export class BorgRepository {
     const older = this.previous_archive(archive);
     if (older === null) return BorgRepository.refused(`${archive} is the oldest listed archive — there is nothing before it to compare`);
     const call = this.build(
-      [this.borg_bin, "diff", "--json-lines", "--lock-wait", String(this.lock_wait), `${this.repo}::${older}`, archive], this.read_options(),
+      [this.borg_bin, "diff", "--json-lines", "--lock-wait", String(this.lock_wait), ...this.archive_args(older), archive], this.read_options(),
     );
     return this.run_detached([call], ([result]) => this.read_diff(result, archive), this.browse_limit + 1);
   }

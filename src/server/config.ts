@@ -54,6 +54,7 @@ export const borg_fields: { [field in keyof Required<BorgConfig>]: FieldKind } =
   passphrase: "string",
   passphrase_file: "string",
   passphrase_command: "string",
+  borg_version: "number",
   borg_bin: "string",
   lock_wait: "number_or_string",
   require_sudo: "boolean",

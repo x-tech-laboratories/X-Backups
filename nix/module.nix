@@ -35,6 +35,10 @@ let
     repositories = lib.mapAttrsToList repository_entry cfg.repositories;
   };
 
+  # The page may add borg 2 repositories too, so only a declared-only setup without one goes without borg2.
+  needs_borg2 =
+    cfg.configMode != "declarative" || lib.any (repository: (repository.borg_version or 1) == 2) (lib.attrValues cfg.repositories);
+
   passphrase_credentials = lib.mapAttrsToList (name: repository: "passphrase-${name}:${repository.passphraseFile}") (
     lib.filterAttrs (_: repository: repository.passphraseFile != null) cfg.repositories
   );
@@ -235,7 +239,8 @@ in
       path = [
         pkgs.openssh
         pkgs.borgbackup
-      ];
+      ]
+      ++ lib.optional needs_borg2 self.packages.${pkgs.stdenv.hostPlatform.system}.borg2;
 
       environment = {
         HOST = cfg.host;
