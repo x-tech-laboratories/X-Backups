@@ -23,6 +23,14 @@ export function shell_quote(text: string): string {
   return "'" + text.replaceAll("'", `'"'"'`) + "'";
 }
 
+// Runs the command only when the folder is missing or empty, else fails with 3, so it never writes over existing files.
+// A subshell carries the failure, since a plain exit would leave a job's wrapper before it records its status.
+export function when_folder_empty(folder: string, sudo: string, command: string): string {
+  const quoted = shell_quote(folder);
+  return `if [ -n "$(${sudo}find ${quoted} -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]; then ` +
+    `echo ${shell_quote(`Refusing to restore into ${folder}: it is not empty`)} >&2; (exit 3); else ${command}; fi`;
+}
+
 export function as_list(value: unknown): string[] {
   if (value === null || value === undefined) return [];
   if (typeof value === "string") return [value];

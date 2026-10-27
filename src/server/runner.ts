@@ -168,8 +168,10 @@ export function stream_command(target: RunTarget, command: string, options: Stre
   const stop = () => {
     if (ended) return;
     signal_group(child.pid, "SIGTERM");
-    // Output nobody reads any more is drained, so a full pipe cannot keep the command from ending.
-    child.stdout!.resume();
+    // Output nobody reads any more is thrown away, so neither a full pipe nor a reader that stopped reading, such as a
+    // paused browser download, keeps the command from ending or its end from being noticed.
+    child.stdout!.unpipe();
+    child.stdout!.destroy();
     kill_timer ??= setTimeout(() => signal_group(child.pid, "SIGKILL"), kill_grace_in_milliseconds);
   };
 

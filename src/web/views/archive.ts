@@ -6,7 +6,7 @@ import { age, count_change, h, nodes, plural, size, size_change, stamp, type Chi
 import { current_route, link, replace_query } from "../router.ts";
 import {
   attempt, confirm_dialog, crumbs, data_table, empty, facts, load, pager, search_box, section, select, skeleton, sorting_from, tabs,
-  toolbar, type Sorting,
+  toast, toolbar, type Sorting,
 } from "../ui.ts";
 import { can } from "../session.ts";
 import { delete_archive } from "./repository.ts";
@@ -40,7 +40,7 @@ export function archive_view(id: string, name: string): View {
     started = true;
     // What is inside an archive is backed-up data, which the server shows only to operators.
     if (!can("operator")) body.replaceChildren(empty("Reading what is inside an archive needs the operator role.", "An admin can change your role on the Users page."));
-    else if (tab === "files") files_tab(body, base, archive.name, target);
+    else if (tab === "files") files_tab(body, base, archive.name, repository.restore_dir, target);
     else changes_tab(body, base, archive.name, older);
   };
   void update(false);
@@ -259,11 +259,11 @@ function change_tree(changes: DiffChange[]): HTMLElement {
 
 // ── Files ────────────────────────────────────────────────────────────────────
 
-function files_tab(body: HTMLElement, base: string, archive: string, target: ActionTarget): void {
+function files_tab(body: HTMLElement, base: string, archive: string, restore_dir: string, target: ActionTarget): void {
   // Each picked path, and whether it is a folder, which decides how it downloads.
   const picked = new Map<string, boolean>();
   const holder = h("div");
-  const restore = h("button", { class: "accent solid", disabled: true, onclick: () => restore_picked(target, archive, [...picked.keys()]) }, "Restore picked");
+  const restore = h("button", { class: "accent solid", disabled: true, onclick: () => restore_picked(target, archive, [...picked.keys()], restore_dir) }, "Restore picked");
   const download = h("a", { class: "button", download: true, "aria-disabled": "true" }, "Download picked");
   const status = h("span", { class: "muted small", role: "status" }, "Nothing picked.");
   const on_pick = () => {
@@ -281,12 +281,30 @@ function files_tab(body: HTMLElement, base: string, archive: string, target: Act
     void load(holder, async () => folder_view(await api<Listing>(`${base}/browse${query({ archive, path })}`), base, archive, path, picked, open, on_pick));
   };
 
-  body.replaceChildren(section("Files", h("div", {},
+  const files = h("div", {},
     h("div", { class: "toolbar" }, restore, download, status),
-    h("p", { class: "muted small" }, "Restoring extracts into a new folder under the repository's restore_dir on its host; live files are never overwritten."),
-    h("p", { class: "muted small" }, "Downloads stream straight from borg to your browser; a folder or several picks come as one tar.gz."),
+    h("p", { class: "muted small" }, "Restoring extracts on the repository's host into a folder you choose; it never writes over files already there."),
+    h("p", { class: "muted small" },
+      "Downloads stream straight from borg to your browser; a folder or several picks come as one tar.gz. ",
+      "While one runs it holds the repository's lock, so a backup that starts meanwhile waits for it, and fails if it waits past its lock wait. ",
+      "Running downloads show on the repository's Overview tab, where they can be stopped."),
     holder,
-  )));
+  );
+  // A download is refused while a job runs, and the browser would save that refusal as a file, so it is checked first.
+  files.addEventListener("click", async (event) => {
+    const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[download]");
+    if (!anchor?.href || anchor.dataset.checked === "yes") return;
+    event.preventDefault();
+    const repository = await api<RepositoryDetail>(base).catch(() => null);
+    if (repository?.running_job) {
+      toast(`A ${repository.running_job.kind} is running on ${repository.name}; download once it ends.`, { tone: "warn" });
+      return;
+    }
+    anchor.dataset.checked = "yes";
+    anchor.click();
+    delete anchor.dataset.checked;
+  });
+  body.replaceChildren(section("Files", files));
   open(current_route().query.get("path") ?? "");
 }
 
@@ -342,15 +360,35 @@ function folder_view(listing: Listing, base: string, archive: string, path: stri
   );
 }
 
-function restore_picked(target: ActionTarget, archive: string, paths: string[]): void {
+// Asks where on the host to restore: a new dated folder inside the chosen one, or the chosen one itself if it is empty.
+function restore_picked(target: ActionTarget, archive: string, paths: string[], restore_dir: string): void {
+  const folder = h("input", { type: "text", value: restore_dir, "aria-label": "Folder on the host", autocomplete: "off" });
+  const fresh = h("input", { type: "radio", name: "restore-into", checked: true });
+  const direct = h("input", { type: "radio", name: "restore-into" });
+  const where = h("p", { class: "muted small", role: "status" });
+  const describe = () => {
+    const base = folder.value.trim().replace(/\/+$/, "") || restore_dir;
+    where.textContent = fresh.checked
+      ? `Into ${base}/${archive}-<date and time>, a new folder.`
+      : `Into ${base} itself, which must be empty or not exist yet; the restore stops before writing if it holds anything.`;
+  };
+  folder.addEventListener("input", describe);
+  fresh.addEventListener("change", describe);
+  direct.addEventListener("change", describe);
+  describe();
   confirm_dialog({
     title: `Restore ${plural(paths.length, "item")}?`,
     message: h("div", {},
-      h("p", {}, `This extracts from ${archive} into a new, dated folder under the restore_dir of ${target.repository_name}'s host.`),
+      h("p", {}, `This extracts from ${archive} on ${target.repository_name}'s host. It never writes over files already there.`),
       h("ul", { class: "paths" }, ...paths.slice(0, 10).map((path) => h("li", {}, h("code", {}, path)))),
-      paths.length > 10 && h("p", { class: "muted" }, `and ${paths.length - 10} more`)),
+      paths.length > 10 && h("p", { class: "muted" }, `and ${paths.length - 10} more`),
+      h("label", { class: "field restore-folder" }, h("span", { class: "field-label" }, "Folder on the host"), folder),
+      h("div", { class: "choice-stack", role: "radiogroup", "aria-label": "Restore into" },
+        h("label", { class: "check" }, fresh, " A new dated folder inside it"),
+        h("label", { class: "check" }, direct, " This folder itself")),
+      where),
     confirm_label: "Restore",
     busy_label: "Starting…",
-    run: () => run_action(target, "restore_archive", "Restore", { archive, paths }),
+    run: () => run_action(target, "restore_archive", "Restore", { archive, paths, target: folder.value.trim(), fresh: fresh.checked }),
   });
 }

@@ -68,7 +68,18 @@ export interface RepositoryDetail extends RepositorySummary {
   exclude: string[];
   retention: Record<string, number | string>;
   allow_delete: boolean;
+  restore_dir: string;
+  downloads: DownloadRecord[];
   actions: Action[];
+}
+
+// A download in progress, which holds the repository's lock while it runs.
+export interface DownloadRecord {
+  id: number;
+  repository_id: string;
+  who: string;
+  what: string;
+  started_epoch: number;
 }
 
 export interface Outcome {

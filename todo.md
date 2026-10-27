@@ -221,7 +221,10 @@ mounts) is now in: tasks 35–37 and 47–56.
     `borg export-tar`, and an extract dialog with a target folder (Borg UI, Borgitory, Vorta).
     Built as `GET /api/repositories/:id/download`, streaming a file through `extract --stdout` or
     folders and picks as a gzipped `export-tar`, linked from each row and "Download picked" on the
-    Files tab. Restores still go to a new folder under `restore_dir`; there is no target folder choice.
+    Files tab. A download holds borg's lock, so it is refused while a job runs, listed on the
+    repository's Overview tab with who started it, and can be stopped there. Restores go to a
+    folder chosen in the restore dialog (restore_dir by default): a new dated folder inside it, or
+    the folder itself only when it is empty or missing, so a restore never overwrites files.
 33. [ ] **Paused repositories and storage.** A declared paused flag that keeps a repository listed
     but silences staleness, an append-only badge, and free space and quota on the storage host
     (BorgWarehouse).

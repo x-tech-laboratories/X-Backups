@@ -3,7 +3,7 @@
 import { action_descriptions, run_action, start_action, type ActionTarget } from "../actions.ts";
 import { overdue, repository_reasons } from "../attention.ts";
 import {
-  api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type EventRow, type History, type Job,
+  api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type DownloadRecord, type EventRow, type History, type Job,
   type RepositoryConfig, type RepositoryDetail, type TimerRow,
 } from "../api.ts";
 import { bar_chart, line_chart, strip } from "../charts.ts";
@@ -119,6 +119,8 @@ function repository_header(repository: RepositoryDetail, target: ActionTarget): 
       repository.source === "declared" ? chip("declared", "Set in the Nix configuration; edit it there") : chip("added here", "Added from this page; edit it on its Config tab"),
       repository.running_job && h("a", { class: "chip chip-info", href: link(["jobs", String(repository.running_job.id)]) },
         `${repository.running_job.kind} running${repository.running_job.progress ? ` · ${repository.running_job.progress}` : ""}`),
+      repository.downloads.length > 0 && h("a", { class: "chip chip-info", href: link(["repositories", repository.id]) },
+        repository.downloads.length === 1 ? "download running" : `${repository.downloads.length} downloads running`),
     ),
     h("p", { class: "muted" }, repository.repo ?? "", ` on ${repository.host}`, ` · polled ${age(repository.last_poll_epoch)}`),
     can("operator") && h("div", { class: "head-actions" },
@@ -157,7 +159,9 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   const summary = h("div");
   const charts = h("div", { class: "charts" }, skeleton(4));
   const maintenance = h("div", { class: "maintenance" });
+  const downloads = h("div");
   context.body.replaceChildren(...nodes([
+    downloads,
     section("Summary", summary),
     section("History", charts, h("span", { class: "muted small" }, "last 90 days")),
     can("operator") && section("Maintenance", maintenance),
@@ -165,6 +169,7 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   return async (quiet) => {
     const repository = context.detail();
     summary.replaceChildren(repository_facts(repository));
+    downloads.replaceChildren(...nodes(downloads_panel(repository, context.refresh)));
     maintenance.replaceChildren(...maintenance_cards(repository, context.target()));
     const since = Math.floor(now_seconds() - history_span_in_seconds);
     await load(charts, async () => {
@@ -175,6 +180,35 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
       return history_charts(history, jobs);
     }, { quiet });
   };
+}
+
+// Downloads in progress hold the repository's lock, so they are listed where a waiting backup would send someone.
+function downloads_panel(repository: RepositoryDetail, refresh: () => void): HTMLElement | null {
+  if (repository.downloads.length === 0) return null;
+  return section("Downloads in progress", h("div", { class: "stack" },
+    h("p", { class: "muted small" }, "Each holds the repository's lock until it ends; a backup that starts meanwhile waits for it."),
+    data_table<DownloadRecord>([
+      { label: "What", cell: (download) => download.what },
+      { label: "Who", cell: (download) => download.who },
+      { label: "Running", cell: (download) => h("span", { title: stamp(download.started_epoch) }, duration(now_seconds() - download.started_epoch)) },
+      {
+        label: "", class: "actions-cell", cell: (download) => can("operator") && h("span", { class: "row-actions" }, h("button", {
+          class: "danger",
+          onclick: () => confirm_dialog({
+            title: "Stop this download?",
+            message: `${download.who}'s download of ${download.what} stops at once and their browser marks it failed.`,
+            confirm_label: "Stop download",
+            busy_label: "Stopping…",
+            danger: true,
+            run: async () => {
+              await api(`${repository_path(repository.id)}/downloads/${download.id}/stop`, {}).catch(() => {});
+              refresh();
+            },
+          }),
+        }, "Stop")),
+      },
+    ], repository.downloads, { caption: "Downloads in progress" }),
+  ));
 }
 
 function repository_facts(repository: RepositoryDetail): HTMLElement {

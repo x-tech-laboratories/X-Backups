@@ -15,6 +15,15 @@ export type Run = (target: RunTarget, command: string, options: RunOptions) => P
 
 export type Stream = (target: RunTarget, command: string, options: StreamOptions) => CommandStream;
 
+// A download in progress, which holds the repository's lock for as long as it runs, so the page shows it and can stop it.
+export interface DownloadRecord {
+  id: number;
+  repository_id: string;
+  who: string;
+  what: string;
+  started_epoch: number;
+}
+
 export interface Watched {
   config: RepositoryConfig;
   repository: BorgRepository;
@@ -42,6 +51,8 @@ export class Poller {
   private readonly pending_polls = new Map<string, Promise<CollectResult>>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly timers_read = new Map<string, number>();
+  private readonly running_downloads = new Map<number, { record: DownloadRecord; stop: () => void }>();
+  private next_download_id = 1;
   private stopped = true;
 
   constructor(config: Config, store: Store, run: Run = run_command, stream_run: Stream = stream_command) {
@@ -129,8 +140,29 @@ export class Poller {
   }
 
   // Streams a command outside the queue, since a download can run for hours and borg's lock wait already keeps it apart.
-  stream(id: string, command: string, stdin: string | null): CommandStream {
-    return this.stream_run(this.watched(id).config, command, { stdin: stdin ?? undefined });
+  // It is listed until it ends, with who started it, so whoever sees a backup waiting on it can stop it.
+  stream(id: string, command: string, stdin: string | null, details: { who: string; what: string }): CommandStream {
+    const stream = this.stream_run(this.watched(id).config, command, { stdin: stdin ?? undefined });
+    const record = { id: this.next_download_id++, repository_id: id, ...details, started_epoch: Math.floor(Date.now() / 1000) };
+    this.running_downloads.set(record.id, { record, stop: stream.stop });
+    this.store.changed({ kind: "repository", repository_id: id });
+    void stream.done.then(() => {
+      this.running_downloads.delete(record.id);
+      this.store.changed({ kind: "repository", repository_id: id });
+    });
+    return stream;
+  }
+
+  downloads(id: string): DownloadRecord[] {
+    return [...this.running_downloads.values()].map(({ record }) => record).filter((record) => record.repository_id === id);
+  }
+
+  // Stops the repository's download with that id, saying whether there was one.
+  stop_download(id: string, download_id: number): boolean {
+    const download = this.running_downloads.get(download_id);
+    if (download === undefined || download.record.repository_id !== id) return false;
+    download.stop();
+    return true;
   }
 
   private async poll_now(id: string): Promise<CollectResult> {

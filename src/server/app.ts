@@ -38,6 +38,9 @@ interface ActionBody {
   path?: string;
   paths?: string[];
   kind?: string;
+  // Where a restore goes, and whether into a new dated folder inside it.
+  target?: string;
+  fresh?: boolean;
 }
 
 interface ListQuery {
@@ -64,7 +67,9 @@ const actions: Record<string, (repository: BorgRepository, body: ActionBody) => 
   dry_run_backup: (repository) => repository.dry_run_backup(),
   prune_preview: (repository) => repository.prune_preview(),
   verify_restore: (repository) => repository.verify_restore(),
-  restore_archive: (repository, body) => repository.restore_archive(body.archive ?? null, [...(body.path ? [body.path] : []), ...(body.paths ?? [])]),
+  restore_archive: (repository, body) => repository.restore_archive(
+    body.archive ?? null, [...(body.path ? [body.path] : []), ...(body.paths ?? [])], body.target ?? null, body.fresh !== false,
+  ),
   check_repo: (repository, body) => repository.check_repo(body.kind),
   compact_repo: (repository) => repository.compact_repo(),
   prune_repo: (repository) => repository.prune_repo(),
@@ -156,6 +161,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       exclude: repository.exclude,
       retention: repository.retention,
       allow_delete: repository.allow_delete,
+      restore_dir: repository.restore_dir,
+      downloads: poller.downloads(repository.id),
       actions: repository.get_actions().map((action) => ({ ...action, state: repository.action_state(action) })),
     };
   });
@@ -210,7 +217,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       const download = watched.repository.download(archive || null, paths, kind);
       if (download instanceof CollectResult) return reply.code(400).send({ error: download.content });
 
-      const stream = poller.stream(watched.repository.id, download.command, download.stdin);
+      const what = `${paths.length > 0 ? paths.join(", ") : "everything"} from ${archive}`;
+      const stream = poller.stream(watched.repository.id, download.command, download.stdin, { who: request.viewer?.name ?? "someone", what });
       // A browser that goes away stops borg, rather than leaving it reading the archive for nobody.
       reply.raw.on("close", stream.stop);
       // The answer waits for borg's first bytes, so a borg that fails at once answers with its error instead of an empty file.
@@ -229,7 +237,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       // Characters a quoted header value cannot hold are swapped in the plain name and kept in the RFC 6266 one.
       const plain_name = download.filename.replace(/[^\x20-\x7e]|["\\]/g, "_");
       const encoded_name = encodeURIComponent(download.filename).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-      note_actor(request, watched.repository.id, `downloaded ${paths.length > 0 ? paths.join(", ") : "everything"} from ${archive}`);
+      note_actor(request, watched.repository.id, `downloaded ${what}`);
       reply.hijack();
       reply.raw.writeHead(200, {
         "content-type": download.content_type,
@@ -246,6 +254,15 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       return reply;
     },
   );
+
+  // Stops a running download, such as one a backup is waiting on.
+  app.post<{ Params: { id: string; download: string } }>("/api/repositories/:id/downloads/:download/stop", async (request, reply) => {
+    const watched = find(request.params.id, reply);
+    if (watched === null) return reply;
+    if (!poller.stop_download(watched.repository.id, Number(request.params.download))) return reply.code(404).send({ error: "That download has ended." });
+    note_actor(request, watched.repository.id, `stopped download ${request.params.download}`);
+    return { ok: true };
+  });
 
   // The archive's changes against the one before it, diffing it first when that has not been done yet.
   app.get<{ Params: { id: string }; Querystring: { archive?: string } }>("/api/repositories/:id/diff", async (request, reply) => {

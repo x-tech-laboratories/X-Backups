@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { children_filter, diff_line, parse_diff, parse_listing } from "../../src/server/borg/parsing.ts";
 import { BorgRepository, progress_from_lines, type BorgConfig } from "../../src/server/borg/repository.ts";
-import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
+import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
 import { Harness } from "./testing.ts";
 import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult, type DownloadPlan } from "../../src/server/borg/types.ts";
 
@@ -154,6 +154,8 @@ interface ActionParams {
   path?: string;
   paths?: string[];
   kind?: string;
+  target?: string;
+  fresh?: boolean;
 }
 
 // Starts an action by the id the page sends, the way an API route calls its method.
@@ -166,7 +168,9 @@ function start(harness: Harness, action_id: string, params: ActionParams = {}): 
     prune_preview: () => repository.prune_preview(),
     verify_restore: () => repository.verify_restore(),
     browse_archive: () => repository.browse_archive(archive, params.path),
-    restore_archive: () => repository.restore_archive(archive, [...(params.path ? [params.path] : []), ...(params.paths ?? [])]),
+    restore_archive: () => repository.restore_archive(
+      archive, [...(params.path ? [params.path] : []), ...(params.paths ?? [])], params.target ?? null, params.fresh !== false,
+    ),
     check_repo: () => repository.check_repo(params.kind),
     compact_repo: () => repository.compact_repo(),
     prune_repo: () => repository.prune_repo(),
@@ -806,6 +810,16 @@ describe("backup polling", () => {
     expect(harness.jobs.recent()[0].state).toBe("succeeded");
   });
 
+  it("keeps a finished job's last line though it arrives without its newline", () => {
+    const harness = make(BACKUP_CFG);
+    launch(harness);
+    poll_once(harness, job_poll(30, null, true, "first line\nhalf a li"));
+    const job_id = harness.jobs.recent()[0].id;
+    expect(harness.jobs.output(job_id)).toEqual(["first line"]);
+    poll_once(harness, job_poll(40, 3, false, "half a line"));
+    expect(harness.jobs.output(job_id)).toEqual(["first line", "half a line"]);
+  });
+
   it("counts borg's warning exit as success", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
@@ -1262,6 +1276,32 @@ describe("restore", () => {
     expect(refusal_of(harness, "restore_archive", { archive: "a1", path: "etc" }).success).toBe(false);
   });
 
+  it("restores into a new dated folder inside a chosen folder", () => {
+    const command = plan_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "etc", target: "/srv/restored/" }).commands[0];
+    expect(command).toContain("sudo -n mkdir -p /srv/restored/a1-");
+  });
+
+  it("restores into a chosen folder itself only while it is empty", () => {
+    const folder = join(scratch_dir(), "chosen folder");
+    const command = plan_of(make({ ...BASE_CFG, restore_dir: "/unused" }), "restore_archive", { archive: "a1", path: "etc", target: folder, fresh: false }).commands[0];
+    expect(command).toContain("-mindepth 1 -maxdepth 1");
+    // The check before borg, run for real: a missing or empty folder passes, one holding anything stops the restore.
+    const check = when_folder_empty(folder, "", "echo restored");
+    expect(sh(check).stdout).toBe("restored\n");
+    mkdirSync(folder);
+    expect(sh(check).stdout).toBe("restored\n");
+    writeFileSync(join(folder, "live-file"), "keep me");
+    const refused = sh(check);
+    expect(refused.returncode).toBe(3);
+    expect(refused.stdout).toBe("");
+    expect(refused.stderr).toContain("it is not empty");
+  });
+
+  it("refuses a relative or dotted folder", () => {
+    expect(refusal_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "etc", target: "srv/x" }).content).toContain("absolute path");
+    expect(refusal_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "etc", target: "/srv/../etc" }).content).toContain("'..'");
+  });
+
   it("restores several ticked paths at once", () => {
     const command = plan_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", paths: ["/etc/x", "home/y"] }).commands[0];
     expect(command.replaceAll("'", "")).toContain("::a1 etc/x home/y");
@@ -1431,6 +1471,15 @@ describe("download", () => {
     expect(download).not.toBeInstanceOf(CollectResult);
     return download as DownloadPlan;
   }
+
+  it("does not start beside a running job", () => {
+    const harness = make();
+    listed(harness, "b2", "b1");
+    launch(harness, "compact_repo");
+    const download = harness.repository.download("b1", ["etc"], "tar");
+    expect(download).toBeInstanceOf(CollectResult);
+    expect((download as CollectResult).content).toContain("download once it ends");
+  });
 
   it("streams one file through extract --stdout under its own name", () => {
     const plan = download_of(listed_repository(), "b1", ["/home/me/notes.txt"], "file");

@@ -93,8 +93,11 @@ export function parse_poll(stdout: string): PollResult {
 }
 
 // Whole lines of newly read output and how many bytes they used, leaving a trailing partial line for the next poll.
-export function split_job_output(new_output: string): [lines: string[], consumed_bytes: number] {
+// Once the job has ended no more output follows, so that last line is taken too rather than lost; the runner trims
+// stdout, so a job's final line usually arrives without its newline.
+export function split_job_output(new_output: string, ended = false): [lines: string[], consumed_bytes: number] {
   if (!new_output) return [[], 0];
+  if (ended) return [new_output.replace(/\n$/, "").split("\n"), Buffer.byteLength(new_output, "utf8")];
   const last_newline = new_output.lastIndexOf("\n");
   if (last_newline === -1) return [[], 0];
   // Counted in bytes, since the next poll resumes with `tail -c`.

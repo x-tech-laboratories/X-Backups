@@ -20,7 +20,7 @@ import {
 } from "./parsing.ts";
 import {
   BASE_DIR_VAR, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
-  redact, shell_quote, skip_reason, ssh_endpoint, then_steps, with_passphrase, with_preflight, wrap_job,
+  redact, shell_quote, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_passphrase, with_preflight, wrap_job,
 } from "./shell.ts";
 import {
   ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
@@ -885,25 +885,32 @@ export class BorgRepository {
 
   // ── Restore ────────────────────────────────────────────────────────────────
 
-  // Creates a fresh folder under restore_dir and extracts the paths into it, never over live files.
+  // Extracts the paths into the destination, never over live files: a folder that already holds anything is refused
+  // before borg starts, which is what keeps a restore into a chosen folder from overwriting it.
   private restore_command(archive: string, members: string[], destination: string): string {
     const extract = this.build([
       this.borg_bin, "extract", "--log-json", "--progress", "--lock-wait", String(this.backup_lock_wait), `${this.repo}::${archive}`, ...members,
     ], { persistent_cache: true });
-    const mkdir = (this.require_sudo ? "sudo -n " : "") + "mkdir -p " + shell_quote(destination);
-    return `${mkdir} && cd ${shell_quote(destination)} && ${extract}`;
+    const sudo = this.require_sudo ? "sudo -n " : "";
+    const quoted = shell_quote(destination);
+    return when_folder_empty(destination, sudo, `${sudo}mkdir -p ${quoted} && cd ${quoted} && ${extract}`);
   }
 
-  restore_archive(archive: string | null, paths: string[]): ActionStart {
+  // Restores into a new dated folder inside the target (restore_dir unless one is given), or into the target itself
+  // when `fresh` is false, which must then be empty or not exist yet.
+  restore_archive(archive: string | null, paths: string[], target: string | null = null, fresh = true): ActionStart {
     const members = paths.map(archive_member);
     if (!this.repo || !archive) return BorgRepository.refused("Cannot restore: no archive given");
     if (members.some((member) => member === null)) return BorgRepository.refused("A path may not contain '.' or '..' components");
     if (members.length === 0 || !members.every(Boolean)) {
       return BorgRepository.refused("Give the path to restore — a whole archive is not restored from here");
     }
+    const folder = (target?.trim() || this.restore_dir).replace(/\/+$/, "") || "/";
+    const problem = target_problem(folder);
+    if (problem) return BorgRepository.refused(`Cannot restore into ${folder}: ${problem}`);
     const refusal = this.job_refusal("restore");
     if (refusal) return refusal;
-    const destination = `${this.restore_dir.replace(/\/+$/, "")}/${archive}-${utc_compact_stamp(new Date())}`;
+    const destination = fresh ? `${folder === "/" ? "" : folder}/${archive}-${utc_compact_stamp(new Date())}` : folder;
     return this.launch("restore", this.restore_command(archive, members as string[], destination), ` into ${destination}`);
   }
 
@@ -918,6 +925,8 @@ export class BorgRepository {
     }
     const members = paths.map(archive_member);
     if (members.some((member) => member === null)) return BorgRepository.refused("A path may not contain '.' or '..' components");
+    // A download holds the repository's lock like a backup would wait on, so it does not start beside a job of ours.
+    if (this.running_job() !== null) return BorgRepository.refused("A job is running on this repository; download once it ends");
     const named = members.filter(Boolean) as string[];
     const source = `${this.repo}::${archive}`;
     const lock_wait = ["--lock-wait", String(this.lock_wait)];
@@ -1141,7 +1150,7 @@ export class BorgRepository {
     }
     const poll = parse_poll(result.stdout);
 
-    const [lines, consumed] = split_job_output(poll.new_output);
+    const [lines, consumed] = split_job_output(poll.new_output, poll.exit_code !== null || !poll.alive);
     if (lines.length > 0) {
       jobs.append_output(job.id, lines);
       jobs.bump_output_seq(job.id, job.output_seq + consumed);
@@ -1350,4 +1359,12 @@ function utc_compact_stamp(date: Date): string {
 // The diff cache's key for an archive and the one before it.
 function diff_key(older: string | null, archive: string): string {
   return `${older ?? ""}\n${archive}`;
+}
+
+// Why a folder cannot be restored into, or null: it must be absolute, plain, and not hold `.` or `..` steps.
+function target_problem(folder: string): string | null {
+  if (!folder.startsWith("/")) return "give an absolute path";
+  if (/[\0\n\r]/.test(folder)) return "the path holds a control character";
+  if (folder.split("/").some((part) => part === "." || part === "..")) return "the path may not contain '.' or '..' steps";
+  return null;
 }

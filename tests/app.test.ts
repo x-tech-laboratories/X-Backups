@@ -33,20 +33,23 @@ let poller: Poller;
 let commands: string[];
 let cookie: string;
 let streamed: { command: string; stdin: string | undefined }[];
-let stream_answer: { chunks: string[]; exit_code: number; stderr: string };
+let stream_answer: { chunks: string[]; exit_code: number; stderr: string; hold?: boolean };
 
-// Writes the chunks the test set, then ends with its exit code once they have all been read.
+// Writes the chunks the test set, then ends with its exit code once they have all been read; a held stream runs until stopped.
 function fake_stream(_target: unknown, command: string, options: { stdin?: string }): CommandStream {
   streamed.push({ command, stdin: options.stdin });
-  const { chunks, exit_code, stderr } = stream_answer;
+  const { chunks, exit_code, stderr, hold } = stream_answer;
   const stdout = new PassThrough();
+  let finish: () => void = () => {};
   const done = new Promise<{ exit_code: number; stderr: string }>((resolve) => {
-    if (chunks.length === 0) setImmediate(() => resolve({ exit_code, stderr }));
-    else stdout.on("end", () => resolve({ exit_code, stderr }));
+    finish = () => resolve({ exit_code: hold ? 143 : exit_code, stderr });
+    if (hold) return;
+    if (chunks.length === 0) setImmediate(finish);
+    else stdout.on("end", finish);
   });
   for (const chunk of chunks) stdout.write(chunk);
-  stdout.end();
-  return { stdout, done, stop: () => {} };
+  if (!hold) stdout.end();
+  return { stdout, done, stop: () => { stdout.end(); finish(); } };
 }
 
 beforeEach(async () => {
@@ -180,6 +183,22 @@ describe("downloads", () => {
     expect(streamed[0].command).toContain("export-tar --tar-filter=gzip");
     expect(streamed[0].command).toContain("::a1 - etc home");
     expect(store.events({ repository_id: "odin" }).some((event) => event.message.includes("downloaded etc, home from a1"))).toBe(true);
+  });
+
+  it("lists a running download with who started it, and stops it", async () => {
+    await poller.poll("odin");
+    stream_answer = { chunks: ["partial"], exit_code: 0, stderr: "", hold: true };
+
+    const download = app.inject({ method: "GET", url: "/api/repositories/odin/download?archive=a1&kind=tar&path=etc", headers: { cookie } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const [running] = (await get("/api/repositories/odin")).json().downloads;
+    expect(running).toMatchObject({ who: "admin", what: "etc from a1" });
+
+    expect((await post(`/api/repositories/odin/downloads/${running.id}/stop`)).json()).toEqual({ ok: true });
+    // A stopped download cuts the connection, so the browser marks it failed rather than complete.
+    await expect(download).rejects.toThrow();
+    expect((await get("/api/repositories/odin")).json().downloads).toEqual([]);
+    expect((await post(`/api/repositories/odin/downloads/${running.id}/stop`)).statusCode).toBe(404);
   });
 
   it("answers borg's error when it fails before sending anything", async () => {

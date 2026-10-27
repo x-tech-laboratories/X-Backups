@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Writable } from "node:stream";
 import { run_command, ssh_arguments, stream_command } from "../src/server/runner.ts";
 
 const local = { host: null, ssh_user: null };
@@ -41,6 +42,19 @@ describe("runner", () => {
     const ended = await stream.done;
 
     expect(ended.exit_code).toBe(-1);
+  });
+
+  it("ends a stopped stream even while its output is piped to a reader that stopped reading", async () => {
+    const stream = stream_command(local, "yes x-backups");
+    // A writable that never finishes a write, like a browser that paused a download.
+    const stuck = new Writable({ highWaterMark: 16, write: () => {} });
+    stream.stdout.pipe(stuck);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    stream.stop();
+    const ended = await stream.done;
+
+    expect(ended.exit_code).not.toBe(0);
   });
 
   it("builds a multiplexed ssh call", () => {

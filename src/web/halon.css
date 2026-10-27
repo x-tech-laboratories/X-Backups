@@ -771,3 +771,9 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
   .form-row { grid-template-columns: 1fr; }
   .form-row label { padding-top: 0; }
 }
+
+/* ── Restore target ───────────────────────────────────────────────────────── */
+
+.restore-folder { display: grid; margin: var(--space-5) 0 var(--space-3); }
+.restore-folder input { width: 100%; }
+.choice-stack { display: grid; gap: var(--space-3); margin-bottom: var(--space-3); }
