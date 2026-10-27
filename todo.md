@@ -570,6 +570,20 @@ what each of the other apps does. These are tasks 47–56, to be built after the
 58. [ ] **Halon gaps.** Draw the menu, theme and close icons as SVG on a 24 px artboard with a 2 px
     stroke, sized by `--icon-size-small` as Halon's §4.5 asks, and style the select's dropdown
     arrow (the tokens file has none, so selects keep the browser's arrow today).
+59. [ ] **Run the service on NixOS.** The module has only been evaluated. Add a NixOS VM test
+    (`nixosTests`-style, in the flake's `checks`) that starts the service with a local borg
+    repository, logs in, polls, and runs a backup, so `nix flake check` covers the package and
+    module together.
+60. [ ] **OIDC against a real provider.** `src/server/oidc.ts` is tested only against a simulated
+    provider with real signatures. Log in once through a real one (Authelia, Keycloak or
+    Kanidm) to confirm discovery, the PKCE code exchange and the user name claim, and fix what
+    differs.
+61. [ ] **Downloads and host-timer backups.** A download holds borg's lock for as long as it runs.
+    X-Backups refuses one while its own job runs and lists running downloads with a Stop
+    button, but a backup started by a host's own timer still waits on a long download and fails
+    past its lock wait. Options: warn when the host's next timer run falls inside the likely
+    download time (the timers are already read), cap a download's length, or stop downloads when
+    the timer's service starts.
 
 ## Apps to review for features
 
