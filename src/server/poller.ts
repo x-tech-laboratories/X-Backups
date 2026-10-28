@@ -5,6 +5,7 @@
 import { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionPlan, type CmdResult, type MonitorStatus } from "./borg/types.ts";
 import type { Config, RepositoryConfig } from "./config.ts";
+import { host_health_command, parse_host_health } from "./host_health.ts";
 import { run_command, stream_command, type CommandStream, type RunOptions, type RunTarget, type StreamOptions } from "./runner.ts";
 import type { Store } from "./store.ts";
 import { parse_timers, timers_command } from "./timers.ts";
@@ -195,6 +196,14 @@ export class Poller {
       if (timers !== null) this.store.replace_timers(host, timers);
     } catch {
       // A host without systemd simply shows no timers.
+    }
+    // The host's load is sampled at the same pace, so its charts have a point per timer read.
+    try {
+      const result = await this.run(watched.config, host_health_command(), { timeout_in_seconds: 30 });
+      const sample = parse_host_health(result.stdout);
+      if (sample !== null) this.store.add_host_sample(host, sample);
+    } catch {
+      // A host that cannot be read simply leaves a gap in its charts.
     }
   }
 

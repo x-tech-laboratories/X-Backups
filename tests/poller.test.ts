@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ActionPlan, CollectResult, cmd_result, type CmdResult } from "../src/server/borg/types.ts";
 import type { Config } from "../src/server/config.ts";
+import { host_health_command } from "../src/server/host_health.ts";
 import { Poller, type Run } from "../src/server/poller.ts";
 import { Store } from "../src/server/store.ts";
 
@@ -14,6 +15,11 @@ const CONFIG: Config = {
 let store: Store;
 let poller: Poller;
 let commands: string[];
+
+// Reads of the host and the repository's filesystem rather than borg calls: the timers, the host's load, and df.
+function host_read(command: string): boolean {
+  return command.startsWith("systemctl") || command === host_health_command() || command.startsWith("df ");
+}
 
 function make(answer: (command: string) => CmdResult = () => cmd_result(0, LIST, "")): Poller {
   const run: Run = async (_target, command) => {
@@ -79,14 +85,14 @@ describe("polling", () => {
 
     expect(first).toBe(second);
     await first;
-    expect(commands.filter((command) => !command.startsWith("systemctl"))).toHaveLength(1);
+    expect(commands.filter((command) => !host_read(command))).toHaveLength(1);
   });
 
   it("hands the passphrase to the runner as stdin", async () => {
     const stdins: (string | undefined)[] = [];
     const config: Config = { repositories: [{ ...CONFIG.repositories[0], borg: { ...CONFIG.repositories[0].borg, passphrase: "s3cret" } }] };
     poller = new Poller(config, store, async (_target, command, options) => {
-      if (!command.startsWith("systemctl")) stdins.push(options.stdin);
+      if (!host_read(command)) stdins.push(options.stdin);
       return cmd_result(0, LIST, "");
     });
 

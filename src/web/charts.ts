@@ -1,4 +1,4 @@
-// Small SVG charts: lines over time, bars, meters, a donut, a timeline and a pass/fail strip, colored from the page's CSS tokens.
+// Small SVG charts: lines over time, bars, meters, a donut, a timeline, sparklines and a pass/fail strip, colored from the page's CSS tokens.
 
 import { h } from "./dom.ts";
 
@@ -263,6 +263,28 @@ export function timeline(title: string, rows: TimelineRow[], from: number, to: n
       label(timeline_width - margin.right, chart_height - 4, "now", "end"),
     ),
   );
+}
+
+// ── Sparkline ────────────────────────────────────────────────────────────────
+
+const sparkline_width = 120;
+const sparkline_height = 28;
+
+// A small line of readings over time with no axes, scaled from zero to `top` or the highest reading if that is higher.
+export function sparkline(label_text: string, points: [epoch: number, value: number][], top: number, color: string): SVGElement {
+  const drawn = svg("svg", { viewBox: `0 0 ${sparkline_width} ${sparkline_height}`, class: "sparkline", role: "img", "aria-label": label_text });
+  if (points.length < 2) return drawn;
+  const [first, last] = [points[0][0], points.at(-1)![0]];
+  const highest = Math.max(top, ...points.map(([, value]) => value)) || 1;
+  const x = (epoch: number) => (epoch - first) / Math.max(1, last - first) * sparkline_width;
+  const y = (value: number) => sparkline_height - 2 - value / highest * (sparkline_height - 4);
+  const path = points.map(([epoch, value], index) => `${index === 0 ? "M" : "L"}${x(epoch).toFixed(1)},${y(value).toFixed(1)}`).join("");
+  drawn.append(
+    svg("path", { d: `${path}L${sparkline_width},${sparkline_height}L0,${sparkline_height}Z`, fill: color, opacity: 0.15 }),
+    svg("path", { d: path, fill: "none", stroke: color, "stroke-width": 1.5 }),
+    svg("title", {}, label_text),
+  );
+  return drawn;
 }
 
 // ── Strip ────────────────────────────────────────────────────────────────────

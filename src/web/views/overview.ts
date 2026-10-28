@@ -1,8 +1,8 @@
 // The fleet at a glance: tiles that open filtered views, what needs attention and why, backup ages and sizes, jobs and archives over time, and what runs next.
 
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
-import { api, query, repository_path, type History, type Job, type RepositorySummary, type TimerRow } from "../api.ts";
-import { donut, line_chart, meters, stacked_bar_chart, timeline, type Meter, type Stack } from "../charts.ts";
+import { api, query, repository_path, type History, type HostSample, type Job, type RepositorySummary, type TimerRow } from "../api.ts";
+import { donut, line_chart, meters, sparkline, stacked_bar_chart, timeline, type Meter, type Stack } from "../charts.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { attempt, empty, job_badge, load, section, skeleton } from "../ui.ts";
@@ -20,6 +20,7 @@ export function overview_view(): View {
   const storage = h("div");
   const activity = h("div");
   const timeline_box = h("div");
+  const hosts_box = h("div");
   const running = h("div");
   const upcoming = h("div");
   const stored = h("div");
@@ -46,9 +47,10 @@ export function overview_view(): View {
       api<RepositorySummary[]>("/api/repositories"),
       api<Job[]>(`/api/jobs${query({ since: Math.floor(now_seconds() - 7 * day_in_seconds), limit: 2000 })}`),
       api<TimerRow[]>("/api/timers"),
+      api<HostSample[]>(`/api/hosts/samples${query({ since: Math.floor(now_seconds() - day_in_seconds) })}`),
     ]), () => void update(false));
     if (answer === null) return;
-    const [listed, recent, timers] = answer;
+    const [listed, recent, timers, samples] = answer;
     repositories = listed;
     jobs = recent;
     await Promise.all([
@@ -59,6 +61,7 @@ export function overview_view(): View {
       load(activity, async () => job_panels(recent, span), { quiet }),
       load(running, async () => running_list(recent), { quiet }),
       load(upcoming, async () => upcoming_list(timers), { quiet }),
+      load(hosts_box, async () => host_health(samples), { quiet }),
       load(grid, async () => [...listed].sort((a, b) => status_rank(a) - status_rank(b) || a.name.localeCompare(b.name)).map(repository_card), { quiet }),
     ]);
     // The stored total and the archives on the timeline need every repository's history, so they load after the rest is on screen, and the history is fetched again only when a poll may have added to it.
@@ -70,7 +73,7 @@ export function overview_view(): View {
     ]);
   };
 
-  for (const target of [tiles, attention, ages, storage, activity, timeline_box, running, upcoming, stored, grid]) target.append(skeleton());
+  for (const target of [tiles, attention, ages, storage, activity, timeline_box, hosts_box, running, upcoming, stored, grid]) target.append(skeleton());
   void update(false);
 
   return {
@@ -87,6 +90,7 @@ export function overview_view(): View {
         section("Storage per repository", storage, h("span", { class: "muted small" }, `against its quota or disk; ticks at ${storage_warning_percent}% and ${storage_danger_percent}%`)),
       ),
       section("Activity", timeline_box, h("span", { class: "muted small" }, "jobs and archives, by the period above")),
+      section("Hosts", hosts_box, h("span", { class: "muted small" }, "last 24 hours, read every five minutes")),
       h("div", { class: "columns" },
         h("div", { class: "stack" },
           section("Running now", running, h("a", { href: link(["jobs"], { state: "running" }) }, "All running")),
@@ -97,7 +101,7 @@ export function overview_view(): View {
       section("Repositories", grid, h("a", { href: link(["repositories"]) }, "Filter and sort")),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "job", "timers", "config"])) await update(true, touches(changes, null, ["repository", "config"]));
+      if (touches(changes, null, ["repository", "job", "timers", "hosts", "config"])) await update(true, touches(changes, null, ["repository", "config"]));
     },
   };
 }
@@ -207,6 +211,30 @@ function storage_bars(repositories: RepositorySummary[]): HTMLElement {
     };
   });
   return meters(rows, "No sizes yet; they appear after a poll reads each repository's stats.");
+}
+
+// A row per repository host: its load against its CPUs, its memory in use and how full its root disk is, each as a sparkline and the latest reading.
+function host_health(samples: HostSample[]): HTMLElement {
+  if (samples.length === 0) return empty("No host readings yet.", "Each host is read beside its timers, every five minutes.");
+  const by_host = new Map<string, HostSample[]>();
+  for (const sample of samples) by_host.set(sample.host, [...(by_host.get(sample.host) ?? []), sample]);
+  const tone = (percent: number) => percent >= storage_danger_percent ? "var(--status-danger)" : percent >= storage_warning_percent ? "var(--status-warning)" : "var(--series-1)";
+  const reading = (name: string, points: [number, number][], top: number, color: string, text: string) => h("div", { class: "host-reading" },
+    h("span", { class: "reading-label" }, name),
+    sparkline(`${name}: ${text}`, points, top, color),
+    h("span", { class: "meter-value" }, text));
+  return h("div", { class: "hosts" }, ...[...by_host].sort(([a], [b]) => a.localeCompare(b)).flatMap(([host, readings]) => {
+    const latest = readings.at(-1)!;
+    const load = readings.map((sample): [number, number] => [sample.epoch, sample.load1 / sample.cpus * 100]);
+    const memory = readings.map((sample): [number, number] => [sample.epoch, (1 - sample.memory_available / sample.memory_total) * 100]);
+    const disk = readings.map((sample): [number, number] => [sample.epoch, (1 - sample.disk_available / sample.disk_size) * 100]);
+    return [
+      h("strong", { title: `read ${age(latest.epoch)}` }, host),
+      reading("load", load, 100, tone(load.at(-1)![1]), `${latest.load1.toFixed(2)} / ${latest.cpus} CPUs`),
+      reading("memory", memory, 100, tone(memory.at(-1)![1]), `${Math.round(memory.at(-1)![1])}% used`),
+      reading("disk /", disk, 100, tone(disk.at(-1)![1]), `${size(latest.disk_available)} free`),
+    ];
+  }));
 }
 
 // The outcome donut beside the jobs per period.

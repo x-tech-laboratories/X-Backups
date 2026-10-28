@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
+import type { HostSample } from "./host_health.ts";
 import type { Timer } from "./timers.ts";
 import type { CollectResult, JobRecord, JobState, JobStore, LogLevel, MonitorStatus, RepositoryState } from "./borg/types.ts";
 
@@ -57,6 +58,14 @@ export interface TimerRunRow {
   exit_status: number | null;
 }
 
+export interface HostSampleRow extends HostSample {
+  host: string;
+  epoch: number;
+}
+
+// A host's readings are kept for a week, the longest span its charts draw.
+const host_sample_retention_in_seconds = 7 * 86400;
+
 // A timer run is kept this long, enough for several weeks of the calendar.
 const timer_run_retention_in_seconds = 90 * 86400;
 
@@ -71,7 +80,7 @@ export interface JobRow extends JobRecord {
 
 // What changed, so a page that listens can fetch only what it shows.
 export interface Change {
-  kind: "repository" | "job" | "timers" | "config";
+  kind: "repository" | "job" | "timers" | "hosts" | "config";
   repository_id: string | null;
   job_id?: number;
 }
@@ -174,6 +183,17 @@ const SCHEMA = `
     result TEXT,
     exit_status INTEGER,
     PRIMARY KEY (host, unit, epoch)
+  );
+  CREATE TABLE IF NOT EXISTS host_samples (
+    host TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    load1 REAL NOT NULL,
+    cpus INTEGER NOT NULL,
+    memory_total INTEGER NOT NULL,
+    memory_available INTEGER NOT NULL,
+    disk_size INTEGER NOT NULL,
+    disk_available INTEGER NOT NULL,
+    PRIMARY KEY (host, epoch)
   );
   CREATE TABLE IF NOT EXISTS timer_upcoming (
     host TEXT NOT NULL,
@@ -371,6 +391,34 @@ export class Store {
       }
     });
     this.changed({ kind: "timers", repository_id: null });
+  }
+
+  // ── Hosts ────────────────────────────────────────────────────────────────
+
+  // Keeps one reading of a host's load, memory and root disk, dropping its readings past retention.
+  add_host_sample(host: string, sample: HostSample, epoch = now_seconds()): void {
+    this.transaction(() => {
+      this.run("DELETE FROM host_samples WHERE host = ? AND epoch < ?", host, epoch - host_sample_retention_in_seconds);
+      this.run(
+        "INSERT OR REPLACE INTO host_samples (host, epoch, load1, cpus, memory_total, memory_available, disk_size, disk_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        host, epoch, sample.load1, sample.cpus, sample.memory_total, sample.memory_available, sample.disk_size, sample.disk_available,
+      );
+    });
+    this.changed({ kind: "hosts", repository_id: null });
+  }
+
+  // Every host's readings from `since` on, oldest first.
+  host_samples(since: number): HostSampleRow[] {
+    return this.all("SELECT * FROM host_samples WHERE epoch >= ? ORDER BY host, epoch", since).map((row) => ({
+      host: String(row.host),
+      epoch: Number(row.epoch),
+      load1: Number(row.load1),
+      cpus: Number(row.cpus),
+      memory_total: Number(row.memory_total),
+      memory_available: Number(row.memory_available),
+      disk_size: Number(row.disk_size),
+      disk_available: Number(row.disk_available),
+    }));
   }
 
   // Every timer run from `since` on, oldest first, with the missed ones marked by a result of "missed".

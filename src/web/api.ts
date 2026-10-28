@@ -175,6 +175,18 @@ export interface TimerRow {
   read_epoch: number;
 }
 
+// One reading of a host's load, memory and root disk.
+export interface HostSample {
+  host: string;
+  epoch: number;
+  load1: number;
+  cpus: number;
+  memory_total: number;
+  memory_available: number;
+  disk_size: number;
+  disk_available: number;
+}
+
 // A run a timer made, or one it should have made, with a result of "missed".
 export interface TimerRun {
   host: string;
@@ -222,7 +234,7 @@ export interface SearchResults {
 
 // What the server's stream says changed; null stands for "anything may have changed".
 export interface Change {
-  kind: "repository" | "job" | "timers" | "config";
+  kind: "repository" | "job" | "timers" | "hosts" | "config";
   repository_id: string | null;
   job_id?: number;
 }
