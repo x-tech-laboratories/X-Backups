@@ -528,8 +528,11 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     with the encryption mode, the passphrase handled as in task 36, and a preview of the command
     that will run (Borg UI, Borgitory). Also import an existing repository by opening it with its
     passphrase before saving.
-48. [ ] **Schedule calendar.** A weekly calendar of every host timer and its runs, with missed and
-    failed runs marked and a day switcher on phones (Borg Backup Server).
+48. [x] **Schedule calendar.** A weekly calendar of every host timer and its runs, with missed and
+    failed runs marked and a day switcher on phones (Borg Backup Server). Built on the Schedules
+    page: each timer read keeps its run in `timer_runs` (a missed one when systemd moved past an
+    elapse without a run) and its coming week of OnCalendar elapses, listed on the host by
+    `systemd-analyze calendar`. Runs between two reads five minutes apart show once.
 49. [ ] **Scheduler and backup plans.** For page-managed repositories, X-Backups owns the schedule:
     a cron or `OnCalendar` expression with presets and a readable description, written as a
     systemd timer on the host or run by X-Backups itself, with "Run now", enable and disable. A

@@ -70,6 +70,41 @@ describe("state and history", () => {
   });
 });
 
+// ── Timers ───────────────────────────────────────────────────────────────────
+
+describe("timers", () => {
+  const timer = { unit: "borgmatic.timer", service: "borgmatic.service", result: "success", exit_status: 0, upcoming: [] as number[] };
+
+  it("keeps each run once, with the result of its latest read", () => {
+    store.replace_timers("odin", [{ ...timer, last_epoch: 1000, next_epoch: 90_000, result: null }], 1000);
+    store.replace_timers("odin", [{ ...timer, last_epoch: 1000, next_epoch: 90_000, result: "exit-code", exit_status: 2 }], 1300);
+
+    expect(store.timer_runs(0)).toEqual([{ host: "odin", unit: "borgmatic.timer", epoch: 1000, result: "exit-code", exit_status: 2 }]);
+  });
+
+  it("marks the elapse a read expected as missed when systemd moved past it without a run", () => {
+    store.replace_timers("odin", [{ ...timer, last_epoch: 1000, next_epoch: 5000 }], 1000);
+    store.replace_timers("odin", [{ ...timer, last_epoch: 1000, next_epoch: 90_000 }], 5300);
+
+    expect(store.timer_runs(2000)).toEqual([{ host: "odin", unit: "borgmatic.timer", epoch: 5000, result: "missed", exit_status: null }]);
+  });
+
+  it("does not mark an elapse missed when the timer ran at it or is still waiting on it", () => {
+    store.replace_timers("odin", [{ ...timer, last_epoch: 1000, next_epoch: 5000 }], 1000);
+    store.replace_timers("odin", [{ ...timer, last_epoch: 1000, next_epoch: 5000 }], 5300);
+    store.replace_timers("odin", [{ ...timer, last_epoch: 5010, next_epoch: 90_000 }], 5600);
+
+    expect(store.timer_runs(2000).map((run) => run.result)).toEqual(["success"]);
+  });
+
+  it("returns each timer's upcoming elapses from its latest read", () => {
+    store.replace_timers("odin", [{ ...timer, last_epoch: null, next_epoch: 5000, upcoming: [5000, 9000] }], 1000);
+    store.replace_timers("odin", [{ ...timer, last_epoch: null, next_epoch: 9000, upcoming: [9000] }], 6000);
+
+    expect(store.timers().map((row) => row.upcoming)).toEqual([[9000]]);
+  });
+});
+
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
 describe("jobs", () => {

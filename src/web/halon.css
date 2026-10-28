@@ -648,7 +648,17 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
 .meter-head { display: flex; gap: var(--space-4); justify-content: space-between; margin-bottom: var(--space-1); font-size: var(--text-control); }
 .meter-value { color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .meter { position: relative; height: 6px; border-radius: 3px; background-color: var(--border-default); }
-.meter-fill { display: block; height: 100%; border-radius: 3px; }
+.meter-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 3px; }
+.meter-behind { opacity: 0.35; }
+.donut-body { display: flex; gap: var(--space-6); align-items: center; flex-wrap: wrap; }
+.donut svg { width: 140px; flex: none; }
+.donut-track { stroke: var(--border-default); }
+.donut-value { fill: var(--text-heading); font-size: 20px; font-weight: 700; }
+.donut-legend { display: grid; gap: var(--space-2); flex: 1; min-width: 160px; margin: 0; padding: 0; list-style: none; }
+.donut-legend li { display: flex; justify-content: space-between; gap: var(--space-4); }
+.chart .lane { stroke: var(--border-default); stroke-dasharray: 2 3; }
+.chart .lane-label { fill: var(--text-secondary); font-size: var(--text-label); }
+.chart a .lane-label { fill: var(--accent); }
 .meter-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background-color: var(--text-tertiary); }
 
 /* ── States ───────────────────────────────────────────────────────────────── */
@@ -732,6 +742,20 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
 *::-webkit-scrollbar-thumb { background-color: var(--border-hover); border: 2px solid transparent; background-clip: padding-box; border-radius: 3px; }
 *::-webkit-scrollbar-thumb:hover { background-color: var(--text-tertiary); }
 
+/* ── Week calendar: a run's state by its fill and its outline ─────────────── */
+
+.calendar td { vertical-align: top; }
+.calendar th.today, .calendar td.today { background-color: var(--surface-secondary); }
+.calendar th.today { color: var(--accent); }
+.run { display: inline-block; margin: 0 var(--space-1) var(--space-1) 0; padding: 1px var(--space-2); border: var(--border-width) solid transparent; border-radius: var(--radius-small); font-size: var(--text-caption); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-success { background-color: var(--status-success); color: var(--text-on-fill); }
+.run-failed { background-color: var(--status-danger); color: var(--text-on-fill); }
+.run-missed { border-color: var(--status-danger); border-style: dashed; color: var(--status-danger); }
+.run-upcoming { border-color: var(--accent); color: var(--accent); }
+.run-unknown { background-color: var(--border-default); color: var(--text-secondary); }
+.calendar-key .run { margin-right: var(--space-2); }
+.day-switch { display: none; flex-wrap: wrap; }
+
 /* ── Phones and narrow windows ────────────────────────────────────────────── */
 
 @media (max-width: 900px) {
@@ -777,6 +801,10 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
   table.responsive td.actions-cell { justify-content: flex-end; }
   .form-row { grid-template-columns: 1fr; }
   .form-row label { padding-top: 0; }
+  .day-switch { display: flex; }
+  .calendar:not([data-day="0"]) .day-0, .calendar:not([data-day="1"]) .day-1, .calendar:not([data-day="2"]) .day-2,
+  .calendar:not([data-day="3"]) .day-3, .calendar:not([data-day="4"]) .day-4, .calendar:not([data-day="5"]) .day-5,
+  .calendar:not([data-day="6"]) .day-6 { display: none; }
 }
 
 /* ── Restore target ───────────────────────────────────────────────────────── */

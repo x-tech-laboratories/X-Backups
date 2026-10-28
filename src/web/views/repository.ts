@@ -269,6 +269,10 @@ function history_charts(repository: RepositoryDetail, history: History, jobs: Jo
       { label: "compressed", color: "var(--series-2)", points: polls.map((poll) => [poll.epoch, poll.compressed_size]) },
       { label: "stored", color: "var(--series-3)", points: polls.map((poll) => [poll.epoch, poll.deduplicated_size]) },
     ], size),
+    line_chart("Space savings", [
+      { label: "compression and deduplication", color: "var(--series-3)", points: polls.map((poll) => [poll.epoch, ratio(poll.original_size, poll.deduplicated_size)]) },
+      { label: "compression alone", color: "var(--series-2)", points: polls.map((poll) => [poll.epoch, ratio(poll.original_size, poll.compressed_size)]) },
+    ], (value) => `${value.toFixed(1)}×`),
     line_chart("Archives", [
       { label: "archives", color: "var(--series-1)", points: polls.map((poll) => [poll.epoch, poll.archive_count]) },
     ], (value) => String(Math.round(value))),
@@ -281,6 +285,11 @@ function history_charts(repository: RepositoryDetail, history: History, jobs: Jo
     strip("Checks", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.checks_passed }))),
     strip("Restore canary", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.canary_ok }))),
   ];
+}
+
+// How many times smaller the stored data is than the original, or null without both sizes.
+function ratio(original: number | null, stored: number | null): number | null {
+  return original && stored ? original / stored : null;
 }
 
 // The age of the newest archive from `since` to now: it climbs until each archive lands, then drops to zero.

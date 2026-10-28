@@ -1,8 +1,8 @@
-// The smaller pages: every host's timers, the event log, and the settings.
+// The smaller pages: every host's timers and their week, the event log, and the settings.
 
 import { timer_problem } from "../attention.ts";
-import { api, ApiError, query, send, type ConfigInfo, type EventRow, type RepositorySummary, type Setting, type TimerRow } from "../api.ts";
-import { h, type Child } from "../dom.ts";
+import { api, ApiError, query, send, type ConfigInfo, type EventRow, type RepositorySummary, type Setting, type TimerRow, type TimerRun } from "../api.ts";
+import { h, stamp, type Child } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { theme_choice, type Theme } from "../theme.ts";
 import { chip, empty, facts, load, pager, section, select, skeleton, toast, toolbar } from "../ui.ts";
@@ -17,9 +17,36 @@ export function schedules_view(): View {
   const route_query = current_route().query;
   let host = route_query.get("host") ?? "";
   let state = route_query.get("state") ?? "";
+  let week = Number(route_query.get("week") ?? 0) || 0;
+  let day = (new Date().getDay() + 6) % 7;
   let timers: TimerRow[] = [];
+  let runs: TimerRun[] = [];
   const host_filter = h("span");
   const list = h("div", {}, skeleton(5));
+  const calendar = h("div", {}, skeleton(4));
+  const week_label = h("span", { class: "muted small" });
+
+  const render_calendar = () => {
+    const start = week_start(week);
+    week_label.textContent = `${new Date(start * 1000).toLocaleDateString()} – ${new Date((start + 6 * day_in_seconds) * 1000).toLocaleDateString()}`;
+    const shown = timers.filter((timer) => !host || timer.host === host);
+    calendar.replaceChildren(week_calendar(shown, runs, start, day, (next) => { day = next; render_calendar(); }));
+  };
+  const load_week = async (quiet: boolean) => {
+    await load(calendar, async () => {
+      runs = await api<TimerRun[]>(`/api/timers/runs${query({ since: week_start(week) })}`);
+      render_calendar();
+      return [...calendar.childNodes];
+    }, { quiet });
+  };
+  const week_switch = h("div", { class: "segmented", role: "group", "aria-label": "Week" },
+    ...([[-1, "‹ Previous"], [0, "This week"], [1, "Next ›"]] as const).map(([step, text]) => h("button", {
+      onclick: () => {
+        week = step === 0 ? 0 : week + step;
+        replace_query({ week: week === 0 ? null : week });
+        void load_week(false);
+      },
+    }, text)));
 
   const render = () => {
     const hosts = [...new Set(timers.map((timer) => timer.host))].sort();
@@ -28,6 +55,7 @@ export function schedules_view(): View {
       replace_query({ host: value });
       render();
     }));
+    render_calendar();
     const shown = timers
       .filter((timer) => (!host || timer.host === host) && (state !== "problem" || timer_problem(timer) !== null))
       .sort((a, b) => (a.next_epoch ?? Infinity) - (b.next_epoch ?? Infinity));
@@ -35,7 +63,10 @@ export function schedules_view(): View {
   };
   const refresh = async (quiet: boolean) => {
     await load(list, async () => {
-      timers = await api<TimerRow[]>("/api/timers");
+      [timers, runs] = await Promise.all([
+        api<TimerRow[]>("/api/timers"),
+        api<TimerRun[]>(`/api/timers/runs${query({ since: week_start(week) })}`),
+      ]);
       render();
       return [...list.childNodes];
     }, { quiet });
@@ -48,12 +79,85 @@ export function schedules_view(): View {
       h("h1", {}, "Schedules"),
       h("p", { class: "muted" }, "Each host's own systemd timers run its backups; X-Backups reads them on each poll and flags missed and failed runs."),
       toolbar(host_filter, select("State", [["", "Any state"], ["problem", "Needs attention"]], state, (value) => { state = value; replace_query({ state: value }); render(); })),
+      section(h("span", {}, "Week ", week_label), calendar, week_switch),
       list,
     ),
     update: async (changes) => {
       if (touches(changes, null, ["timers"])) await refresh(true);
     },
   };
+}
+
+// ── Week calendar ────────────────────────────────────────────────────────────
+
+const day_in_seconds = 86400;
+// A timer this far past its next elapse without a run has missed it, as the timers table says.
+const missed_grace_in_seconds = 3600;
+
+interface CalendarEntry {
+  epoch: number;
+  kind: "success" | "failed" | "missed" | "upcoming" | "unknown";
+  title: string;
+}
+
+// Midnight starting the Monday of the week `offset` weeks from this one.
+function week_start(offset: number): number {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - (date.getDay() + 6) % 7 + offset * 7);
+  return date.getTime() / 1000;
+}
+
+// What a timer did and will do: its recorded runs, the elapse it is overdue on, and its coming elapses.
+function calendar_entries(timer: TimerRow, runs: TimerRun[]): CalendarEntry[] {
+  const now = Date.now() / 1000;
+  const entries: CalendarEntry[] = runs.filter((run) => run.host === timer.host && run.unit === timer.unit).map((run) => {
+    const kind = run.result === "missed" ? "missed" : run.result === "success" ? "success" : run.result === null ? "unknown" : "failed";
+    const outcome = kind === "missed" ? "missed" : kind === "failed" ? `failed: ${run.result}${run.exit_status ? ` (exit ${run.exit_status})` : ""}` : kind === "success" ? "succeeded" : "ran";
+    return { epoch: run.epoch, kind, title: `${stamp(run.epoch)}: ${outcome}` };
+  });
+  const coming = timer.upcoming.length > 0 ? timer.upcoming : timer.next_epoch !== null ? [timer.next_epoch] : [];
+  for (const epoch of coming) {
+    if (epoch >= now) entries.push({ epoch, kind: "upcoming", title: `${stamp(epoch)}: due` });
+    else if (epoch < now - missed_grace_in_seconds && !entries.some((entry) => entry.epoch === epoch)) entries.push({ epoch, kind: "missed", title: `${stamp(epoch)}: missed, not run yet` });
+  }
+  return entries.sort((a, b) => a.epoch - b.epoch);
+}
+
+// A row per timer and a column per day of the week, each cell holding that day's runs; on phones one day shows at a time.
+function week_calendar(timers: TimerRow[], runs: TimerRun[], start: number, day: number, on_day: (day: number) => void): HTMLElement {
+  if (timers.length === 0) return empty("No backup timers found.", "Timers are read from each host's systemd.");
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(start * 1000);
+    date.setDate(date.getDate() + index);
+    return date;
+  });
+  const today = new Date().toDateString();
+  const day_of = (epoch: number) => days.findIndex((date) => date.toDateString() === new Date(epoch * 1000).toDateString());
+  const time = (epoch: number) => new Date(epoch * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const name = (date: Date) => date.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
+
+  return h("div", { class: "stack" },
+    h("div", { class: "segmented day-switch", role: "group", "aria-label": "Day" }, ...days.map((date, index) => h("button", {
+      "aria-pressed": String(index === day), onclick: () => on_day(index),
+    }, name(date)))),
+    h("div", { class: "table-wrap" }, h("table", { class: "calendar", "data-day": day },
+      h("thead", {}, h("tr", {}, h("th", {}, "Timer"), ...days.map((date, index) => h("th", { class: `day-${index}${date.toDateString() === today ? " today" : ""}` }, name(date))))),
+      h("tbody", {}, ...timers.map((timer) => {
+        const entries = calendar_entries(timer, runs);
+        return h("tr", {},
+          h("td", {}, h("div", {}, timer.unit), h("div", { class: "muted small" }, timer.host)),
+          ...days.map((date, index) => h("td", { class: `day-${index}${date.toDateString() === today ? " today" : ""}` },
+            ...entries.filter((entry) => day_of(entry.epoch) === index).map((entry) => h("span", { class: `run run-${entry.kind}`, title: entry.title },
+              entry.kind === "missed" ? `${time(entry.epoch)} missed` : time(entry.epoch))))),
+        );
+      })),
+    )),
+    h("p", { class: "muted small calendar-key" },
+      h("span", { class: "run run-success" }, "ran"), h("span", { class: "run run-failed" }, "failed"),
+      h("span", { class: "run run-missed" }, "missed"), h("span", { class: "run run-upcoming" }, "due"),
+      " Past weeks show runs X-Backups saw; its reads are every five minutes, so a timer that ran twice between two reads shows once."),
+  );
 }
 
 // ── Events ───────────────────────────────────────────────────────────────────

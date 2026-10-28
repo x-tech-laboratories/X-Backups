@@ -1,8 +1,8 @@
-// The fleet at a glance: tiles that open filtered views, what needs attention and why, jobs over time, and what runs next.
+// The fleet at a glance: tiles that open filtered views, what needs attention and why, backup ages and sizes, jobs and archives over time, and what runs next.
 
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
 import { api, query, repository_path, type History, type Job, type RepositorySummary, type TimerRow } from "../api.ts";
-import { line_chart, meters, stacked_bar_chart, type Meter, type Stack } from "../charts.ts";
+import { donut, line_chart, meters, stacked_bar_chart, timeline, type Meter, type Stack } from "../charts.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { attempt, empty, job_badge, load, section, skeleton } from "../ui.ts";
@@ -17,13 +17,17 @@ export function overview_view(): View {
   const tiles = h("div");
   const attention = h("div");
   const ages = h("div");
+  const storage = h("div");
   const activity = h("div");
+  const timeline_box = h("div");
   const running = h("div");
   const upcoming = h("div");
   const stored = h("div");
   const grid = h("div", { class: "grid" });
   let span = current_route().query.get("span") === "24h" ? "24h" : "7d";
   let jobs: Job[] = [];
+  let repositories: RepositorySummary[] = [];
+  let histories: Map<string, History> | null = null;
 
   const span_switch = h("div", { class: "segmented", role: "group", "aria-label": "Period" },
     ...(["24h", "7d"] as const).map((value) => h("button", {
@@ -32,7 +36,8 @@ export function overview_view(): View {
         span = value;
         replace_query({ span: value === "7d" ? null : value });
         for (const button of (event.target as HTMLElement).parentElement!.children) button.setAttribute("aria-pressed", String(button.textContent === value));
-        void load(activity, async () => jobs_chart(jobs, span), { quiet: true });
+        void load(activity, async () => job_panels(jobs, span), { quiet: true });
+        if (histories) void load(timeline_box, async () => activity_timeline(repositories, jobs, histories!, span), { quiet: true });
       },
     }, value)));
 
@@ -43,22 +48,29 @@ export function overview_view(): View {
       api<TimerRow[]>("/api/timers"),
     ]), () => void update(false));
     if (answer === null) return;
-    const [repositories, recent, timers] = answer;
+    const [listed, recent, timers] = answer;
+    repositories = listed;
     jobs = recent;
     await Promise.all([
-      load(tiles, async () => overview_tiles(repositories, timers, recent), { quiet }),
-      load(attention, async () => attention_list(repositories, timers), { quiet }),
-      load(ages, async () => backup_ages(repositories), { quiet }),
-      load(activity, async () => jobs_chart(recent, span), { quiet }),
+      load(tiles, async () => overview_tiles(listed, timers, recent), { quiet }),
+      load(attention, async () => attention_list(listed, timers), { quiet }),
+      load(ages, async () => backup_ages(listed), { quiet }),
+      load(storage, async () => storage_bars(listed), { quiet }),
+      load(activity, async () => job_panels(recent, span), { quiet }),
       load(running, async () => running_list(recent), { quiet }),
       load(upcoming, async () => upcoming_list(timers), { quiet }),
-      load(grid, async () => [...repositories].sort((a, b) => status_rank(a) - status_rank(b) || a.name.localeCompare(b.name)).map(repository_card), { quiet }),
+      load(grid, async () => [...listed].sort((a, b) => status_rank(a) - status_rank(b) || a.name.localeCompare(b.name)).map(repository_card), { quiet }),
     ]);
-    // The stored total needs every repository's history, so it loads after the rest is on screen, and only when a poll may have added to it.
-    if (with_history) void load(stored, async () => stored_chart(repositories), { quiet });
+    // The stored total and the archives on the timeline need every repository's history, so they load after the rest is on screen, and the history is fetched again only when a poll may have added to it.
+    if (with_history || histories === null) histories = await fetch_histories(listed);
+    const fetched = histories;
+    await Promise.all([
+      load(stored, async () => stored_chart(listed, fetched), { quiet }),
+      load(timeline_box, async () => activity_timeline(listed, recent, fetched, span), { quiet }),
+    ]);
   };
 
-  for (const target of [tiles, attention, ages, activity, running, upcoming, stored, grid]) target.append(skeleton());
+  for (const target of [tiles, attention, ages, storage, activity, timeline_box, running, upcoming, stored, grid]) target.append(skeleton());
   void update(false);
 
   return {
@@ -70,7 +82,11 @@ export function overview_view(): View {
         section("Needs attention", attention),
         section("Jobs", activity, span_switch),
       ),
-      section("Time since last backup", ages, h("span", { class: "muted small" }, "ticks at the warning and max age")),
+      h("div", { class: "columns" },
+        section("Time since last backup", ages, h("span", { class: "muted small" }, "ticks at the warning and max age")),
+        section("Storage per repository", storage, h("span", { class: "muted small" }, "stored, over the original")),
+      ),
+      section("Activity", timeline_box, h("span", { class: "muted small" }, "jobs and archives, by the period above")),
       h("div", { class: "columns" },
         h("div", { class: "stack" },
           section("Running now", running, h("a", { href: link(["jobs"], { state: "running" }) }, "All running")),
@@ -149,7 +165,68 @@ function backup_ages(repositories: RepositorySummary[]): HTMLElement {
   return meters(rows, "No repositories yet.");
 }
 
-const outcome_parts:[state: Job["state"], label: string, color: string][] = [
+// One bar per repository of what it stores, against the largest, with its original size drawn faintly beneath.
+function storage_bars(repositories: RepositorySummary[]): HTMLElement {
+  const sized = repositories.filter((repository) => repository.stats?.deduplicated_size != null);
+  const largest = Math.max(1, ...sized.map((repository) => Math.max(repository.stats!.deduplicated_size ?? 0, repository.stats!.original_size ?? 0)));
+  const rows = sized.sort((a, b) => (b.stats!.deduplicated_size ?? 0) - (a.stats!.deduplicated_size ?? 0)).map((repository): Meter => {
+    const { original_size: original, deduplicated_size: stored } = repository.stats!;
+    return {
+      label: repository.name,
+      href: link(["repositories", repository.id]),
+      value_text: `${size(stored)} of ${size(original)}`,
+      percent: (stored ?? 0) / largest * 100,
+      color: "var(--series-3)",
+      marks: [],
+      title: original && stored ? `${(original / stored).toFixed(1)}× smaller than the original` : null,
+      behind: { percent: (original ?? 0) / largest * 100, color: "var(--series-1)" },
+    };
+  });
+  return meters(rows, "No sizes yet; they appear after a poll reads each repository's stats.");
+}
+
+// The outcome donut beside the jobs per period.
+function job_panels(jobs: Job[], span: string): HTMLElement {
+  return h("div", { class: "stack" }, outcome_donut(jobs, span), jobs_chart(jobs, span));
+}
+
+// How the finished jobs of the period ended, with the share that succeeded in the middle.
+function outcome_donut(jobs: Job[], span: string): HTMLElement {
+  const since = now_seconds() - (span === "24h" ? day_in_seconds : 7 * day_in_seconds);
+  const inside = jobs.filter((job) => job.started_epoch >= since && job.state !== "running");
+  const parts = outcome_parts.filter(([state]) => state !== "running").map(([state, label, color]) => ({ label, color, value: inside.filter((job) => job.state === state).length }));
+  const succeeded = parts[0].value;
+  return donut(span === "24h" ? "Outcomes, last 24 hours" : "Outcomes, last 7 days", parts,
+    inside.length ? `${Math.round(succeeded / inside.length * 100)}%` : "—", "succeeded", "No job finished in this period.");
+}
+
+// One lane per repository over the period: each job as a span in its outcome's color, and each archive as a tick when it was made.
+function activity_timeline(repositories: RepositorySummary[], jobs: Job[], histories: Map<string, History>, span: string): HTMLElement {
+  const now = now_seconds();
+  const from = now - (span === "24h" ? day_in_seconds : 7 * day_in_seconds);
+  const rows = [...repositories].sort((a, b) => a.name.localeCompare(b.name)).map((repository) => ({
+    label: repository.name,
+    href: link(["repositories", repository.id]),
+    marks: [
+      ...jobs.filter((job) => job.repository_id === repository.id && (job.ended_epoch ?? now) >= from).map((job) => ({
+        start: job.started_epoch, end: job.ended_epoch ?? now, color: job_color(job.state),
+        title: `${job.kind} #${job.id} ${job.state}, ${stamp(job.started_epoch)}, took ${duration((job.ended_epoch ?? now) - job.started_epoch)}`,
+      })),
+      ...(histories.get(repository.id)?.archives ?? []).filter((archive) => archive.epoch >= from).map((archive) => ({
+        start: archive.epoch, end: null, color: "var(--text-heading)", title: `archive ${archive.name}, ${stamp(archive.epoch)}`,
+      })),
+    ],
+  }));
+  return timeline(span === "24h" ? "Last 24 hours" : "Last 7 days", rows, from, now,
+    [...outcome_parts.map(([, label, color]): [string, string] => [label, color]), ["archive", "var(--text-heading)"]],
+    "No jobs or archives in this period.");
+}
+
+function job_color(state: Job["state"]): string {
+  return outcome_parts.find(([candidate]) => candidate === state)![2];
+}
+
+const outcome_parts: [state: Job["state"], label: string, color: string][] = [
   ["succeeded", "succeeded", "var(--status-success)"],
   ["warning", "with warnings", "var(--status-warning)"],
   ["failed", "failed", "var(--status-danger)"],
@@ -203,11 +280,17 @@ function upcoming_list(timers: TimerRow[]): HTMLElement {
   )));
 }
 
-// Sums every repository's stored size per day, carrying each one's last reading forward over days it was not polled.
-async function stored_chart(repositories: RepositorySummary[]): Promise<HTMLElement> {
+// Every repository's history over the stored span, an empty one for any that fails to load.
+async function fetch_histories(repositories: RepositorySummary[]): Promise<Map<string, History>> {
   const since = Math.floor(now_seconds() - stored_span_in_days * day_in_seconds);
   const histories = await Promise.all(repositories.map((repository) =>
-    api<History>(`${repository_path(repository.id)}/history${query({ since })}`).catch(() => ({ polls: [], archives: [] }))));
+    api<History>(`${repository_path(repository.id)}/history${query({ since })}`).catch((): History => ({ polls: [], archives: [] }))));
+  return new Map(repositories.map((repository, index) => [repository.id, histories[index]]));
+}
+
+// Sums every repository's stored size per day, carrying each one's last reading forward over days it was not polled.
+function stored_chart(repositories: RepositorySummary[], by_repository: Map<string, History>): HTMLElement {
+  const histories = repositories.map((repository) => by_repository.get(repository.id) ?? { polls: [], archives: [] });
   const days = new Set<number>();
   for (const history of histories) for (const poll of history.polls) days.add(start_of_day(poll.epoch));
   const ordered = [...days].sort((a, b) => a - b);

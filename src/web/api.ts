@@ -166,7 +166,18 @@ export interface TimerRow {
   last_epoch: number | null;
   result: string | null;
   exit_status: number | null;
+  // When its OnCalendar fires over the coming week; empty for a timer that counts from its last run.
+  upcoming: number[];
   read_epoch: number;
+}
+
+// A run a timer made, or one it should have made, with a result of "missed".
+export interface TimerRun {
+  host: string;
+  unit: string;
+  epoch: number;
+  result: string | null;
+  exit_status: number | null;
 }
 
 export interface RepositoryConfig {

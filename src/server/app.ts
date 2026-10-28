@@ -419,6 +419,11 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return store.timers().filter((timer) => hosts.has(timer.host));
   });
 
+  app.get<{ Querystring: { since?: string } }>("/api/timers/runs", async (request) => {
+    const hosts = new Set(watched_by(request).map(host_name));
+    return store.timer_runs(Number(request.query.since ?? 0)).filter((run) => hosts.has(run.host));
+  });
+
   app.get<{ Querystring: ListQuery }>("/api/events", async (request) => {
     const query = request.query;
     return store.events({

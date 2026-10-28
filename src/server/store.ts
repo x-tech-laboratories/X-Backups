@@ -48,6 +48,21 @@ export interface TimerRow extends Timer {
   read_epoch: number;
 }
 
+// One run of a timer as a read saw it, or one it should have made and did not, with a result of "missed".
+export interface TimerRunRow {
+  host: string;
+  unit: string;
+  epoch: number;
+  result: string | null;
+  exit_status: number | null;
+}
+
+// A timer run is kept this long, enough for several weeks of the calendar.
+const timer_run_retention_in_seconds = 90 * 86400;
+
+// How far before its listed elapse a timer may trigger and still count as that run, for systemd's AccuracySec.
+const timer_trigger_slack_in_seconds = 60;
+
 export interface JobRow extends JobRecord {
   repository_id: string;
   started_epoch: number;
@@ -151,6 +166,20 @@ const SCHEMA = `
     exit_status INTEGER,
     read_epoch INTEGER NOT NULL,
     PRIMARY KEY (host, unit)
+  );
+  CREATE TABLE IF NOT EXISTS timer_runs (
+    host TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    result TEXT,
+    exit_status INTEGER,
+    PRIMARY KEY (host, unit, epoch)
+  );
+  CREATE TABLE IF NOT EXISTS timer_upcoming (
+    host TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    PRIMARY KEY (host, unit, epoch)
   );
   CREATE INDEX IF NOT EXISTS events_by_repository ON events (repository_id, id);
   CREATE INDEX IF NOT EXISTS jobs_by_repository ON jobs (repository_id, id);
@@ -313,21 +342,54 @@ export class Store {
 
   // ── Timers ───────────────────────────────────────────────────────────────
 
-  // Replaces what is known of a host's timers with a fresh read.
+  // Replaces what is known of a host's timers with a fresh read, keeping each run it reports and each one it skipped.
   replace_timers(host: string, timers: Timer[], epoch = now_seconds()): void {
     this.transaction(() => {
+      const before = new Map(this.timers().filter((timer) => timer.host === host).map((timer) => [timer.unit, timer]));
       this.run("DELETE FROM timers WHERE host = ?", host);
+      this.run("DELETE FROM timer_upcoming WHERE host = ?", host);
+      this.run("DELETE FROM timer_runs WHERE host = ? AND epoch < ?", host, epoch - timer_run_retention_in_seconds);
       for (const timer of timers) {
         this.run(
           "INSERT INTO timers (host, unit, service, next_epoch, last_epoch, result, exit_status, read_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
           host, timer.unit, timer.service, timer.next_epoch, timer.last_epoch, timer.result, timer.exit_status, epoch,
         );
+        // A later read of the same run may carry its final result, so it replaces the earlier one.
+        if (timer.last_epoch !== null) {
+          this.run(
+            "INSERT INTO timer_runs (host, unit, epoch, result, exit_status) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET result = excluded.result, exit_status = excluded.exit_status",
+            host, timer.unit, timer.last_epoch, timer.result, timer.exit_status,
+          );
+        }
+        // systemd moved on from the elapse the last read expected, and no run started at or after it.
+        const expected = before.get(timer.unit)?.next_epoch ?? null;
+        const moved_on = expected !== null && expected < epoch && timer.next_epoch !== expected;
+        if (moved_on && (timer.last_epoch ?? 0) < expected - timer_trigger_slack_in_seconds) {
+          this.run("INSERT OR IGNORE INTO timer_runs (host, unit, epoch, result) VALUES (?, ?, ?, 'missed')", host, timer.unit, expected);
+        }
+        for (const elapse of timer.upcoming) this.run("INSERT OR IGNORE INTO timer_upcoming (host, unit, epoch) VALUES (?, ?, ?)", host, timer.unit, elapse);
       }
     });
     this.changed({ kind: "timers", repository_id: null });
   }
 
+  // Every timer run from `since` on, oldest first, with the missed ones marked by a result of "missed".
+  timer_runs(since: number): TimerRunRow[] {
+    return this.all("SELECT * FROM timer_runs WHERE epoch >= ? ORDER BY epoch", since).map((row) => ({
+      host: String(row.host),
+      unit: String(row.unit),
+      epoch: Number(row.epoch),
+      result: row.result === null ? null : String(row.result),
+      exit_status: number_or_null(row.exit_status),
+    }));
+  }
+
   timers(): TimerRow[] {
+    const upcoming = new Map<string, number[]>();
+    for (const row of this.all("SELECT * FROM timer_upcoming ORDER BY epoch")) {
+      const key = `${row.host}\n${row.unit}`;
+      upcoming.set(key, [...(upcoming.get(key) ?? []), Number(row.epoch)]);
+    }
     return this.all("SELECT * FROM timers ORDER BY host, unit").map((row) => ({
       host: String(row.host),
       unit: String(row.unit),
@@ -336,6 +398,7 @@ export class Store {
       last_epoch: number_or_null(row.last_epoch),
       result: row.result === null ? null : String(row.result),
       exit_status: number_or_null(row.exit_status),
+      upcoming: upcoming.get(`${row.host}\n${row.unit}`) ?? [],
       read_epoch: Number(row.read_epoch),
     }));
   }

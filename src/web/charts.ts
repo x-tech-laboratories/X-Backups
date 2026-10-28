@@ -1,4 +1,4 @@
-// Small SVG charts: lines over time, bars, meters, and a pass/fail strip, colored from the page's CSS tokens.
+// Small SVG charts: lines over time, bars, meters, a donut, a timeline and a pass/fail strip, colored from the page's CSS tokens.
 
 import { h } from "./dom.ts";
 
@@ -32,6 +32,15 @@ export interface Meter {
   // Ticks along the meter, as percentages, such as where it starts warning.
   marks: number[];
   title: string | null;
+  // A second, lighter fill drawn under the first, such as a repository's original size beneath what it stores.
+  behind?: { percent: number; color: string };
+}
+
+// One row of a timeline: spans that ran from start to end, and instants drawn as ticks where end is null.
+export interface TimelineRow {
+  label: string;
+  href: string | null;
+  marks: { start: number; end: number | null; color: string; title: string }[];
 }
 
 export interface Cell {
@@ -160,10 +169,100 @@ export function meters(rows: Meter[], message: string): HTMLElement {
       h("span", { class: "meter-value" }, row.value_text),
     ),
     h("div", { class: "meter", role: "meter", "aria-label": row.label, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(row.percent), "aria-valuetext": row.value_text },
+      row.behind && h("span", { class: "meter-fill meter-behind", style: `width: ${row.behind.percent.toFixed(1)}%; background-color: ${row.behind.color}` }),
       h("span", { class: "meter-fill", style: `width: ${row.percent.toFixed(1)}%; background-color: ${row.color}` }),
       ...row.marks.map((mark) => h("span", { class: "meter-mark", style: `left: ${mark.toFixed(1)}%` })),
     ),
   )));
+}
+
+// ── Donut ────────────────────────────────────────────────────────────────────
+
+const donut_size = 120;
+const donut_radius = 46;
+const donut_stroke = 16;
+
+// Parts of one whole as a ring, its headline figure in the middle and each part's count in the legend.
+export function donut(title: string, parts: Bar[], center: string, center_label: string, message: string): HTMLElement {
+  const total = parts.reduce((sum, part) => sum + part.value, 0);
+  if (total === 0) return empty(title, message);
+  const circumference = 2 * Math.PI * donut_radius;
+  let offset = 0;
+  const arcs = parts.filter((part) => part.value > 0).map((part) => {
+    const length = part.value / total * circumference;
+    const arc = svg("circle", {
+      cx: donut_size / 2, cy: donut_size / 2, r: donut_radius, fill: "none", stroke: part.color, "stroke-width": donut_stroke,
+      // A hair short of its share leaves a gap between neighbours; the ring is turned so the first part starts at the top.
+      "stroke-dasharray": `${Math.max(0.5, length - 1.5).toFixed(2)} ${circumference.toFixed(2)}`,
+      "stroke-dashoffset": (-offset).toFixed(2),
+    }, svg("title", {}, `${part.label}: ${part.value}`));
+    offset += length;
+    return arc;
+  });
+  return h("figure", { class: "chart donut" },
+    h("figcaption", {}, title),
+    h("div", { class: "donut-body" },
+      svg("svg", { viewBox: `0 0 ${donut_size} ${donut_size}`, role: "img", "aria-label": `${title}: ${center} ${center_label}` },
+        svg("circle", { cx: donut_size / 2, cy: donut_size / 2, r: donut_radius, fill: "none", class: "donut-track", "stroke-width": donut_stroke }),
+        svg("g", { transform: `rotate(-90 ${donut_size / 2} ${donut_size / 2})` }, ...arcs),
+        svg("text", { x: donut_size / 2, y: donut_size / 2 - 4, "text-anchor": "middle", class: "donut-value" }, center),
+        svg("text", { x: donut_size / 2, y: donut_size / 2 + 14, "text-anchor": "middle", class: "tick" }, center_label),
+      ) as unknown as HTMLElement,
+      h("ul", { class: "donut-legend" }, ...parts.map((part) => h("li", {},
+        h("span", { class: "legend", style: `--swatch: ${part.color}` }, part.label),
+        h("span", { class: "meter-value" }, `${part.value} · ${Math.round(part.value / total * 100)}%`),
+      ))),
+    ),
+  );
+}
+
+// ── Timeline ─────────────────────────────────────────────────────────────────
+
+// Wider than the other charts, since it spans a whole panel and its text should stay at their size.
+const timeline_width = 1100;
+const timeline_label_width = 150;
+const timeline_row_height = 22;
+
+// One lane per row between two instants, with the spans and ticks of each and the day boundaries marked.
+export function timeline(title: string, rows: TimelineRow[], from: number, to: number, legend: [label: string, color: string][], message: string): HTMLElement {
+  if (rows.every((row) => row.marks.length === 0)) return empty(title, message);
+  const lanes_top = margin.top;
+  const chart_height = lanes_top + rows.length * timeline_row_height + margin.bottom;
+  const x = (epoch: number) => timeline_label_width + Math.min(1, Math.max(0, (epoch - from) / (to - from))) * (timeline_width - timeline_label_width - margin.right);
+
+  const days: SVGElement[] = [];
+  const first_day = new Date(from * 1000);
+  first_day.setHours(24, 0, 0, 0);
+  for (let day = first_day.getTime() / 1000; day < to; day += 86400) {
+    days.push(svg("line", { x1: x(day).toFixed(1), y1: lanes_top, x2: x(day).toFixed(1), y2: chart_height - margin.bottom, class: "axis" }));
+  }
+
+  const lanes = rows.flatMap((row, index) => {
+    const middle = lanes_top + index * timeline_row_height + timeline_row_height / 2;
+    const name = row.label.length > 22 ? `${row.label.slice(0, 21)}…` : row.label;
+    const text = svg("text", { x: timeline_label_width - 8, y: middle.toFixed(1), "text-anchor": "end", "dominant-baseline": "middle", class: "lane-label" }, name);
+    return [
+      row.href ? svg("a", { href: row.href }, text, svg("title", {}, row.label)) : text,
+      svg("line", { x1: timeline_label_width, y1: middle.toFixed(1), x2: timeline_width - margin.right, y2: middle.toFixed(1), class: "lane" }),
+      ...row.marks.map((mark) => {
+        const left = x(mark.start);
+        const span = mark.end === null ? 2 : Math.max(3, x(mark.end) - left);
+        const tall = mark.end === null ? 14 : 10;
+        return svg("rect", {
+          x: (left - (mark.end === null ? 1 : 0)).toFixed(1), y: (middle - tall / 2).toFixed(1), width: span.toFixed(1), height: tall, rx: 1, fill: mark.color,
+        }, svg("title", {}, mark.title));
+      }),
+    ];
+  });
+
+  return figure(title, legend,
+    svg("svg", { viewBox: `0 0 ${timeline_width} ${chart_height}`, role: "img", "aria-label": title },
+      ...days,
+      ...lanes,
+      label(timeline_label_width, chart_height - 4, new Date(from * 1000).toLocaleDateString(), "start"),
+      label(timeline_width - margin.right, chart_height - 4, "now", "end"),
+    ),
+  );
 }
 
 // ── Strip ────────────────────────────────────────────────────────────────────
