@@ -493,6 +493,8 @@ function summary(watched: Watched) {
     ...repository_health(watched),
     max_age: repository.max_age,
     warn_age: repository.warn_age,
+    quota: repository.quota,
+    storage: state.storage ?? null,
     last_poll_epoch: state.last_poll_epoch,
     last_backup_epoch: state.last_backup_epoch,
     archive_count: state.archive_count,

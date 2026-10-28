@@ -40,6 +40,10 @@ export interface RepositorySummary {
   max_age: number;
   // 0 when the repository warns only at max_age.
   warn_age: number;
+  // The bytes it may store, or 0 when no quota is set.
+  quota: number;
+  // The filesystem holding a repository on a local path; null over SSH or before a poll reads it.
+  storage: { size: number; available: number; read_epoch: number } | null;
   last_poll_epoch: number | null;
   last_backup_epoch: number | null;
   archive_count: number | null;

@@ -10,7 +10,7 @@ export const field_groups: [title: string, fields: string[]][] = [
   ["Sources", ["source_paths", "exclude", "exclude_from", "exclude_caches", "exclude_if_present", "one_file_system", "compression", "archive_prefix"]],
   ["Retention", ["keep_within", "keep_last", "keep_secondly", "keep_minutely", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly", "prune_match", "prune_after_backup", "compact_after_backup"]],
   ["Checks", ["max_age", "warn_age", "check_units", "check_max_age", "check_warn_age", "check_kinds", "check_verify_data", "canary_path", "canary_interval", "canary_warn_age", "canary_max_age"]],
-  ["Jobs", ["job_nice", "job_io_idle", "inhibit_sleep", "job_lock", "skip_while_active", "backup_lock_wait", "cache_dir", "restore_dir", "browse_limit", "list_archives", "collect_stats"]],
+  ["Jobs", ["job_nice", "job_io_idle", "inhibit_sleep", "job_lock", "skip_while_active", "backup_lock_wait", "cache_dir", "restore_dir", "browse_limit", "list_archives", "collect_stats", "quota"]],
   ["Safety", ["allow_delete", "allow_purge", "purge_match"]],
 ];
 
@@ -35,6 +35,7 @@ const field_hints: Record<string, string> = {
   check_warn_age: "The oldest passing check older than this gives a warning first, such as 14d. Empty leaves it off.",
   canary_warn_age: "A restore canary that last ran longer ago than this gives a warning, such as 2d. Empty leaves it off.",
   canary_max_age: "A restore canary that last ran longer ago than this fails the repository, such as 3d. Empty leaves it off.",
+  quota: "The most this repository should store, such as 500G or 2T, which its storage bar is drawn against. Empty uses the free space of a local repository's filesystem.",
   source_paths: "One path per line. Leave empty when the host's own backup job sets them.",
   exclude: "One borg pattern per line.",
   check_kinds: "One per line: a check kind (repository, archives, data, extract) and its maximum age, such as data 30d.",

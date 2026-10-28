@@ -92,13 +92,21 @@ export interface RepositoryState {
   stats: RepositoryStats | null;
   canary: CanaryRecord | null;
   checks: ChecksRecord | null;
+  // The filesystem holding a repository on a local path; null for one reached over SSH, whose host borg serve guards.
+  storage?: StorageRecord | null;
   last_poll_epoch: number | null;
+}
+
+export interface StorageRecord {
+  size: number;
+  available: number;
+  read_epoch: number;
 }
 
 export function empty_state(): RepositoryState {
   return {
     archives: [], repository: {}, archive_count: null, last_backup_epoch: null,
-    stats: null, canary: null, checks: null, last_poll_epoch: null,
+    stats: null, canary: null, checks: null, storage: null, last_poll_epoch: null,
   };
 }
 

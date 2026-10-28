@@ -52,6 +52,7 @@ export const borg_fields: { [field in keyof Required<BorgConfig>]: FieldKind } =
   repo: "string",
   max_age: "duration",
   warn_age: "duration",
+  quota: "number_or_string",
   passphrase: "string",
   passphrase_file: "string",
   passphrase_command: "string",

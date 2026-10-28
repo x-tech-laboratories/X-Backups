@@ -52,6 +52,15 @@ export const PRUNE_LINE = new RegExp(
 // ── Values ───────────────────────────────────────────────────────────────────
 
 // Formats a raw byte count.
+// A size in bytes, or with a unit as borg's --storage-quota spells one, such as "500G" or "2T", in powers of 1024 as format_size writes them.
+export function parse_size(value: number | string): number {
+  if (typeof value === "number") return Math.trunc(value);
+  const match = /^(\d+(?:\.\d+)?)\s*([kmgtp]?)i?b?$/i.exec(value.trim());
+  if (match === null) throw new Error(`Unrecognised size: '${value}'. Use e.g. '500G', '2T' or a number of bytes.`);
+  const power = match[2] ? "kmgtp".indexOf(match[2].toLowerCase()) + 1 : 0;
+  return Math.round(Number(match[1]) * 1024 ** power);
+}
+
 export function format_size(size: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   for (const unit of units) {

@@ -84,7 +84,7 @@ export function overview_view(): View {
       ),
       h("div", { class: "columns" },
         section("Time since last backup", ages, h("span", { class: "muted small" }, "ticks at the warning and max age")),
-        section("Storage per repository", storage, h("span", { class: "muted small" }, "stored, over the original")),
+        section("Storage per repository", storage, h("span", { class: "muted small" }, `against its quota or disk; ticks at ${storage_warning_percent}% and ${storage_danger_percent}%`)),
       ),
       section("Activity", timeline_box, h("span", { class: "muted small" }, "jobs and archives, by the period above")),
       h("div", { class: "columns" },
@@ -165,12 +165,36 @@ function backup_ages(repositories: RepositorySummary[]): HTMLElement {
   return meters(rows, "No repositories yet.");
 }
 
-// One bar per repository of what it stores, against the largest, with its original size drawn faintly beneath.
+// A storage bar turns amber at the first share of its limit and red at the second, as BorgWarehouse colours its quota bars.
+const storage_warning_percent = 75;
+const storage_danger_percent = 90;
+
+// One bar per repository: what it stores against its quota, or how full its filesystem is, or failing both what it stores
+// against the largest, with its original size drawn faintly beneath.
 function storage_bars(repositories: RepositorySummary[]): HTMLElement {
-  const sized = repositories.filter((repository) => repository.stats?.deduplicated_size != null);
-  const largest = Math.max(1, ...sized.map((repository) => Math.max(repository.stats!.deduplicated_size ?? 0, repository.stats!.original_size ?? 0)));
-  const rows = sized.sort((a, b) => (b.stats!.deduplicated_size ?? 0) - (a.stats!.deduplicated_size ?? 0)).map((repository): Meter => {
-    const { original_size: original, deduplicated_size: stored } = repository.stats!;
+  const sized = repositories.filter((repository) => repository.stats?.deduplicated_size != null || repository.storage !== null);
+  const largest = Math.max(1, ...sized.map((repository) => Math.max(repository.stats?.deduplicated_size ?? 0, repository.stats?.original_size ?? 0)));
+  const rows = sized.sort((a, b) => (b.stats?.deduplicated_size ?? 0) - (a.stats?.deduplicated_size ?? 0)).map((repository): Meter => {
+    const { original_size: original, deduplicated_size: stored } = repository.stats ?? { original_size: null, deduplicated_size: null };
+    const limited = (percent: number, value_text: string, title: string): Meter => ({
+      label: repository.name,
+      href: link(["repositories", repository.id]),
+      value_text,
+      percent: Math.min(100, percent),
+      color: percent >= storage_danger_percent ? "var(--status-danger)" : percent >= storage_warning_percent ? "var(--status-warning)" : "var(--series-3)",
+      marks: [storage_warning_percent, storage_danger_percent],
+      title,
+    });
+    if (repository.quota > 0) {
+      const percent = (stored ?? 0) / repository.quota * 100;
+      return limited(percent, `${size(stored)} of ${size(repository.quota)} quota · ${Math.round(percent)}%`, "Stored against the quota set for this repository");
+    }
+    if (repository.storage !== null) {
+      const used = repository.storage.size - repository.storage.available;
+      const percent = used / repository.storage.size * 100;
+      return limited(percent, `${size(repository.storage.available)} free of ${size(repository.storage.size)} · ${Math.round(percent)}% full`,
+        `The filesystem holding the repository, read ${age(repository.storage.read_epoch)}; it stores ${size(stored)}`);
+    }
     return {
       label: repository.name,
       href: link(["repositories", repository.id]),

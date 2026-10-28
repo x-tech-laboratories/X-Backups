@@ -277,6 +277,31 @@ describe("freshness", () => {
   });
 });
 
+// ── Storage ──────────────────────────────────────────────────────────────────
+
+describe("storage", () => {
+  it("reads a local repository's filesystem with df, and keeps the last reading when df fails", () => {
+    const harness = make({ ...BASE_CFG, repo: "/srv/local", collect_stats: false });
+    const df = cmd_result(0, "     1B-blocks       Avail\n4000000000000 1000000000000\n", "");
+    harness.run_cycle((_command, index) => [cmd_result(0, list_json(now() - 3600), ""), df][index]);
+    expect(harness.repository.state.storage).toMatchObject({ size: 4_000_000_000_000, available: 1_000_000_000_000 });
+
+    harness.run_cycle((_command, index) => [cmd_result(0, list_json(now() - 3600), ""), cmd_result(1, "", "df: no such file")][index]);
+    expect(harness.repository.state.storage).toMatchObject({ size: 4_000_000_000_000 });
+  });
+
+  it("reads no filesystem for a repository over SSH", () => {
+    expect(make().repository.poll_plan().map(([name]) => name)).not.toContain("space");
+  });
+
+  it("reads a quota in bytes or with a unit", () => {
+    expect(make({ ...BASE_CFG, quota: "500G" }).repository.quota).toBe(500 * 1024 ** 3);
+    expect(make({ ...BASE_CFG, quota: "1.5T" }).repository.quota).toBe(1.5 * 1024 ** 4);
+    expect(make({ ...BASE_CFG, quota: 2048 }).repository.quota).toBe(2048);
+    expect(() => make({ ...BASE_CFG, quota: "lots" })).toThrow("Unrecognised size");
+  });
+});
+
 // ── Logging ──────────────────────────────────────────────────────────────────
 
 describe("logging", () => {

@@ -225,6 +225,8 @@ function repository_facts(repository: RepositoryDetail): HTMLElement {
       ["Original", size(original)],
       ["Compressed", size(repository.stats?.compressed_size)],
       ["Stored", size(stored)],
+      ["Space", repository.quota > 0 ? `${size(repository.quota)} quota`
+        : repository.storage ? `${size(repository.storage.available)} free of ${size(repository.storage.size)}` : "—"],
       ["Saved", original && stored ? `${(original / stored).toFixed(1)}× smaller` : "—"],
     ]),
     h("div", { class: "verdicts" },

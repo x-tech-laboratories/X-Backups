@@ -127,6 +127,11 @@ Each `*_max_age` makes a repository critical and each `*_warn_age` gives a warni
 `canary_*` for when the restore canary last ran. A warning age of 0 is off, as is `canary_max_age`
 by default.
 
+A repository's storage bar on the overview is drawn against its `quota` (such as `500G` or `2T`)
+when one is set, and otherwise against the free space of its filesystem, which each poll reads with
+`df` for a repository on a local path. A repository reached over SSH has no free space to read, since
+its storage host allows only `borg serve`. The bar turns amber at 75 % and red at 90 %.
+
 Anyone who can log in to a page that edits the config can make X-Backups run commands as its user,
 through fields such as `rsh`, `borg_bin` and `passphrase_command`.
 

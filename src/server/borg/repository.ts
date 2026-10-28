@@ -16,7 +16,7 @@ import { cancel_command, launch_command, parse_launch, parse_poll, poll_command,
 import { format_age, format_duration, parse_duration } from "./durations.ts";
 import {
   LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, diff_line, format_size, is_object, parse_diff,
-  parse_listing, type ArchiveEntry, type DiffChange, type ListingEntry,
+  parse_listing, parse_size, type ArchiveEntry, type DiffChange, type ListingEntry,
 } from "./parsing.ts";
 import {
   BASE_DIR_VAR, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
@@ -25,6 +25,7 @@ import {
 import {
   ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
   type DownloadPlan, type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
+  type StorageRecord,
 } from "./types.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
   repo?: string;
   max_age?: number | string;
   warn_age?: number | string;
+  quota?: number | string;
   passphrase?: string;
   passphrase_file?: string;
   passphrase_command?: string;
@@ -146,6 +148,8 @@ export class BorgRepository {
   max_age: number;
   // Each warning age gives a warning before its maximum age turns critical; zero leaves it off.
   warn_age: number;
+  // The most the repository may store, in bytes, which its storage bar is drawn against; zero leaves it to the filesystem.
+  quota: number;
   passphrase: string | null;
   passphrase_file: string | null;
   passphrase_command: string | null;
@@ -213,6 +217,7 @@ export class BorgRepository {
     this.max_age = parse_duration(config.max_age ?? "1d");
     this.warn_age = parse_duration(config.warn_age ?? 0);
     if (this.warn_age > 0 && this.warn_age >= this.max_age) throw new Error("warn_age must be shorter than max_age");
+    this.quota = parse_size(config.quota ?? 0);
     this.passphrase = config.passphrase ?? null;
     this.passphrase_file = config.passphrase_file ?? null;
     this.passphrase_command = config.passphrase_command ?? null;
@@ -359,7 +364,15 @@ export class BorgRepository {
     const archive = this.canary_archive();
     if (archive && this.canary_due()) calls.push(...this.canary_calls(archive));
     if (this.check_units.length > 0) calls.push(["checks", check_unit_script(this.check_units)]);
+    const path = this.local_path();
+    if (path !== null) calls.push(["space", `df -B1 --output=size,avail -- ${shell_quote(path)}`]);
     return calls;
+  }
+
+  // The repository's folder when it is on the host itself, the only case whose free space a poll can read.
+  private local_path(): string | null {
+    if (!this.repo || this.repo.includes("://") || /^[^/]*:/.test(this.repo)) return null;
+    return this.repo;
   }
 
   private read_options(): { persistent_cache: boolean } {
@@ -419,7 +432,8 @@ export class BorgRepository {
     if (!this.repo) return [];
     const plan = this.poll_plan();
     this.poll_calls = plan.map(([name]) => name);
-    return plan.map(([, text]) => ({ text: with_passphrase(text), timeout, stdin: this.stdin_for([text]) }));
+    // df needs no passphrase, so it is not handed one.
+    return plan.map(([name, text]) => name === "space" ? { text, timeout, stdin: null } : { text: with_passphrase(text), timeout, stdin: this.stdin_for([text]) });
   }
 
   private running_job(): JobRecord | null {
@@ -483,6 +497,9 @@ export class BorgRepository {
       logs.push(...stats.logs);
       if (stats.merged_archives !== null) state.archives = stats.merged_archives;
     }
+
+    const space = by_name.get("space");
+    if (space !== undefined) state.storage = parse_space(space) ?? state.storage ?? null;
 
     const extras = [this.fold_canary(by_name, state, logs), this.fold_checks(by_name, state, logs)];
     if (extras.includes("failed")) status = "failed";
@@ -1428,6 +1445,13 @@ function utc_compact_stamp(date: Date): string {
 // The diff cache's key for an archive and the one before it.
 function diff_key(older: string | null, archive: string): string {
   return `${older ?? ""}\n${archive}`;
+}
+
+// The filesystem size and free bytes from `df --output=size,avail`'s last line, or null when df failed.
+function parse_space(result: CmdResult): StorageRecord | null {
+  const numbers = result.exit_code === 0 ? result.stdout.trim().split("\n").at(-1)?.trim().split(/\s+/).map(Number) : undefined;
+  if (numbers?.length !== 2 || numbers.some((value) => !Number.isFinite(value))) return null;
+  return { size: numbers[0], available: numbers[1], read_epoch: now_seconds() };
 }
 
 // Why a folder cannot be restored into, or null: it must be absolute, plain, and not hold `.` or `..` steps.
