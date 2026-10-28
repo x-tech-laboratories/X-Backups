@@ -258,6 +258,12 @@ describe("freshness", () => {
     expect(harness.outcomes.latest_status()).toBe("online");
   });
 
+  it("calls an archive past warn_age but within max_age a warning", () => {
+    const harness = make({ ...BASE_CFG, warn_age: "12h" });
+    collect(harness, cmd_result(0, list_json(now() - 18 * 3600), ""));
+    expect(harness.outcomes.latest_status()).toBe("warning");
+  });
+
   it("calls a stale archive failed", () => {
     const harness = make();
     collect(harness, cmd_result(0, list_json(now() - 3 * 24 * 3600), ""));

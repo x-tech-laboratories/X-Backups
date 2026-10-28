@@ -486,7 +486,17 @@ export class BorgRepository {
 
     const extras = [this.fold_canary(by_name, state, logs), this.fold_checks(by_name, state, logs)];
     if (extras.includes("failed")) status = "failed";
+    else if (status === "online" && this.past_warning_age(state, view.newest_epoch)) status = "warning";
     return new CollectResult({ state, logs, status });
+  }
+
+  // Whether the newest archive, the oldest passing check or the canary is past its warning age; each age is off at zero.
+  private past_warning_age(state: RepositoryState, newest_epoch: number): boolean {
+    const now = now_seconds();
+    const past = (epoch: number | null | undefined, limit: number) => limit > 0 && Boolean(epoch) && now - epoch! > limit;
+    return past(newest_epoch, this.warn_age)
+      || past(state.checks?.oldest_ok_epoch, this.check_warn_age)
+      || (this.canary_path !== null && past(state.canary?.checked_epoch, this.canary_warn_age));
   }
 
   private repo_detail_logs(view: RepoView): LogEntry[] {
