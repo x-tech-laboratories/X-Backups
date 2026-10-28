@@ -69,9 +69,11 @@ export function until(epoch: number | null): string {
 
 export function duration(seconds: number | null): string {
   if (seconds === null) return "—";
+  // Settings such as max_age are often whole days or hours, which read better without a decimal.
+  if (seconds >= 86400 && seconds % 86400 === 0) return `${seconds / 86400}d`;
   if (seconds < 120) return `${Math.round(seconds)}s`;
   if (seconds < 7200) return `${Math.round(seconds / 60)}m`;
-  if (seconds < 172800) return `${(seconds / 3600).toFixed(1)}h`;
+  if (seconds < 172800) return seconds % 3600 === 0 ? `${seconds / 3600}h` : `${(seconds / 3600).toFixed(1)}h`;
   return `${Math.round(seconds / 86400)}d`;
 }
 
