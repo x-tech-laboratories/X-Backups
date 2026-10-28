@@ -128,6 +128,9 @@ adapted where a task changes a contract.
 16. [ ] **Cutover.**
     - [x] Deploy beside X-Monitor against the same repositories (Heimdall, `backups.heimdall.technet`, 2026-10-26).
     - [ ] Compare the two for a few days.
+    - [ ] Import X-Monitor's borg history before its borg plugin goes, with
+      `npm run import-x-monitor -- <x-monitor.db> <x-backups.sqlite> <monitor>=<repository>...`
+      (`--dry-run` first); it fills only the polls older than each repository's first own one.
     - Remove X-Monitor's borg plugin: `x_monitor/plugins/borg/`, its tests, its `config.yaml`
       example, `borgPassphraseFile` in `nix/module.nix`, and the borg meter in
       `x_monitor/core/ui/views/fleet.py`.
@@ -232,7 +235,10 @@ mounts) is now in: tasks 35–37 and 47–56.
     the folder itself only when it is empty or missing, so a restore never overwrites files.
 33. [ ] **Paused repositories and storage.** A declared paused flag that keeps a repository listed
     but silences staleness, an append-only badge, and free space and quota on the storage host
-    (BorgWarehouse).
+    (BorgWarehouse). Storage is built: a `quota` setting, `df` of a local repository's filesystem
+    on each poll, and the overview's storage bars against either, amber at 75 % and red at 90 %.
+    A repository over SSH has no free space to read, since its host allows only `borg serve`. The
+    paused flag and the append-only badge are left.
 34. [ ] **borgmatic awareness.** On borgmatic hosts, show each check type's last run from
     borgmatic's state directory, recognise `borgmatic.timer`, and warn when an archive's file
     count drifts far from the previous one, a cheap form of the spot check (task 21 settles the
