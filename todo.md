@@ -661,8 +661,12 @@ and 56.
     entities, and the Overview reports targets.
 68. [ ] **Access per job.** A grant on a job shows its targets, runs, sources and repositories. A
     repository grant becomes grants on the jobs that write there.
-69. [ ] **Nix module.** Declare `hosts`, `repositories`, `sources` and `jobs`, each locked on the page
+69. [x] **Nix module.** Declare `hosts`, `repositories`, `sources` and `jobs`, each locked on the page
     when declared, and `nixosModules.agent` for managed hosts.
+    Built in `nix/module.nix`: each kind is an attribute set of freeform entries with typed options
+    for its key fields, written into the config file with its name. A flat repository entry is
+    written as before, byte for byte, and `config.ts` tells it apart. With `configMode` declarative,
+    a job naming an undeclared source or repository fails evaluation.
 
 ## Apps to review for features
 

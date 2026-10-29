@@ -112,15 +112,43 @@ The flake's `nixosModules.default` runs X-Backups as a service:
 services.x-backups = {
   enable = true;
   passwordHashFile = "/run/secrets/x-backups-password-hash";
-  repositories.fileserver = {
-    host = "fileserver.example.org";
-    repo = "ssh://borg@storage.example.org/./fileserver";
-    passphraseFile = "/run/secrets/borg-fileserver";
+  hosts = {
+    fileserver.address = "fileserver.example.org";
+    storage = { kind = "storage-only"; address = "storage.example.org"; };
   };
+  repositories.offsite = {
+    host = "storage";
+    repo = "ssh://borg@storage.example.org/./fileserver";
+    passphraseFile = "/run/secrets/borg-offsite";
+  };
+  sources.fileserver-data = { host = "fileserver"; source_paths = [ "/srv/data" ]; };
+  jobs.nightly = { sources = [ "fileserver-data" ]; repositories = [ "offsite" ]; keep_daily = 7; };
 };
 ```
 
-Each repository takes the fields of a flat entry (see Config). Borg on this machine reaches an
+`hosts`, `repositories`, `sources` and `jobs` are keyed by name and take the fields of their kind
+in `config.example.json`, other than `name`; fields the module has no option for, such as a job's
+`tasks`, are written as given. Each one declared here is locked on the page. A repository's
+passphrase goes in `passphraseFile`, which systemd loads as a credential, never in `passphrase`.
+With `configMode` declarative, evaluation fails when a job names a source or repository not
+declared here; in `mixed` and `page` modes the page may add it.
+
+A repository entry of the older flat shape still works unchanged: one whose `host` is an address
+rather than a declared host's name, or that holds fields a repository does not, such as
+`source_paths`, is written as given and expanded as a flat entry (see Config).
+
+A managed host other than this server runs `nixosModules.agent`, pointed at this server with the
+token an admin issues for it (see Agents). The fileserver above enables it in its own configuration:
+
+```nix
+services.x-backups-agent = {
+  enable = true;
+  url = "wss://backups.example.org/api/agent";
+  tokenFile = "/run/secrets/x-backups-agent-token";
+};
+```
+
+Borg on this machine reaches an
 `ssh://` repository through the system's ssh, whose host keys come from `programs.ssh.knownHosts`.
 A restart of the service stops only the server, so a backup its built-in agent started keeps going.
 After changing `package-lock.json`, update `npmDepsHash` in
