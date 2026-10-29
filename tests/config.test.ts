@@ -31,6 +31,7 @@ describe("config loading", () => {
   it("stops on a file without a repositories list", () => {
     expect(() => parse_config("{}", "test.json")).toThrow('"repositories" list');
     expect(() => parse_config("{", "test.json")).toThrow("not valid JSON");
+    expect(() => parse_config('{ "repositories": [], "jobs": {} }', "test.json")).toThrow('"jobs" must be a list');
   });
 
   it("names the repository with a bad entry", () => {

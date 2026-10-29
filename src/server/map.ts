@@ -1,4 +1,10 @@
-// Which host's folders each repository backs up and which host stores it, read from the repositories' own config.
+// Which host's folders each target backs up and which host stores its repository, read from the configured hosts and
+// repositories, or from the repo URL for a config built by hand.
+
+// ── Imports ──────────────────────────────────────────────────────────────────
+
+import { as_list } from "./borg/shell.ts";
+import type { Entities, RepositoryConfig } from "./config.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -7,6 +13,8 @@ export interface MapEntry {
   name: string;
   // Where borg runs; null is this server.
   host: string | null;
+  // The host holding the repository; null is this server, and absent reads it from the repo URL.
+  stored_on?: string | null;
   repo: string | null;
   source_paths: string[];
 }
@@ -53,7 +61,8 @@ export function backup_map(entries: MapEntry[], server_name: string): BackupMap 
   const repositories = entries.map((entry): MapRepository => {
     const runs_on = add_host(entry.host ?? server_name);
     const location = repo_location(entry.repo ?? "");
-    const stored_on = location.host === null ? runs_on : add_host(location.host);
+    const stored_on = entry.stored_on !== undefined ? add_host(entry.stored_on ?? server_name)
+      : location.host === null ? runs_on : add_host(location.host);
     const source_ids = entry.source_paths.map((path) => {
       const id = `${runs_on}:${path}`;
       if (!sources.has(id)) sources.set(id, { id, host: runs_on, path });
@@ -67,6 +76,22 @@ export function backup_map(entries: MapEntry[], server_name: string): BackupMap 
     sources: [...sources.values()].sort((left, right) => left.path.localeCompare(right.path)),
     repositories,
   };
+}
+
+// Each target as the map takes it, its hosts named by the configured hosts; a managed host with no address is this server.
+export function map_entry(target: RepositoryConfig, entities: Entities | null): MapEntry {
+  const entry = { id: target_id_of(target), name: target.name, host: target.host, repo: target.borg.repo ?? null, source_paths: as_list(target.borg.source_paths) };
+  if (entities === null || target.target === undefined) return entry;
+  const host_named = (name: string) => {
+    const host = entities.hosts.find((item) => item.name === name);
+    return host === undefined || (host.kind === "managed" && host.address === null) ? null : host.name;
+  };
+  const repository = entities.repositories.find((item) => item.name === target.target!.repository);
+  return { ...entry, host: host_named(target.target.host), stored_on: repository === undefined ? undefined : host_named(repository.host) };
+}
+
+function target_id_of(target: RepositoryConfig): string {
+  return target.borg.id ?? target.name;
 }
 
 // The host a repo URL reaches and the folder on it; a plain path has no host, so it is on the machine borg runs on.

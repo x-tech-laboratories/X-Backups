@@ -4,7 +4,7 @@
 
 import { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionPlan, type CmdResult, type MonitorStatus } from "./borg/types.ts";
-import type { Config, RepositoryConfig } from "./config.ts";
+import { target_id, type Config, type Entities, type RepositoryConfig } from "./config.ts";
 import { host_health_command, parse_host_health } from "./host_health.ts";
 import { run_command, stream_command, type CommandStream, type RunOptions, type RunTarget, type StreamOptions } from "./runner.ts";
 import type { Store } from "./store.ts";
@@ -44,6 +44,8 @@ const longest_action_in_seconds = 6 * 60 * 60;
 
 export class Poller {
   readonly repositories = new Map<string, Watched>();
+  // The hosts, repositories, sources and jobs the targets come from; none for a config built by hand.
+  entities: Entities | null;
   private readonly store: Store;
   private readonly run: Run;
   private readonly stream_run: Stream;
@@ -60,11 +62,12 @@ export class Poller {
     this.store = store;
     this.run = run;
     this.stream_run = stream_run;
+    this.entities = config.entities ?? null;
     for (const repository_config of config.repositories) this.watch(repository_config);
   }
 
   private watch(repository_config: RepositoryConfig): Watched {
-    const repository = new BorgRepository(repository_config.name, repository_config.borg);
+    const repository = new BorgRepository(repository_config.name, repository_config.borg, repository_config.scope);
     repository.state = this.store.load_state(repository.id) ?? repository.state;
     repository.jobs = this.store.jobs_for(repository.id);
     const status = this.store.polls(repository.id).at(-1)?.status ?? null;
@@ -76,7 +79,8 @@ export class Poller {
   // Takes a changed config without a restart: new repositories are polled at once, changed ones start over from
   // their stored state, and removed ones stop being polled while their history stays in the store.
   apply_config(config: Config): void {
-    const next = new Map(config.repositories.map((repository_config) => [repository_config.borg.id ?? repository_config.name, repository_config]));
+    this.entities = config.entities ?? null;
+    const next = new Map(config.repositories.map((repository_config) => [target_id(repository_config), repository_config]));
     for (const id of this.repositories.keys()) {
       if (next.has(id)) continue;
       clearTimeout(this.timers.get(id));

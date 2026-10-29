@@ -9,7 +9,7 @@ import fastify_static from "@fastify/static";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import { register_auth, visible, type ProxyLogin } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
-import { backup_map } from "./map.ts";
+import { backup_map, map_entry } from "./map.ts";
 import { metrics_text } from "./metrics.ts";
 import type { OidcClient } from "./oidc.ts";
 import { browser_rows } from "./borg/parsing.ts";
@@ -284,9 +284,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // Which host's folders each repository backs up and where it is stored, with each repository's health.
   app.get("/api/map", async (request) => {
     const shown = watched_by(request);
-    const map = backup_map(shown.map(({ repository, config }) => ({
-      id: repository.id, name: repository.name, host: config.host, repo: repository.repo, source_paths: repository.source_paths,
-    })), options.server_name ?? hostname());
+    const map = backup_map(shown.map(({ config }) => map_entry(config, poller.entities)), options.server_name ?? hostname());
     return {
       ...map,
       repositories: map.repositories.map((placed, index) => ({ ...summary(shown[index]), ...placed, retention: shown[index].repository.retention })),
@@ -299,9 +297,11 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const watched = find(request.params.id, reply);
     if (watched === null) return reply;
     const { name, host, ssh_user, interval_in_seconds, borg, source } = watched.config;
-    const fields = sources?.entry(name) ?? mask({ name, host, ssh_user, interval: interval_in_seconds, ...borg });
+    // A job's target has no entry of its own, so it shows its built fields and is changed through its entities.
+    const written = sources?.entry(name) ?? null;
+    const fields = written ?? mask({ name, host, ssh_user, interval: interval_in_seconds, ...borg });
     const may_edit = Boolean(sources?.editable) && has_role(request.viewer!.role, "admin");
-    return { source, editable: may_edit && source === "page", config_mode: sources?.mode ?? "declarative", fields };
+    return { source, editable: may_edit && source === "page" && written !== null, config_mode: sources?.mode ?? "declarative", fields };
   });
 
   // ── Config ───────────────────────────────────────────────────────────────

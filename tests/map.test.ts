@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { backup_map, repo_location } from "../src/server/map.ts";
+import { parse_config } from "../src/server/config.ts";
+import { backup_map, map_entry, repo_location } from "../src/server/map.ts";
 
 describe("repo_location", () => {
   it("reads the host and path of an ssh URL", () => {
@@ -38,5 +39,35 @@ describe("backup_map", () => {
       { id: "server", stored_on: "heimdall", path: "/Storage/Backups/Server", sources: ["heimdall:/Storage/Services", "heimdall:/Storage/Apps"] },
       { id: "watched", stored_on: "10.100.100.6", path: "/srv/repo", sources: [] },
     ]);
+  });
+});
+
+describe("map_entry", () => {
+  it("places targets by the configured hosts rather than their URLs", () => {
+    const config = parse_config(JSON.stringify({
+      hosts: [{ name: "odin", address: "10.0.0.5" }, { name: "heimdall" }, { name: "vault", kind: "storage-only" }],
+      repositories: [
+        { name: "offsite", host: "vault", repo: "ssh://borg@10.0.0.9/./offsite" },
+        { name: "server", host: "heimdall", repo: "/Storage/Backups/Server" },
+      ],
+      sources: [{ name: "home", host: "odin", source_paths: ["/home"] }],
+      jobs: [{ name: "daily", sources: ["home"], repositories: ["offsite", "server"] }],
+    }), "test.json");
+
+    const map = backup_map(config.repositories.map((target) => map_entry(target, config.entities!)), "Heimdall");
+
+    expect(map.hosts).toEqual([{ id: "odin", name: "Odin" }, { id: "vault", name: "Vault" }, { id: "heimdall", name: "Heimdall" }]);
+    expect(map.repositories).toEqual([
+      { id: "daily:odin:offsite", stored_on: "vault", path: "/./offsite", sources: ["odin:/home"] },
+      { id: "daily:odin:server", stored_on: "heimdall", path: "/Storage/Backups/Server", sources: ["odin:/home"] },
+    ]);
+  });
+
+  it("draws a flat config as it reads its URLs", () => {
+    const config = parse_config(JSON.stringify({ repositories: [{ name: "to-heimdall", host: "odin.technet", repo: "ssh://borg@heimdall.technet/srv/repo", source_paths: ["/home"] }] }), "test.json");
+
+    const map = backup_map(config.repositories.map((target) => map_entry(target, config.entities!)), "Heimdall");
+
+    expect(map.repositories).toEqual([{ id: "to-heimdall", stored_on: "heimdall", path: "/srv/repo", sources: ["odin:/home"] }]);
   });
 });

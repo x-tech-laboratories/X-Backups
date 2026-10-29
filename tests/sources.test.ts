@@ -148,3 +148,62 @@ describe("defaults", () => {
     expect(mixed.settings().find((setting) => setting.name === "browse_limit")!.source).toBe("default");
   });
 });
+
+// ── Entities ─────────────────────────────────────────────────────────────────
+
+describe("page entities", () => {
+  it("adds hosts, repositories, sources and jobs that build targets", () => {
+    const mixed = sources("mixed");
+    mixed.save_entity("hosts", { name: "odin", address: "odin.technet" }, null);
+    mixed.save_entity("repositories", { name: "disk", host: "odin", repo: "/srv/borg" }, null);
+    mixed.save_entity("sources", { name: "home", host: "odin", source_paths: ["/home"] }, null);
+    const config = mixed.save_entity("jobs", { name: "daily", sources: ["home"], repositories: ["disk"] }, null);
+
+    expect(config.repositories.map((target) => [target.name, target.source])).toEqual([["nas", "declared"], ["daily:odin:disk", "page"]]);
+    expect(page_file()).toMatchObject({ hosts: [{ name: "odin" }], sources: [{ name: "home" }], jobs: [{ name: "daily" }] });
+    expect(sources("mixed").config().repositories).toHaveLength(2);
+  });
+
+  it("refuses a job naming what is not there, and writes nothing", () => {
+    const mixed = sources("mixed");
+
+    expect(() => mixed.save_entity("jobs", { name: "daily", sources: ["home"], repositories: ["nas"] }, null)).toThrow("no source named 'home'");
+    expect(page_file).toThrow();
+  });
+
+  it("refuses deleting an entity another names, until that one goes", () => {
+    const mixed = sources("mixed");
+    mixed.save_entity("hosts", { name: "odin" }, null);
+    mixed.save_entity("sources", { name: "home", host: "odin", source_paths: ["/home"] }, null);
+    mixed.save_entity("jobs", { name: "daily", sources: ["home"], repositories: ["nas"] }, null);
+
+    expect(() => mixed.delete_entity("hosts", "odin")).toThrow("The host 'odin' is used by source 'home'");
+    expect(() => mixed.delete_entity("sources", "home")).toThrow("used by job 'daily'");
+    expect(() => mixed.delete_entity("repositories", "nas")).toThrow("declared in the Nix configuration");
+    mixed.delete_entity("jobs", "daily");
+    mixed.delete_entity("sources", "home");
+    mixed.delete_entity("hosts", "odin");
+    expect(page_file()).toMatchObject({ hosts: [], sources: [], jobs: [] });
+  });
+
+  it("lets a declared entity shadow a page one per kind", () => {
+    const mixed = sources("mixed");
+    mixed.save_entity("hosts", { name: "odin", address: "page.technet" }, null);
+    writeFileSync(declared_path, JSON.stringify({ hosts: [{ name: "odin", address: "declared.technet" }], repositories: [{ name: "nas", host: "odin", repo: "/srv/nas" }] }));
+
+    const reread = sources("mixed");
+
+    expect(reread.shadowed("hosts")).toEqual(["odin"]);
+    expect(reread.shadowed()).toEqual([]);
+    expect(reread.config().repositories[0]).toMatchObject({ name: "nas", host: "declared.technet" });
+  });
+
+  it("keeps a passphrase file only for a repository", () => {
+    const mixed = sources("mixed");
+    mixed.save_entity("hosts", { name: "odin" }, null);
+    mixed.save_entity("repositories", { name: "disk", host: "odin", repo: "/srv/borg", passphrase: "correct horse" }, null);
+
+    expect(JSON.stringify(page_file())).not.toContain("correct horse");
+    expect(mixed.entry("disk")).toMatchObject({ passphrase_file: join(directory, "state", "passphrases", "disk") });
+  });
+});

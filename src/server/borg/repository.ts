@@ -90,6 +90,13 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
   check_kinds?: Record<string, number | string>;
 }
 
+// What a target narrows its repository to: the archives it lists and judges fresh, and the target that offers the
+// repository's own actions, compact and check, when that is another one polling the same repository.
+export interface TargetScope {
+  list_match?: string | null;
+  repository_actions_on?: string | null;
+}
+
 // Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
 export function topmost_excluded(flag: string): string {
   return `awk -v flag=${shell_quote(flag + " ")} '/^__x_backups_rc=/ { rc = substr($0, 16); next } ` +
@@ -200,6 +207,8 @@ export class BorgRepository {
   inhibit_sleep: boolean;
   job_lock: string | null;
   check_kinds: Record<string, number>;
+  list_match: string | null;
+  repository_actions_on: string | null;
 
   poll_calls: string[] = [];
   private polling_job: JobRecord | null = null;
@@ -208,7 +217,7 @@ export class BorgRepository {
   // Each diffed pair's changes, keyed by both names since a prune can change the archive before one.
   private diffs = new Map<string, { changes: DiffChange[]; more: boolean }>();
 
-  constructor(name: string, config: BorgConfig) {
+  constructor(name: string, config: BorgConfig, scope: TargetScope = {}) {
     this.name = name;
     this.id = config.id ?? name;
     this.timeout = parse_duration(config.timeout ?? BorgRepository.DEFAULT_TIMEOUT);
@@ -284,6 +293,8 @@ export class BorgRepository {
     if (unknown.length > 0) {
       throw new Error(`check_kinds has unknown kinds ${JSON.stringify(unknown)}; use repository, archives, data or extract`);
     }
+    this.list_match = scope.list_match ?? null;
+    this.repository_actions_on = scope.repository_actions_on ?? null;
   }
 
   // ── Building borg commands ─────────────────────────────────────────────────
@@ -383,14 +394,19 @@ export class BorgRepository {
     // Never add --bypass-lock to a read: borg rewrites the index on open, and unlocked mid-compaction that corrupts it.
     const command = this.borg_version === 2 ? "repo-list" : "list";
     return this.build([
-      this.borg_bin, command, "--last", String(this.list_archives), "--json", "--lock-wait", String(this.lock_wait), ...this.repo_args(),
+      this.borg_bin, command, "--last", String(this.list_archives), ...this.list_scope(), "--json", "--lock-wait", String(this.lock_wait), ...this.repo_args(),
     ], this.read_options());
   }
 
   info_command(): string {
     return this.build([
-      this.borg_bin, "info", "--json", "--last", String(this.list_archives), "--lock-wait", String(this.lock_wait), ...this.repo_args(),
+      this.borg_bin, "info", "--json", "--last", String(this.list_archives), ...this.list_scope(), "--lock-wait", String(this.lock_wait), ...this.repo_args(),
     ], this.read_options());
+  }
+
+  // A target lists only its own archives, so another target's newer archive never makes it look fresh.
+  private list_scope(): string[] {
+    return this.list_match === null ? [] : this.match_args(this.list_match);
   }
 
   backup_command(options: { archive_name?: string; dry_run?: boolean } = {}): string {
@@ -692,7 +708,7 @@ export class BorgRepository {
     if (this.canary_path) {
       actions.push({ name: "Verify Restore", action_id: "verify_restore", detached: true });
     }
-    if (this.repo) {
+    if (this.repo && this.repository_actions_on === null) {
       actions.push(
         { name: "Check", action_id: "check_repo", job: Object.keys(CHECK_KINDS).map(check_job_kind) },
         { name: "Compact", action_id: "compact_repo", job: "compact" },
@@ -760,6 +776,12 @@ export class BorgRepository {
   }
 
   // An action outcome that reports a problem without touching the monitor's status.
+  // Compact and the repository check run once for the whole repository, from the target that offers them.
+  private repository_refusal(): CollectResult | null {
+    if (this.repository_actions_on === null) return null;
+    return BorgRepository.refused(`Compact and check act on the whole repository, so they run from ${this.repository_actions_on}`);
+  }
+
   private static refused(message: string): CollectResult {
     return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: false });
   }
@@ -1049,7 +1071,7 @@ export class BorgRepository {
     if (!Object.hasOwn(CHECK_KINDS, kind)) {
       return BorgRepository.refused(`Unknown check kind '${kind}': use ${Object.keys(CHECK_KINDS).join(", ")}`);
     }
-    const refusal = this.job_refusal("check the repository");
+    const refusal = this.repository_refusal() ?? this.job_refusal("check the repository");
     if (refusal) return refusal;
     if (kind === "extract") {
       const newest = this.state.archives[0]?.name ?? null;
@@ -1062,7 +1084,7 @@ export class BorgRepository {
   }
 
   compact_repo(): ActionStart {
-    const refusal = this.job_refusal("compact the repository");
+    const refusal = this.repository_refusal() ?? this.job_refusal("compact the repository");
     if (refusal) return refusal;
     return this.launch("compact", this.maintenance_command(["compact", "--progress", ...this.repo_args()]));
   }

@@ -1,8 +1,8 @@
 // Combines the declared config file with the one the page edits, by the mode X_BACKUPS_CONFIG_MODE names.
 //
-// declarative: only the declared file counts and the page edits nothing. mixed: the declared file's repositories
-// are locked and the page may add its own. page: the declared file is optional and the page manages the rest.
-// A declared repository shadows a page one of the same name, and a declared default wins over a saved one.
+// declarative: only the declared file counts and the page edits nothing. mixed: the declared file's entities are
+// locked and the page may add its own. page: the declared file is optional and the page manages the rest. A declared
+// host, repository, source or job shadows a page one of the same kind and name, and a declared default wins over a saved one.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
@@ -10,8 +10,8 @@ import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
-  ConfigError, check_defaults, check_repositories, default_settings, is_plain_object, name_pattern, parse_document, read_text,
-  type Config, type ConfigDocument, type RepositoryConfig,
+  ConfigError, check_defaults, compile_config, default_settings, entity_kinds, is_plain_object, name_pattern, parse_document, read_text,
+  tag_entries, type Config, type ConfigDocument, type ConfigSource, type Entities, type EntityKind, type EntityLists,
 } from "./config.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -34,6 +34,8 @@ export interface SourceOptions {
 export const SECRET_MASK = "(set)";
 
 const modes: ConfigMode[] = ["declarative", "mixed", "page"];
+
+const entity_labels: Record<EntityKind, string> = { hosts: "host", repositories: "repository", sources: "source", jobs: "job" };
 
 // ── Sources ──────────────────────────────────────────────────────────────────
 
@@ -71,30 +73,32 @@ export class ConfigSources {
 
   // ── Reading ──────────────────────────────────────────────────────────────
 
-  // Every repository to watch: the declared ones, then the page's that no declared one shadows.
+  // Every entity in force, each kind the declared ones then the page's that no declared one shadows, and the targets they build.
   config(): Config {
-    const defaults = this.defaults();
-    const declared = check_repositories(this.declared.repositories, defaults, "declared");
-    const taken = new Set(declared.map((repository) => repository.name));
-    const page = check_repositories(this.page.repositories.filter((entry) => !taken.has(String(entry.name))), defaults, "page");
-    return { repositories: [...declared, ...page] };
+    const lists = {} as EntityLists;
+    for (const kind of entity_kinds) {
+      const taken = new Set(this.declared[kind].map((entry) => String(entry.name)));
+      const page = this.page[kind].filter((entry) => !taken.has(String(entry.name)));
+      lists[kind] = [...tag_entries(this.declared[kind], "declared"), ...tag_entries(page, "page")];
+    }
+    return compile_config(lists, this.defaults());
   }
 
-  // Page repositories a declared one of the same name hides, so the page can say so.
-  shadowed(): string[] {
-    const declared = new Set(this.declared.repositories.map((entry) => String(entry.name)));
-    return this.page.repositories.map((entry) => String(entry.name)).filter((name) => declared.has(name));
+  // Page entities a declared one of the same kind and name hides, so the page can say so.
+  shadowed(kind: EntityKind = "repositories"): string[] {
+    const declared = new Set(this.declared[kind].map((entry) => String(entry.name)));
+    return this.page[kind].map((entry) => String(entry.name)).filter((name) => declared.has(name));
   }
 
-  source_of(name: string): RepositoryConfig["source"] | null {
-    if (this.declared.repositories.some((entry) => entry.name === name)) return "declared";
-    if (this.page.repositories.some((entry) => entry.name === name)) return "page";
+  source_of(name: string, kind: EntityKind = "repositories"): ConfigSource | null {
+    if (this.declared[kind].some((entry) => entry.name === name)) return "declared";
+    if (this.page[kind].some((entry) => entry.name === name)) return "page";
     return null;
   }
 
   // The entry as written, with secrets masked, for the page to show or edit.
-  entry(name: string): Record<string, unknown> | null {
-    const entry = [...this.declared.repositories, ...this.page.repositories].find((item) => item.name === name);
+  entry(name: string, kind: EntityKind = "repositories"): Record<string, unknown> | null {
+    const entry = [...this.declared[kind], ...this.page[kind]].find((item) => item.name === name);
     return entry === undefined ? null : mask(entry);
   }
 
@@ -113,33 +117,47 @@ export class ConfigSources {
 
   // ── Writing ──────────────────────────────────────────────────────────────
 
-  // Adds the page repository, or replaces the one of the same name, after checking the whole config still holds.
   save_repository(entry: Record<string, unknown>, replacing: string | null): Config {
+    return this.save_entity("repositories", entry, replacing);
+  }
+
+  delete_repository(name: string): Config {
+    return this.delete_entity("repositories", name);
+  }
+
+  // Adds the page entity, or replaces the one of the same kind and name, after checking the whole config still holds.
+  save_entity(kind: EntityKind, entry: Record<string, unknown>, replacing: string | null): Config {
     this.refuse_unless_editable();
-    if (!is_plain_object(entry)) throw new ConfigError("The repository must be an object.");
+    const label = entity_labels[kind];
+    if (!is_plain_object(entry)) throw new ConfigError(`The ${label} must be an object.`);
     const name = String(entry.name ?? "");
     if (!name_pattern.test(name)) throw new ConfigError("The name must be letters, digits, '.', '_' or '-'.", "name");
-    if (replacing !== null && name !== replacing) throw new ConfigError("A repository cannot be renamed; add a new one instead.", "name");
-    if (this.declared.repositories.some((item) => item.name === name)) {
+    if (replacing !== null && name !== replacing) throw new ConfigError(`A ${label} cannot be renamed; add a new one instead.`, "name");
+    if (this.declared[kind].some((item) => item.name === name)) {
       throw new ConfigError(`'${name}' is declared in the Nix configuration, so it is changed there.`, "name");
     }
-    const previous = this.page.repositories.find((item) => item.name === name) ?? null;
-    if (replacing === null && previous !== null) throw new ConfigError(`A repository named '${name}' already exists.`, "name");
-    if (replacing !== null && previous === null) throw new ConfigError(`No page repository named '${name}'.`, "name");
+    const previous = this.page[kind].find((item) => item.name === name) ?? null;
+    if (replacing === null && previous !== null) throw new ConfigError(`A ${label} named '${name}' already exists.`, "name");
+    if (replacing !== null && previous === null) throw new ConfigError(`No page ${label} named '${name}'.`, "name");
 
-    const cleaned = this.with_secrets_kept(entry, previous);
-    const repositories = [...this.page.repositories.filter((item) => item.name !== name), cleaned.entry];
-    const next = { ...this.page, repositories };
+    const cleaned = this.with_secrets_kept(kind, entry, previous);
+    const next = { ...this.page, [kind]: [...this.page[kind].filter((item) => item.name !== name), cleaned.entry] };
     const config = this.checked({ next });
     if (cleaned.passphrase !== null) this.write_passphrase(name, cleaned.passphrase);
     this.write(next);
     return config;
   }
 
-  delete_repository(name: string): Config {
+  // Removes the page entity, refusing while another entity names it.
+  delete_entity(kind: EntityKind, name: string): Config {
     this.refuse_unless_editable();
-    if (this.source_of(name) === "declared") throw new ConfigError(`'${name}' is declared in the Nix configuration, so it is removed there.`);
-    const next = { ...this.page, repositories: this.page.repositories.filter((item) => item.name !== name) };
+    const label = entity_labels[kind];
+    const source = this.source_of(name, kind);
+    if (source === "declared") throw new ConfigError(`'${name}' is declared in the Nix configuration, so it is removed there.`);
+    if (source === null) throw new ConfigError(`No page ${label} named '${name}'.`);
+    const user = users_of(this.config().entities!, kind, name)[0];
+    if (user !== undefined) throw new ConfigError(`The ${label} '${name}' is used by ${user}, so change that first.`);
+    const next = { ...this.page, [kind]: this.page[kind].filter((item) => item.name !== name) };
     const config = this.checked({ next });
     this.write(next);
     return config;
@@ -177,8 +195,8 @@ export class ConfigSources {
     }
   }
 
-  // A masked secret keeps the previous value; a typed passphrase goes to its own file, never into the JSON.
-  private with_secrets_kept(entry: Record<string, unknown>, previous: Record<string, unknown> | null): { entry: Record<string, unknown>; passphrase: string | null } {
+  // A masked secret keeps the previous value; a repository's typed passphrase goes to its own file, never into the JSON.
+  private with_secrets_kept(kind: EntityKind, entry: Record<string, unknown>, previous: Record<string, unknown> | null): { entry: Record<string, unknown>; passphrase: string | null } {
     const result: Record<string, unknown> = {};
     for (const [field, value] of Object.entries(entry)) {
       if (value === null || value === undefined || value === "") continue;
@@ -189,6 +207,7 @@ export class ConfigSources {
       result[field] = value;
     }
     let passphrase: string | null = null;
+    if (kind !== "repositories") return { entry: result, passphrase };
     if (typeof result.passphrase === "string") {
       passphrase = result.passphrase;
       delete result.passphrase;
@@ -216,7 +235,26 @@ export class ConfigSources {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function empty_document(): ConfigDocument {
-  return { defaults: {}, repositories: [] };
+  return { defaults: {}, hosts: [], repositories: [], sources: [], jobs: [] };
+}
+
+// The entities that name this one, described for a refusal; a flat entry's own expansion does not count.
+function users_of(entities: Entities, kind: EntityKind, name: string): string[] {
+  switch (kind) {
+    case "hosts":
+      return [
+        ...entities.repositories
+          .filter((repository) => repository.expanded_from === null && (repository.host === name || repository.poll_via === name || Object.hasOwn(repository.repo_by_host, name)))
+          .map((repository) => `repository '${repository.name}'`),
+        ...entities.sources.filter((source) => source.expanded_from === null && source.host === name).map((source) => `source '${source.name}'`),
+      ];
+    case "sources":
+      return entities.jobs.filter((job) => job.sources.includes(name)).map((job) => `job '${job.name}'`);
+    case "repositories":
+      return entities.jobs.filter((job) => job.expanded_from !== name && job.repositories.includes(name)).map((job) => `job '${job.name}'`);
+    case "jobs":
+      return [];
+  }
 }
 
 // Writes beside the file and renames over it, so a crash never leaves half a file, readable only by this user.
