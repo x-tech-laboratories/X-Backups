@@ -628,9 +628,15 @@ and 56.
     `job:host:repository`, each listing and pruning only `{job}-{host}-????-??-??T*`; a flat entry keeps
     its name as its target and its archive prefix. `ConfigSources` saves and deletes each kind with
     `save_entity` and `delete_entity`, and the map places targets by the configured hosts.
-64. [ ] **Store and runs.** Key state, polls, archives and events by target, with host, job and
+64. [x] **Store and runs.** Key state, polls, archives and events by target, with host, job and
     repository ids beside. Rename the `jobs` table, `/api/jobs` and the Jobs page to runs, each run
     with its task and target. Old rows move to the targets their flat entries expand into.
+    Built in `src/server/store.ts`, whose migration renames `repository_id` to `target_id`, `jobs`
+    to `runs` and `job_output` to `run_output`, and whose `adopt_targets` fills each row's host, job
+    and repository and moves host rows from an address to the host's name. `/api/runs` filters by
+    target, host, job and repository; a grant on a repository's name covers its targets; compact
+    after a backup runs only from the target that offers the repository's actions. Left for 66:
+    filling `task`, and one compact after all of a repository's backups.
 65. [ ] **Agent.** `src/agent/`, shipped as `packages.agent` with a NixOS module. It dials the server's
     WebSocket with its host's token, runs the commands it is sent, streams their output, keeps a run
     going across a server restart and reports it on reconnect, stops one on request, and sends host

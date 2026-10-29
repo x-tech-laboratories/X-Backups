@@ -74,9 +74,10 @@ its target and its archives' prefix.
 ## Users and access
 
 The password hash file logs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds
-other users on the Users page, each with a role and the repositories they see:
+other users on the Users page, each with a role and the repositories they see; a repository shows
+every job target that writes to it:
 
-- `viewer` sees status, history, jobs and events.
+- `viewer` sees status, history, runs and events.
 - `operator` also runs actions, restores, and reads and downloads what is inside archives.
 - `admin` also changes the config, users and API tokens.
 
