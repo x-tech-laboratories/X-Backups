@@ -12,30 +12,39 @@ X-Monitor keeps only the job of watching X-Backups itself.
 X-Backups does one thing, so it leaves out X-Monitor's general machinery: no plugin loader, monitor
 graph, groups, triggers, agent, sync or per-plugin UI contract.
 
-- One Node process. Repositories come from one JSON file the Nix module writes; a restart reloads it.
-- `src/server/borg/` builds commands and reads their output, and never runs anything. A runner runs the
-  commands, a SQLite store keeps state, a loop polls, Fastify routes expose it, the page shows it.
-- Each repository keeps one typed state record (archives, repo info, canary, checks, last poll), not
-  X-Monitor's metric and metadata string bags read back through `MetricReader`.
-- Each borg call is its own SSH command over one multiplexed connection (`ControlMaster`), not
-  several calls framed into one shell command and split apart again.
-- Long jobs run as transient systemd units on the target (`systemd-run`): they survive an X-Backups
-  restart, `journalctl` gives their output, and `systemctl stop` cancels them. Verify Restore and
-  Diff are read-only, so they run as ordinary calls.
-- Declared repositories stay scheduled by each host's own timers (borgmatic or NixOS
-  `services.borgbackup`), which X-Backups watches. Page-managed repositories can be scheduled by
-  X-Backups itself (task 49).
-- `/api/health` reports each repository's status and X-Monitor alerts on it; X-Backups' own
+- One Node process, the single place backups are defined, started and watched. Config comes from
+  the JSON file the Nix module writes plus the page's own, as hosts, repositories, sources and jobs.
+- `src/server/borg/` builds commands and reads their output, and never runs anything. Agents run the
+  commands, a SQLite store keeps state, a scheduler starts tasks, a loop polls, Fastify routes expose
+  it, the page shows it.
+- Every managed host runs the X-Backups agent, which dials out to the server over a WebSocket with
+  its own token and runs what it is sent. The server's own machine has an agent built in. There is
+  no SSH runner and no `systemd-run`; a storage host that allows only `borg serve` is reached by
+  borg itself from an agent host.
+- Each target (one job, source host and repository) keeps one typed state record (archives, repo
+  info, canary, checks, last poll).
+- `/api/health` reports each target's status and X-Monitor alerts on it; X-Backups' own
   notifications (task 50) sit beside that.
+
+## Entity model
+
+- **Host:** one machine. *Managed* hosts run an agent; *storage-only* hosts hold repositories
+  reached through `borg serve` or a hosted service.
+- **Repository:** a borg repository on a host, with its URL, passphrase, quota and borg version,
+  and its own tasks: compact, repository check, break lock.
+- **Source:** paths and excludes on one managed host.
+- **Job:** any number of sources to any number of repositories, with retention, compression,
+  archive naming and freshness limits, and its tasks: backup, prune, archive check, canary.
+- **Target:** derived, one per job, source host and repository; it holds status and freshness.
+- **Task:** a step of a job or a repository with its own frequency. **Run:** one execution of a
+  task, or of an action started by hand.
+
+A repository with no job stays watched, as one filled by a host's own borgmatic timer is.
 
 ## Open questions
 
-- Do all repository hosts have systemd and allow `sudo systemd-run` for the SSH user? If not, keep
-  the `setsid` jobs in `src/server/borg/detached.ts` and skip task 4.
-- Are there repositories on hosts SSH cannot reach, such as a laptop that sleeps (X-Monitor reaches
-  those through its agent today)? Task 56's agent covers them.
-- Does any host lack its own backup timer? Task 49's scheduler covers it (cron parsing is in
-  `../X-Monitor/x_monitor/core/coordination/schedule.py`).
+Settled on 2026-10-29: agents replace SSH, written in TypeScript in this repository; access is
+granted per job; the Nix module declares hosts, repositories, sources and jobs.
 
 ## Tasks
 
@@ -602,6 +611,39 @@ what each of the other apps does. These are tasks 47–56, to be built after the
     `check_warn_age` or `canary_warn_age` shows a warning in `/api/health` and on its card, but its
     poll status badge still reads online, since only `max_age` sets the status in
     `src/server/borg/repository.ts`. Let the warning ages set the poll status to warning too.
+
+### Entities, agents and the scheduler
+
+Decided on 2026-10-29: the entity model above, with agents in place of SSH and X-Backups starting
+every backup itself. Take these in order; each lands on its own branch. They replace tasks 4, 49
+and 56.
+
+63. [ ] **Entity config.** `hosts`, `repositories`, `sources` and `jobs` sections in the config file
+    and the page's `config.json`, each checked and cross-referenced, with the declared-shadows-page
+    rule per entity. A flat entry of today's shape still loads, expanded into one of each. Every
+    `BorgConfig` field moves to the entity it describes. Each job expands into targets, and each
+    target builds the `BorgRepository` the poller and actions already use. Archive names become
+    `{job}-{host}-{time}` so prune and freshness can tell targets apart.
+64. [ ] **Store and runs.** Key state, polls, archives and events by target, with host, job and
+    repository ids beside. Rename the `jobs` table, `/api/jobs` and the Jobs page to runs, each run
+    with its task and target. Old rows move to the targets their flat entries expand into.
+65. [ ] **Agent.** `src/agent/`, shipped as `packages.agent` with a NixOS module. It dials the server's
+    WebSocket with its host's token, runs the commands it is sent, streams their output, keeps a run
+    going across a server restart and reports it on reconnect, stops one on request, and sends host
+    health. The server enrols a host by issuing its token, built into the server for its own
+    machine. Remove `src/server/runner.ts`'s SSH, `src/server/borg/detached.ts`'s `setsid` jobs and
+    `sshKeyFile`.
+66. [ ] **Scheduler.** Each task has a frequency (a duration or a calendar expression) with presets
+    and a readable description, enable and disable, and Run now. X-Backups starts each due task on
+    its agent, runs a missed one when the agent reconnects, and queues tasks that share a repository
+    lock. Host timers are still read where an agent finds them, for repositories with no job.
+67. [ ] **Pages.** Hosts (agent state, health, enrolment), Sources, Jobs (definitions, targets,
+    tasks and their schedules) and Runs, beside Repositories with its own tasks. The Map draws the
+    entities, and the Overview reports targets.
+68. [ ] **Access per job.** A grant on a job shows its targets, runs, sources and repositories. A
+    repository grant becomes grants on the jobs that write there.
+69. [ ] **Nix module.** Declare `hosts`, `repositories`, `sources` and `jobs`, each locked on the page
+    when declared, and `nixosModules.agent` for managed hosts.
 
 ## Apps to review for features
 
