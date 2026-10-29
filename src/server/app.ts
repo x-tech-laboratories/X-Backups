@@ -6,10 +6,11 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
+import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, type Scope, type World } from "./access.ts";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import type { AgentHub } from "./agents/hub.ts";
 import { register_agent_route } from "./agents/route.ts";
-import { register_auth, visible, type ProxyLogin } from "./auth.ts";
+import { register_auth, type ProxyLogin } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
 import { backup_map, map_entry } from "./map.ts";
 import { metrics_text } from "./metrics.ts";
@@ -20,7 +21,7 @@ import { CollectResult, type ActionStart } from "./borg/types.ts";
 import { host_name, type Poller, type Watched } from "./poller.ts";
 import { ConfigError, default_settings, field_list, is_own_host, target_key, type Config, type HostKind } from "./config.ts";
 import { mask, type ConfigSources } from "./sources.ts";
-import type { Change, RunRow, Store } from "./store.ts";
+import type { Change, RunRow, Store, VisibleRows } from "./store.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
@@ -117,28 +118,49 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   const agents = options.agents ?? poller.agents;
 
   const accounts = new Accounts(store, { name: options.admin_name ?? "admin", password_hash: options.password_hash });
-  // A grant names a target by its id or by its repository's name, so a grant on a repository covers every target writing there.
-  const grant_names = (target_id: string): string[] => {
-    const repository = store.target(target_id)?.repository;
-    return repository === undefined || repository === target_id ? [target_id] : [target_id, repository];
-  };
-  const sees = (request: FastifyRequest, target_id: string, repository: string | null = null): boolean =>
-    visible(request, repository === null ? grant_names(target_id) : [target_id, repository]);
 
-  register_auth(app, { accounts, oidc: options.oidc, proxy: options.proxy, grant_names });
+  // ── Access ───────────────────────────────────────────────────────────────
+
+  // The configured targets and entities access.ts works out what each viewer sees from.
+  const world = (): World => ({
+    targets: [...poller.repositories.values()].map(({ config }) => ({ ...target_key(config), sources: config.target?.sources ?? [] })),
+    entities: poller.entities,
+  });
+
+  // What the viewer sees, or null for everything.
+  const scope = (request: FastifyRequest): Scope | null => scope_of(request.viewer?.grants ?? null, world());
+
+  register_auth(app, {
+    accounts, oidc: options.oidc, proxy: options.proxy,
+    sees_target: (request, target_id) => sees(scope(request), { kind: "target", target_id }),
+  });
   await register_agent_route(app, agents);
 
-  // The repositories this viewer sees.
-  const watched_by = (request: FastifyRequest): Watched[] =>
-    [...poller.repositories.values()].filter((watched) => sees(request, watched.repository.id));
-
-  // The target ids and repository names a list is narrowed to, or undefined when the viewer sees them all.
-  const granted = (request: FastifyRequest): string[] | undefined => request.viewer?.repositories ?? undefined;
-
-  const visible_run = (request: FastifyRequest, id: string) => {
-    const run = store.run_row(Number(id));
-    return run !== null && sees(request, run.target_id, run.repository) ? run : null;
+  // The targets this viewer sees.
+  const watched_by = (request: FastifyRequest): Watched[] => {
+    const shown = scope(request);
+    return [...poller.repositories.values()].filter((watched) => sees(shown, { kind: "target", target_id: watched.repository.id }));
   };
+
+  // The rows a list of runs or events is narrowed to, or undefined when the viewer sees everything.
+  const visible_rows = (request: FastifyRequest): VisibleRows | undefined => {
+    const shown = scope(request);
+    return shown === null ? undefined : { targets: [...shown.targets], repositories: [...shown.repositories] };
+  };
+
+  const run_seen = (shown: Scope | null, run: RunRow | null): RunRow | null =>
+    run !== null && sees(shown, { kind: "run", target_id: run.target_id, repository: run.repository, run_kind: run.kind }) ? run : null;
+
+  const visible_run = (request: FastifyRequest, id: string) => run_seen(scope(request), store.run_row(Number(id)));
+
+  // Acting on the whole repository needs an admin, or a viewer who sees every job writing there.
+  const whole_repository = (request: FastifyRequest, watched: Watched): boolean =>
+    has_role(request.viewer!.role, "admin") || sees_whole_repository(scope(request), target_key(watched.config).repository, world());
+
+  const refuse_whole_repository = (reply: FastifyReply, watched: Watched, what: string) =>
+    reply.code(403).send({
+      error: `${what} acts on the whole repository '${target_key(watched.config).repository}', so it needs an admin or access to every job writing there.`,
+    });
 
   // Keeps who ran an action beside what it did, so the events say who pruned or purged.
   const note_actor = (request: FastifyRequest, target_id: string, what: string) => {
@@ -187,7 +209,9 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       allow_delete: repository.allow_delete,
       restore_dir: repository.restore_dir,
       downloads: poller.downloads(repository.id),
-      actions: repository.get_actions().map((action) => ({ ...action, state: repository.action_state(action) })),
+      actions: repository.get_actions()
+        .filter((action) => !repository_actions.has(action.action_id) || whole_repository(request, watched))
+        .map((action) => ({ ...action, state: repository.action_state(action) })),
     };
   });
 
@@ -205,6 +229,9 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       if (watched === null) return reply;
       const start_action = actions[request.params.action];
       if (start_action === undefined) return reply.code(404).send({ error: `No action '${request.params.action}'.` });
+      if (repository_actions.has(request.params.action) && !whole_repository(request, watched)) {
+        return refuse_whole_repository(reply, watched, request.params.action.replaceAll("_", " "));
+      }
       const id = watched.repository.id;
       note_actor(request, id, `asked for ${request.params.action.replaceAll("_", " ")}${request.body?.archive ? ` on ${request.body.archive}` : ""}`);
       return outcome(id, await settle(id, start_action(watched.repository, request.body ?? {})));
@@ -413,7 +440,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Querystring: ListQuery }>("/api/runs", async (request) => {
     const query = request.query;
     return store.runs({
-      ...target_filter(query), granted: granted(request), kind: query.kind, state: query.state,
+      ...target_filter(query), visible: visible_rows(request), kind: query.kind, state: query.state,
       since_epoch: number_or_undefined(query.since),
       limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
     }).map(with_retry);
@@ -429,6 +456,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const run = visible_run(request, request.params.id);
     const watched = run ? poller.repositories.get(run.target_id) : undefined;
     if (!run || !watched) return reply.code(404).send({ error: "No such run." });
+    if (acts_on_whole_repository(run.kind) && !whole_repository(request, watched)) return refuse_whole_repository(reply, watched, `Cancelling a ${run.kind}`);
     if (watched.repository.runs?.running()?.id !== run.id) return reply.code(409).send({ error: "That run is not going." });
     note_actor(request, run.target_id, `cancelled ${run.kind} #${run.id}`);
     return outcome(run.target_id, await poller.cancel_run(run.target_id));
@@ -439,6 +467,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const run = visible_run(request, request.params.id);
     const watched = run ? poller.repositories.get(run.target_id) : undefined;
     if (!run || !watched) return reply.code(404).send({ error: "No such run." });
+    if (acts_on_whole_repository(run.kind) && !whole_repository(request, watched)) return refuse_whole_repository(reply, watched, `Running a ${run.kind} again`);
     if (run.state === "running") return reply.code(409).send({ error: "That run is still going." });
     const retry = retry_action(run.kind);
     if (retry === null) return reply.code(409).send({ error: `A ${run.kind} is started again from its archive.` });
@@ -447,32 +476,20 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return outcome(run.target_id, await settle(run.target_id, actions[action_id](watched.repository, body)));
   });
 
-  // A host's timers show to whoever sees one of its repositories.
+  // A host's timers show to whoever sees the host.
   app.get("/api/timers", async (request) => {
-    const hosts = new Set(watched_by(request).map(host_name));
-    return store.timers().filter((timer) => hosts.has(timer.host));
+    const shown = scope(request);
+    return store.timers().filter((timer) => sees(shown, { kind: "host", name: timer.host }));
   });
 
   // ── Hosts ────────────────────────────────────────────────────────────────
 
-  // The hosts a viewer sees: every one for a viewer of every target, else those its targets run on or are stored on.
-  const visible_hosts = (request: FastifyRequest): Set<string> | null => {
-    if (granted(request) === undefined) return null;
-    const names = new Set<string>();
-    for (const watched of watched_by(request)) {
-      names.add(host_name(watched));
-      const repository = poller.entities?.repositories.find((item) => item.name === target_key(watched.config).repository);
-      if (repository !== undefined) names.add(repository.host);
-    }
-    return names;
-  };
-
-  // Each configured host with its agent's connection, its enrolment and its newest health reading.
+  // Each configured host the viewer sees, with its agent's connection, its enrolment and its newest health reading.
   app.get("/api/hosts", async (request) => {
-    const shown = visible_hosts(request);
+    const shown = scope(request);
     const enrolments = new Map(agents.enrolments().map((enrolment) => [enrolment.host, enrolment]));
     const samples = new Map(store.latest_host_samples().map(({ host, ...sample }) => [host, sample]));
-    return configured_hosts(poller).filter((host) => shown === null || shown.has(host.name)).map((host) => {
+    return configured_hosts(poller).filter((host) => sees(shown, { kind: "host", name: host.name })).map((host) => {
       const status = agents.status(host.name);
       const enrolment = enrolments.get(host.name);
       const remote = status !== null && !status.built_in;
@@ -510,19 +527,19 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   });
 
   app.get<{ Querystring: { since?: string } }>("/api/hosts/samples", async (request) => {
-    const hosts = new Set(watched_by(request).map(host_name));
-    return store.host_samples(Number(request.query.since ?? 0)).filter((sample) => hosts.has(sample.host));
+    const shown = scope(request);
+    return store.host_samples(Number(request.query.since ?? 0)).filter((sample) => sees(shown, { kind: "host", name: sample.host }));
   });
 
   app.get<{ Querystring: { since?: string } }>("/api/timers/runs", async (request) => {
-    const hosts = new Set(watched_by(request).map(host_name));
-    return store.timer_runs(Number(request.query.since ?? 0)).filter((run) => hosts.has(run.host));
+    const shown = scope(request);
+    return store.timer_runs(Number(request.query.since ?? 0)).filter((run) => sees(shown, { kind: "host", name: run.host }));
   });
 
   app.get<{ Querystring: ListQuery }>("/api/events", async (request) => {
     const query = request.query;
     return store.events({
-      ...target_filter(query), granted: granted(request), level: query.level,
+      ...target_filter(query), visible: visible_rows(request), level: query.level,
       limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
     });
   });
@@ -536,8 +553,12 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const stream = reply.raw;
     stream.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     stream.write("retry: 5000\n\n");
+    // A change of a target the viewer does not see is left out, unless it is a repository's own run they see.
     const send = (change: Change) => {
-      if (change.target_id === null || sees(request, change.target_id)) stream.write(`data: ${JSON.stringify(change)}\n\n`);
+      const shown = scope(request);
+      const seen = change.target_id === null || sees(shown, { kind: "target", target_id: change.target_id })
+        || (change.run_id !== undefined && run_seen(shown, store.run_row(change.run_id)) !== null);
+      if (seen) stream.write(`data: ${JSON.stringify(change)}\n\n`);
     };
     const keepalive = setInterval(() => stream.write(": keepalive\n\n"), stream_keepalive_in_milliseconds);
     store.changes.on("change", send);

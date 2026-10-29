@@ -21,14 +21,23 @@ describe("users", () => {
     expect(accounts.authenticate("admin", "wrong", undefined).user).toBeNull();
   });
 
-  it("adds a user with a role and repositories, and refuses bad ones", () => {
-    accounts.create_user({ name: "alice", role: "operator", repositories: ["odin"], password: "a long enough pass" });
+  it("adds a user with a role and grants, and refuses bad ones", () => {
+    accounts.create_user({ name: "alice", role: "operator", grants: [{ job: "odin" }], password: "a long enough pass" });
 
-    expect(accounts.authenticate("alice", "a long enough pass", undefined).user).toMatchObject({ role: "operator", repositories: ["odin"] });
-    expect(() => accounts.create_user({ name: "alice", role: "viewer", repositories: null, password: "a long enough pass" })).toThrow("already exists");
-    expect(() => accounts.create_user({ name: "Bob Smith", role: "viewer", repositories: null, password: "a long enough pass" })).toThrow("lowercase");
-    expect(() => accounts.create_user({ name: "bob", role: "root", repositories: null, password: "a long enough pass" })).toThrow("role must be");
-    expect(() => accounts.create_user({ name: "bob", role: "viewer", repositories: null, password: "short" })).toThrow("at least 12");
+    expect(accounts.authenticate("alice", "a long enough pass", undefined).user).toMatchObject({ role: "operator", grants: [{ job: "odin" }] });
+    expect(() => accounts.create_user({ name: "alice", role: "viewer", grants: null, password: "a long enough pass" })).toThrow("already exists");
+    expect(() => accounts.create_user({ name: "Bob Smith", role: "viewer", grants: null, password: "a long enough pass" })).toThrow("lowercase");
+    expect(() => accounts.create_user({ name: "bob", role: "root", grants: null, password: "a long enough pass" })).toThrow("role must be");
+    expect(() => accounts.create_user({ name: "bob", role: "viewer", grants: null, password: "short" })).toThrow("at least 12");
+    expect(() => accounts.create_user({ name: "bob", role: "viewer", grants: ["odin"], password: "a long enough pass" })).toThrow("Grants must be");
+    expect(() => accounts.create_user({ name: "bob", role: "viewer", grants: [{ job: "odin", repository: "odin" }], password: "a long enough pass" })).toThrow("Grants must be");
+  });
+
+  it("keeps each grant once", () => {
+    const grants = [{ job: "web" }, { repository: "media" }, { job: "web" }];
+    expect(accounts.create_user({ name: "bob", role: "viewer", grants, password: "a long enough pass" }).grants).toEqual([{ job: "web" }, { repository: "media" }]);
+    expect(accounts.update_user("bob", { grants: [] }).grants).toEqual([]);
+    expect(accounts.update_user("bob", { grants: null }).grants).toBeNull();
   });
 
   it("leaves the declared admin's role and password alone", () => {
@@ -37,7 +46,7 @@ describe("users", () => {
   });
 
   it("changes a password only with the current one", () => {
-    accounts.create_user({ name: "alice", role: "viewer", repositories: null, password: "a long enough pass" });
+    accounts.create_user({ name: "alice", role: "viewer", grants: null, password: "a long enough pass" });
 
     expect(() => accounts.change_password("alice", "wrong", "another long pass")).toThrow("current password is wrong");
     accounts.change_password("alice", "a long enough pass", "another long pass");

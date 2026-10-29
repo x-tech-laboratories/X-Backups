@@ -148,13 +148,20 @@ describe("runs", () => {
     expect(store.runs({ since_epoch: Date.now() / 1000 + 60 })).toEqual([]);
   });
 
-  it("matches a grant on a target's id or its repository's name", () => {
+  it("shows a viewer its targets' runs and the own runs of its repositories", () => {
     store.runs_for(odin).create("backup", "borg create");
-    store.runs_for({ target_id: "web:thor:vault", host: "thor", job: "web", repository: "vault" }).create("backup", "borg create");
+    const web = { target_id: "web:thor:vault", host: "thor", job: "web", repository: "vault" };
+    store.runs_for(web).create("backup", "borg create");
+    store.runs_for(web).create("compact", "borg compact");
+    store.runs_for(web).create("check-repository", "borg check");
+    store.apply("odin", new CollectResult({ logs: [["Backup started", "INFO"]] }), { poll: false });
 
-    expect(store.runs({ granted: ["vault"] }).map((run) => run.target_id)).toEqual(["web:thor:vault"]);
-    expect(store.runs({ granted: ["odin"] }).map((run) => run.target_id)).toEqual(["odin"]);
-    expect(store.runs({ granted: [] })).toEqual([]);
+    const vault_only = { targets: [], repositories: ["vault"] };
+    expect(store.runs({ visible: vault_only }).map((run) => run.kind)).toEqual(["check-repository", "compact"]);
+    expect(store.runs({ visible: { targets: ["odin"], repositories: ["odin"] } }).map((run) => run.target_id)).toEqual(["odin"]);
+    expect(store.runs({ visible: { targets: [], repositories: [] } })).toEqual([]);
+    expect(store.events({ visible: vault_only })).toEqual([]);
+    expect(store.events({ visible: { targets: ["odin"], repositories: [] } })).toHaveLength(1);
   });
 
   it("tells listeners what changed", () => {
@@ -245,6 +252,36 @@ describe("migration", () => {
       expect(reopened.runs({ job: "odin" })[0]).not.toHaveProperty("pid");
       expect(reopened.run_output(1)).toEqual(["done"]);
       expect(reopened.timers().map((timer) => timer.host)).toEqual(["odin", "server"]);
+      reopened.close();
+    }
+  });
+
+  it("turns grants on repositories into grants on the jobs writing there, and drops the old column", () => {
+    const path = join(folder, "x-backups.sqlite");
+    const database = new DatabaseSync(path);
+    database.exec(`
+      CREATE TABLE users (name TEXT PRIMARY KEY, role TEXT NOT NULL, repositories TEXT, password_hash TEXT, totp_secret TEXT,
+        totp_pending TEXT, totp_last_step INTEGER, recovery_codes TEXT, created_epoch INTEGER NOT NULL);
+      INSERT INTO users (name, role, repositories, created_epoch) VALUES ('vic', 'viewer', '["vault","odin","media","gone"]', 1);
+      INSERT INTO users (name, role, repositories, created_epoch) VALUES ('ada', 'operator', NULL, 1);
+    `);
+    database.close();
+    const targets: TargetKey[] = [
+      { target_id: "web:thor:vault", host: "thor", job: "web", repository: "vault" },
+      { target_id: "mail:thor:vault", host: "thor", job: "mail", repository: "vault" },
+      { target_id: "odin", host: "odin", job: "odin", repository: "odin" },
+      { target_id: "media", host: "thor", job: null, repository: "media" },
+    ];
+
+    for (let opening = 0; opening < 2; opening++) {
+      const reopened = new Store(path);
+      reopened.adopt_targets(targets);
+      const rows = reopened.all("SELECT name, jobs FROM users ORDER BY name");
+      expect(rows.map((row) => [row.name, row.jobs === null ? null : JSON.parse(String(row.jobs))])).toEqual([
+        ["ada", null],
+        ["vic", [{ job: "web" }, { job: "mail" }, { job: "odin" }, { repository: "media" }, { repository: "gone" }]],
+      ]);
+      expect(reopened.all("PRAGMA table_info(users)").map((row) => row.name)).not.toContain("repositories");
       reopened.close();
     }
   });

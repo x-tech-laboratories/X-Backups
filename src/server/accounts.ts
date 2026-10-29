@@ -1,4 +1,4 @@
-// Who may log in and what each may do: users with a role and the repositories they see, their second factor, and
+// Who may log in and what each may do: users with a role and the jobs they are granted, their second factor, and
 // read-only API tokens.
 //
 // The admin whose password hash comes from X_BACKUPS_PASSWORD_HASH_FILE is declared: the page cannot change its role or
@@ -8,6 +8,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
+import { distinct_grants, type Grant } from "./access.ts";
 import { hash_password, verify_password } from "./passwords.ts";
 import type { Store } from "./store.ts";
 import { matching_step, new_secret, otpauth_uri } from "./totp.ts";
@@ -21,8 +22,8 @@ export type Role = (typeof roles)[number];
 export interface User {
   name: string;
   role: Role;
-  // The repository ids the user sees, or null for all of them.
-  repositories: string[] | null;
+  // The jobs, and repositories no job writes to, the user is granted, or null for everything.
+  grants: Grant[] | null;
   totp_enabled: boolean;
   has_password: boolean;
   source: "declared" | "page";
@@ -74,7 +75,7 @@ export class Accounts {
     const row = this.store.get("SELECT * FROM users WHERE name = ?", name);
     if (name === this.admin_name) {
       return {
-        name, role: "admin", repositories: null, has_password: true, source: "declared",
+        name, role: "admin", grants: null, has_password: true, source: "declared",
         totp_enabled: Boolean(row?.totp_secret), created_epoch: Number(row?.created_epoch ?? 0),
       };
     }
@@ -98,29 +99,29 @@ export class Accounts {
     return { user: this.second_factor(name, code) ? user : null, needs_code: true };
   }
 
-  create_user(fields: { name: unknown; role: unknown; repositories: unknown; password: unknown }): User {
+  create_user(fields: { name: unknown; role: unknown; grants: unknown; password: unknown }): User {
     const name = String(fields.name ?? "").trim();
     if (!name_pattern.test(name)) throw new AccountError("A user name is lowercase letters, digits, '.', '_' or '-', starting with a letter or digit.");
     if (name === this.admin_name || this.store.get("SELECT name FROM users WHERE name = ?", name)) {
       throw new AccountError(`A user named '${name}' already exists.`, 409);
     }
     const role = check_role(fields.role);
-    const repositories = check_repositories(fields.repositories);
+    const grants = check_grants(fields.grants);
     const password = fields.password === undefined || fields.password === "" ? null : check_password(fields.password);
     this.store.run(
-      "INSERT INTO users (name, role, repositories, password_hash, created_epoch) VALUES (?, ?, ?, ?, ?)",
-      name, role, repositories === null ? null : JSON.stringify(repositories), password === null ? null : hash_password(password), now_seconds(),
+      "INSERT INTO users (name, role, jobs, password_hash, created_epoch) VALUES (?, ?, ?, ?, ?)",
+      name, role, grants === null ? null : JSON.stringify(grants), password === null ? null : hash_password(password), now_seconds(),
     );
     return this.user(name)!;
   }
 
-  update_user(name: string, fields: { role?: unknown; repositories?: unknown; password?: unknown }): User {
-    this.refuse_declared(name, "its role, repositories and password are set where X-Backups is deployed");
+  update_user(name: string, fields: { role?: unknown; grants?: unknown; password?: unknown }): User {
+    this.refuse_declared(name, "its role, access and password are set where X-Backups is deployed");
     if (this.user(name) === null) throw new AccountError(`No user named '${name}'.`, 404);
     if (fields.role !== undefined) this.store.run("UPDATE users SET role = ? WHERE name = ?", check_role(fields.role), name);
-    if (fields.repositories !== undefined) {
-      const repositories = check_repositories(fields.repositories);
-      this.store.run("UPDATE users SET repositories = ? WHERE name = ?", repositories === null ? null : JSON.stringify(repositories), name);
+    if (fields.grants !== undefined) {
+      const grants = check_grants(fields.grants);
+      this.store.run("UPDATE users SET jobs = ? WHERE name = ?", grants === null ? null : JSON.stringify(grants), name);
     }
     if (fields.password !== undefined && fields.password !== "") {
       this.store.run("UPDATE users SET password_hash = ? WHERE name = ?", hash_password(check_password(fields.password)), name);
@@ -256,12 +257,19 @@ function check_role(value: unknown): Role {
   return value as Role;
 }
 
-function check_repositories(value: unknown): string[] | null {
+// A list of { job } and { repository } grants, or null for everything.
+function check_grants(value: unknown): Grant[] | null {
   if (value === null || value === undefined) return null;
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-    throw new AccountError("Repositories must be a list of repository ids, or null for all of them.");
+  const is_grant = (item: unknown): item is Grant => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+    const keys = Object.keys(item);
+    const [key] = keys;
+    return keys.length === 1 && (key === "job" || key === "repository") && typeof (item as Record<string, unknown>)[key] === "string";
+  };
+  if (!Array.isArray(value) || !value.every(is_grant)) {
+    throw new AccountError('Grants must be a list of { "job": name } and { "repository": name }, or null for everything.');
   }
-  return [...new Set(value as string[])];
+  return distinct_grants(value);
 }
 
 function check_password(value: unknown): string {
@@ -275,7 +283,8 @@ function user_row(row: Record<string, unknown>): User {
   return {
     name: String(row.name),
     role: row.role as Role,
-    repositories: row.repositories === null ? null : JSON.parse(String(row.repositories)) as string[],
+    // A row read before its grants were adopted holds none, so it sees nothing rather than everything.
+    grants: row.jobs === null ? null : JSON.parse(String(row.jobs ?? "[]")) as Grant[],
     totp_enabled: Boolean(row.totp_secret),
     has_password: Boolean(row.password_hash),
     source: "page",

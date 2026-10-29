@@ -2,14 +2,14 @@
 
 import { api, ApiError, send, type RepositorySummary } from "../api.ts";
 import { age, h, stamp, type Child } from "../dom.ts";
-import { can, load_me, me, type Role } from "../session.ts";
+import { can, load_me, me, type Grant, type Role } from "../session.ts";
 import { chip, confirm_dialog, data_table, empty, facts, load, open_dialog, section, skeleton, toast } from "../ui.ts";
 import type { View } from "./shared.ts";
 
 interface User {
   name: string;
   role: Role;
-  repositories: string[] | null;
+  grants: Grant[] | null;
   totp_enabled: boolean;
   has_password: boolean;
   source: "declared" | "page";
@@ -25,17 +25,23 @@ interface Token {
 }
 
 const role_text: Record<Role, string> = {
-  viewer: "Sees the repositories it is given; changes nothing.",
+  viewer: "Sees the jobs it is granted; changes nothing.",
   operator: "Also runs actions, restores and downloads, and reads archive contents.",
   admin: "Also changes the config, users and API tokens.",
 };
+
+// What a user can be granted: each job with the repositories it writes to, and each repository no job writes to.
+interface Grantable {
+  jobs: { name: string; repositories: string[] }[];
+  repositories: string[];
+}
 
 // ── Users ────────────────────────────────────────────────────────────────────
 
 export function users_view(): View {
   const users = h("div", {}, skeleton(4));
   const tokens = h("div", {}, skeleton(2));
-  let repositories: RepositorySummary[] = [];
+  let grantable: Grantable = { jobs: [], repositories: [] };
 
   const refresh = async (quiet: boolean) => {
     if (!can("admin")) {
@@ -43,8 +49,8 @@ export function users_view(): View {
       tokens.replaceChildren();
       return;
     }
-    repositories = await api<RepositorySummary[]>("/api/repositories").catch(() => []);
-    await load(users, async () => users_table(await api<User[]>("/api/users"), repositories, () => void refresh(true)), { quiet });
+    grantable = grantable_of(await api<RepositorySummary[]>("/api/repositories").catch(() => []));
+    await load(users, async () => users_table(await api<User[]>("/api/users"), grantable, () => void refresh(true)), { quiet });
     await load(tokens, async () => tokens_table(await api<Token[]>("/api/tokens"), () => void refresh(true)), { quiet });
   };
   void refresh(false);
@@ -53,26 +59,49 @@ export function users_view(): View {
     title: "Users",
     root: h("div", { class: "page" },
       h("div", { class: "page-title spread" }, h("h1", {}, "Users"),
-        can("admin") && h("button", { class: "accent solid", onclick: () => user_dialog(null, repositories, () => void refresh(true)) }, "Add user")),
+        can("admin") && h("button", { class: "accent solid", onclick: () => user_dialog(null, grantable, () => void refresh(true)) }, "Add user")),
       section("Users", users),
       section("API tokens", h("div", { class: "stack" },
-        h("p", { class: "muted small" }, "A token reads what a viewer of every repository reads, and the Prometheus metrics at /metrics; it changes nothing. Send it as Authorization: Bearer <token>."),
+        h("p", { class: "muted small" }, "A token reads what a viewer of everything reads, and the Prometheus metrics at /metrics; it changes nothing. Send it as Authorization: Bearer <token>."),
         h("div", {}, h("button", { onclick: () => token_dialog(() => void refresh(true)) }, "Create token")),
         tokens)),
     ),
   };
 }
 
-function users_table(users: User[], repositories: RepositorySummary[], refresh: () => void): HTMLElement {
+// The jobs and the repositories no job writes to, from the targets an admin sees.
+function grantable_of(targets: RepositorySummary[]): Grantable {
+  const jobs = new Map<string, Set<string>>();
+  const repositories = new Set<string>();
+  for (const target of targets) {
+    if (target.job === null) repositories.add(target.repository);
+    else jobs.set(target.job, (jobs.get(target.job) ?? new Set()).add(target.repository));
+  }
+  return {
+    jobs: [...jobs].map(([name, written]) => ({ name, repositories: [...written].sort() })).sort((left, right) => left.name.localeCompare(right.name)),
+    repositories: [...repositories].sort(),
+  };
+}
+
+// What the grants show, in words.
+function grants_text(grants: Grant[] | null): string {
+  if (grants === null) return "everything";
+  if (grants.length === 0) return "nothing";
+  const jobs = grants.flatMap((grant) => "job" in grant ? [grant.job] : []);
+  const repositories = grants.flatMap((grant) => "repository" in grant ? [grant.repository] : []);
+  return [jobs.length > 0 && `jobs ${jobs.join(", ")}`, repositories.length > 0 && `repositories ${repositories.join(", ")}`].filter(Boolean).join("; ");
+}
+
+function users_table(users: User[], grantable: Grantable, refresh: () => void): HTMLElement {
   return data_table<User>([
     { label: "Name", cell: (user) => [h("strong", {}, user.name), user.name === me()?.name ? h("span", { class: "muted small" }, " (you)") : null] },
     { label: "Role", cell: (user) => chip(user.role, role_text[user.role]) },
-    { label: "Repositories", cell: (user) => user.repositories === null ? "all" : user.repositories.length === 0 ? "none" : user.repositories.join(", ") },
+    { label: "Access", cell: (user) => grants_text(user.grants) },
     { label: "Second factor", cell: (user) => user.totp_enabled ? "on" : h("span", { class: "muted" }, "off") },
     { label: "Login", cell: (user) => user.source === "declared" ? chip("declared", "Its password is the hash file X-Backups is deployed with") : user.has_password ? "password" : h("span", { class: "muted" }, "single sign-on only") },
     {
       label: "", class: "actions-cell", cell: (user) => h("span", { class: "row-actions" },
-        user.source === "page" && h("button", { onclick: () => user_dialog(user, repositories, refresh) }, "Edit"),
+        user.source === "page" && h("button", { onclick: () => user_dialog(user, grantable, refresh) }, "Edit"),
         user.totp_enabled && h("button", { onclick: () => reset_totp(user, refresh) }, "Reset second factor"),
         user.source === "page" && user.name !== me()?.name && h("button", { class: "danger", onclick: () => remove_user(user, refresh) }, "Remove"),
       ),
@@ -81,16 +110,30 @@ function users_table(users: User[], repositories: RepositorySummary[], refresh: 
 }
 
 // Adds a user, or edits one when given; a password left empty on an edit stays as it was.
-function user_dialog(user: User | null, repositories: RepositorySummary[], refresh: () => void): void {
+function user_dialog(user: User | null, grantable: Grantable, refresh: () => void): void {
   const name = h("input", { type: "text", value: user?.name ?? "", readonly: user !== null, autocomplete: "off", autocapitalize: "none", "aria-label": "User name" });
   const role = h("select", { "aria-label": "Role" }, ...(["viewer", "operator", "admin"] as Role[]).map((value) =>
     h("option", { value, selected: (user?.role ?? "viewer") === value }, value)));
   const role_hint = h("p", { class: "muted small" }, role_text[(user?.role ?? "viewer")]);
   role.addEventListener("change", () => { role_hint.textContent = role_text[role.value as Role]; });
-  const all = h("input", { type: "checkbox", checked: user === null || user.repositories === null });
-  const picks = repositories.map((repository) => h("input", { type: "checkbox", value: repository.id, checked: user?.repositories?.includes(repository.id) ?? false }));
+  const all = h("input", { type: "checkbox", checked: user === null || user.grants === null });
+  const held = user?.grants ?? [];
+  const held_jobs = held.flatMap((grant) => "job" in grant ? [grant.job] : []);
+  const held_repositories = held.flatMap((grant) => "repository" in grant ? [grant.repository] : []);
+  // A grant on something no longer configured stays listed, so saving keeps it unless it is unticked.
+  const jobs = [
+    ...grantable.jobs,
+    ...held_jobs.filter((name) => !grantable.jobs.some((job) => job.name === name)).map((name) => ({ name, repositories: [] })),
+  ];
+  const repositories = [...grantable.repositories, ...held_repositories.filter((name) => !grantable.repositories.includes(name))];
+  const job_picks = jobs.map((job) => h("input", { type: "checkbox", value: job.name, checked: held_jobs.includes(job.name) }));
+  const repository_picks = repositories.map((name) => h("input", { type: "checkbox", value: name, checked: held_repositories.includes(name) }));
   const pick_list = h("div", { class: "check-list", hidden: all.checked },
-    ...repositories.map((repository, index) => h("label", { class: "check" }, picks[index], ` ${repository.name}`)));
+    h("fieldset", { class: "check-group" }, h("legend", {}, "Jobs"),
+      ...(jobs.length === 0 ? [h("p", { class: "muted small" }, "No jobs are configured.")] : jobs.map((job, index) => h("label", { class: "check" }, job_picks[index], ` ${job.name}`,
+        job.repositories.length > 0 && h("span", { class: "muted small" }, ` to ${job.repositories.join(", ")}`))))),
+    repositories.length > 0 && h("fieldset", { class: "check-group" }, h("legend", {}, "Repositories no job writes to"),
+      ...repositories.map((name, index) => h("label", { class: "check" }, repository_picks[index], ` ${name}`))));
   all.addEventListener("change", () => { pick_list.hidden = all.checked; });
   const password = h("input", { type: "password", autocomplete: "new-password", "aria-label": "Password", placeholder: user ? "leave empty to keep it" : "at least 12 characters, or empty for single sign-on only" });
   const message = h("p", { class: "tone-bad small", role: "alert" });
@@ -98,7 +141,10 @@ function user_dialog(user: User | null, repositories: RepositorySummary[], refre
   open_dialog(user ? `Edit ${user.name}` : "Add a user", h("div", { class: "form-rows" },
     form_row("Name", h("div", {}, name, h("p", { class: "muted small" }, "Lowercase letters, digits, '.', '_' or '-'. Single sign-on matches it against the provider's user name."))),
     form_row("Role", h("div", {}, role, role_hint)),
-    form_row("Repositories", h("div", {}, h("label", { class: "check" }, all, " All, including ones added later"), pick_list)),
+    form_row("Access", h("div", {},
+      h("label", { class: "check" }, all, " Everything, including jobs added later"),
+      h("p", { class: "muted small" }, "A job shows its targets, runs and archives, and the sources, repositories and hosts it uses. Compacting, checking or deleting from a repository needs every job writing there."),
+      pick_list)),
     form_row("Password", password),
     message,
   ), (close) => {
@@ -106,7 +152,10 @@ function user_dialog(user: User | null, repositories: RepositorySummary[], refre
     save.addEventListener("click", async () => {
       const body = {
         name: name.value.trim(), role: role.value,
-        repositories: all.checked ? null : picks.filter((pick) => pick.checked).map((pick) => pick.value),
+        grants: all.checked ? null : [
+          ...job_picks.filter((pick) => pick.checked).map((pick) => ({ job: pick.value })),
+          ...repository_picks.filter((pick) => pick.checked).map((pick) => ({ repository: pick.value })),
+        ],
         password: password.value,
       };
       save.disabled = true;
@@ -227,7 +276,7 @@ function account_panels(who: NonNullable<ReturnType<typeof me>>, refresh: () => 
     section("You", facts([
       ["Name", who.name],
       ["Role", `${who.role}: ${role_text[who.role]}`],
-      ["Repositories", who.repositories === null ? "all" : who.repositories.join(", ") || "none"],
+      ["Access", grants_text(who.grants)],
       ["Logged in through", who.via === "proxy" ? "the reverse proxy" : "this page"],
     ])),
     section("Password", who.source === "declared"

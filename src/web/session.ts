@@ -4,10 +4,14 @@ import { api } from "./api.ts";
 
 export type Role = "viewer" | "operator" | "admin";
 
+// A grant on a job, or on a repository no job writes to.
+export type Grant = { job: string } | { repository: string };
+
 export interface Me {
   name: string;
   role: Role;
-  repositories: string[] | null;
+  // null sees everything.
+  grants: Grant[] | null;
   via: "session" | "token" | "proxy";
   totp_enabled: boolean;
   source: "declared" | "page" | null;

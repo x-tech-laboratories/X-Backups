@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentHub } from "../src/server/agents/hub.ts";
 import { AgentTokens } from "../src/server/agents/tokens.ts";
 import { build_app } from "../src/server/app.ts";
+import type { Grant } from "../src/server/access.ts";
 import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
 import { parse_config, type Config } from "../src/server/config.ts";
@@ -55,8 +56,8 @@ function call(method: "GET" | "POST" | "PUT" | "DELETE", url: string, cookie: st
   return app.inject({ method, url, payload, headers: { cookie } });
 }
 
-async function add_user(admin: string, name: string, role: string, repositories: string[] | null = null): Promise<string> {
-  const created = await call("POST", "/api/users", admin, { name, role, repositories, password: `${name} long password` });
+async function add_user(admin: string, name: string, role: string, grants: Grant[] | null = null): Promise<string> {
+  const created = await call("POST", "/api/users", admin, { name, role, grants, password: `${name} long password` });
   expect(created.statusCode).toBe(201);
   return login(name, `${name} long password`);
 }
@@ -101,15 +102,35 @@ describe("roles", () => {
   });
 });
 
-// ── Repository access ────────────────────────────────────────────────────────
+// ── Job access ───────────────────────────────────────────────────────────────
 
-describe("repository access", () => {
-  it("shows a limited user only their repositories, runs and events", async () => {
+// Two jobs share the repository vault, polled from thor, this server; media on thor has no job and is only watched.
+const SHARED = JSON.stringify({
+  hosts: [{ name: "odin", address: "odin.lan" }, { name: "thor" }, { name: "nas", kind: "storage-only", address: "nas.lan" }],
+  repositories: [
+    { name: "vault", host: "nas", repo: "ssh://borg@nas.lan/srv/vault", poll_via: "thor" },
+    { name: "media", host: "thor", repo: "/srv/media" },
+  ],
+  sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "maildir", host: "thor", source_paths: ["/var/mail"] }],
+  jobs: [{ name: "nightly", sources: ["home"], repositories: ["vault"] }, { name: "mail", sources: ["maildir"], repositories: ["vault"] }],
+});
+
+async function rebuild(config: Config): Promise<void> {
+  poller.stop();
+  await app.close();
+  poller = new Poller(config, store, agent_hub(store), async (_host, command) => cmd_result(0, command.includes("list") ? LIST : "", ""));
+  app = await build_app({ serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store });
+}
+
+const ids = (response: { json: () => unknown }) => (response.json() as { id?: string; name?: string }[]).map((item) => item.id ?? item.name);
+
+describe("job access", () => {
+  it("shows a user granted a flat entry's job only its target, runs and events", async () => {
     const admin = await login("admin", "declared admin pass");
     await call("POST", "/api/repositories/thor/actions/run_backup", admin);
-    const limited = await add_user(admin, "lena", "operator", ["odin"]);
+    const limited = await add_user(admin, "lena", "operator", [{ job: "odin" }]);
 
-    expect((await call("GET", "/api/repositories", limited)).json().map((repository: { id: string }) => repository.id)).toEqual(["odin"]);
+    expect(ids(await call("GET", "/api/repositories", limited))).toEqual(["odin"]);
     expect((await call("GET", "/api/map", limited)).json().repositories.map((repository: { id: string }) => repository.id)).toEqual(["odin"]);
     expect((await call("GET", "/api/repositories/thor", limited)).statusCode).toBe(404);
     expect((await call("POST", "/api/repositories/thor/actions/run_backup", limited)).statusCode).toBe(404);
@@ -119,27 +140,68 @@ describe("repository access", () => {
     expect((await call("GET", `/api/runs/${run.id}`, limited)).statusCode).toBe(404);
   });
 
-  it("shows a user granted a repository every target writing there", async () => {
-    poller.stop();
-    await app.close();
-    const config = parse_config(JSON.stringify({
-      hosts: [{ name: "odin", address: "odin.lan" }, { name: "thor", address: "thor.lan" }],
-      repositories: [{ name: "vault", host: "odin", repo: "/srv/vault" }, { name: "spare", host: "odin", repo: "/srv/spare" }],
-      sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "media", host: "thor", source_paths: ["/srv/media"] }],
-      jobs: [{ name: "nightly", sources: ["home", "media"], repositories: ["vault"] }],
-    }), "test.json");
-    poller = new Poller(config, store, agent_hub(store), async (_host, command) => cmd_result(0, command.includes("list") ? LIST : "", ""));
-    app = await build_app({ serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store });
+  it("shows a job's targets, its repository's own runs and the hosts it uses, but not a sharing job's targets", async () => {
+    await rebuild(parse_config(SHARED, "test.json"));
     const admin = await login("admin", "declared admin pass");
-    await call("POST", "/api/repositories/nightly:thor:vault/actions/run_backup", admin);
-    const granted = await add_user(admin, "vic", "operator", ["vault"]);
+    const mail_runs = store.runs_for({ target_id: "mail:thor:vault", host: "thor", job: "mail", repository: "vault" });
+    mail_runs.finish(mail_runs.create("backup", "borg create"), "succeeded", { exit_code: 0 });
+    expect((await call("POST", "/api/repositories/mail:thor:vault/actions/compact_repo", admin)).json().success).toBe(true);
+    const vic = await add_user(admin, "vic", "operator", [{ job: "nightly" }]);
 
-    const shown = (await call("GET", "/api/repositories", granted)).json();
-    expect(shown.map((target: { id: string }) => target.id)).toEqual(["nightly:odin:vault", "nightly:thor:vault"]);
-    expect(shown[1]).toMatchObject({ target_id: "nightly:thor:vault", host: "thor", job: "nightly", repository: "vault" });
-    expect((await call("GET", "/api/repositories/nightly:thor:vault", granted)).statusCode).toBe(200);
-    expect((await call("GET", "/api/repositories/spare", granted)).statusCode).toBe(404);
-    expect((await call("GET", "/api/runs", granted)).json().map((run: { target_id: string }) => run.target_id)).toEqual(["nightly:thor:vault"]);
+    const shown = (await call("GET", "/api/repositories", vic)).json();
+    expect(shown.map((target: { id: string }) => target.id)).toEqual(["nightly:odin:vault"]);
+    expect(shown[0]).toMatchObject({ host: "odin", job: "nightly", repository: "vault" });
+    expect((await call("GET", "/api/repositories/mail:thor:vault", vic)).statusCode).toBe(404);
+    expect(ids(await call("GET", "/api/hosts", vic))).toEqual(["odin", "nas"]);
+    const runs = (await call("GET", "/api/runs", vic)).json();
+    expect(runs.map((run: { kind: string }) => run.kind)).toEqual(["compact"]);
+    expect((await call("GET", `/api/runs/${runs[0].id}`, vic)).statusCode).toBe(200);
+    expect((await call("GET", "/api/events", vic)).json().every((event: { target_id: string }) => event.target_id === "nightly:odin:vault")).toBe(true);
+  });
+
+  it("lets only an admin or a user seeing every job writing there act on the whole repository", async () => {
+    await rebuild(parse_config(SHARED, "test.json"));
+    const admin = await login("admin", "declared admin pass");
+    const vic = await add_user(admin, "vic", "operator", [{ job: "nightly" }]);
+    const bea = await add_user(admin, "bea", "operator", [{ job: "nightly" }, { job: "mail" }]);
+
+    const refused = await call("POST", "/api/repositories/nightly:odin:vault/actions/compact_repo", vic);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error).toContain("every job writing there");
+    expect((await call("POST", "/api/repositories/nightly:odin:vault/actions/break_lock", vic)).statusCode).toBe(403);
+    expect((await call("POST", "/api/repositories/nightly:odin:vault/actions/delete_archive", vic, { archive: "a1" })).statusCode).toBe(403);
+    expect((await call("POST", "/api/repositories/nightly:odin:vault/actions/prune_preview", vic)).statusCode).toBe(200);
+
+    expect((await call("POST", "/api/repositories/mail:thor:vault/actions/compact_repo", bea)).json().success).toBe(true);
+    expect((await call("GET", "/api/repositories/mail:thor:vault", bea)).json().actions.map((action: { action_id: string }) => action.action_id)).toContain("compact_repo");
+    const [compact] = (await call("GET", "/api/runs", vic)).json();
+    expect((await call("POST", `/api/runs/${compact.id}/cancel`, vic)).statusCode).toBe(403);
+    expect((await call("POST", `/api/runs/${compact.id}/cancel`, bea)).statusCode).toBe(200);
+  });
+
+  it("shows a repository no job writes to through its own grant", async () => {
+    await rebuild(parse_config(SHARED, "test.json"));
+    const admin = await login("admin", "declared admin pass");
+    const wes = await add_user(admin, "wes", "operator", [{ repository: "media" }]);
+
+    expect(ids(await call("GET", "/api/repositories", wes))).toEqual(["media"]);
+    expect(ids(await call("GET", "/api/hosts", wes))).toEqual(["thor"]);
+    expect((await call("GET", "/api/repositories/media", wes)).json().actions.map((action: { action_id: string }) => action.action_id)).toContain("compact_repo");
+    expect((await call("POST", "/api/repositories/media/actions/compact_repo", wes)).json().success).toBe(true);
+  });
+
+  it("carries a user's older grant on a repository over to the jobs writing there", async () => {
+    await rebuild(parse_config(SHARED, "test.json"));
+    const admin = await login("admin", "declared admin pass");
+    await add_user(admin, "old", "viewer", []);
+    store.run("ALTER TABLE users ADD COLUMN repositories TEXT");
+    store.run("UPDATE users SET repositories = ? WHERE name = 'old'", JSON.stringify(["vault"]));
+    await rebuild(parse_config(SHARED, "test.json"));
+    const old = await login("old", "old long password");
+
+    expect((await call("GET", "/api/users", await login("admin", "declared admin pass"))).json().find((user: { name: string }) => user.name === "old").grants)
+      .toEqual([{ job: "nightly" }, { job: "mail" }]);
+    expect(ids(await call("GET", "/api/repositories", old))).toEqual(["nightly:odin:vault", "mail:thor:vault"]);
   });
 });
 

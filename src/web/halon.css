@@ -554,6 +554,8 @@ a.tile:hover { border-top-color: var(--border-hover); border-right-color: var(--
 /* ── Access ───────────────────────────────────────────────────────────────── */
 
 .check-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); max-height: 220px; overflow: auto; }
+.check-group { display: grid; gap: var(--space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.check-group legend { padding: 0; margin-bottom: var(--space-1); color: var(--text-secondary); font-size: var(--text-caption); font-weight: 600; }
 .secret-once { font-size: var(--text-h3); letter-spacing: var(--letter-spacing-caps); user-select: all; }
 
 /* ── Runs ─────────────────────────────────────────────────────────────────── */

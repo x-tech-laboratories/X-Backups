@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import type { HealthSample } from "../shared/agent_protocol.ts";
+import { distinct_grants, grants_from_repository } from "./access.ts";
 import type { Timer } from "./timers.ts";
 import { own_host_name } from "./config.ts";
 import type { CollectResult, LogLevel, MonitorStatus, RepositoryState, RunRecord, RunState, RunStore } from "./borg/types.ts";
@@ -113,13 +114,19 @@ export interface Change {
   run_id?: number;
 }
 
+// The targets whose rows a viewer sees, and the repositories whose own runs, compact and check, they see too.
+export interface VisibleRows {
+  targets: string[];
+  repositories: string[];
+}
+
 export interface RunFilter {
   target_id?: string;
   host?: string;
   job?: string;
   repository?: string;
-  // The target ids and repository names a viewer is granted; an empty list matches nothing.
-  granted?: string[];
+  // What a viewer sees, when they do not see everything.
+  visible?: VisibleRows;
   // A kind matches itself and its variants, so "check" also matches "check-data".
   kind?: string;
   state?: string;
@@ -133,7 +140,7 @@ export interface EventFilter {
   host?: string;
   job?: string;
   repository?: string;
-  granted?: string[];
+  visible?: VisibleRows;
   level?: string;
   limit?: number;
   offset?: number;
@@ -261,7 +268,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS users (
     name TEXT PRIMARY KEY,
     role TEXT NOT NULL,
-    repositories TEXT,
+    jobs TEXT,
     password_hash TEXT,
     totp_secret TEXT,
     totp_pending TEXT,
@@ -377,12 +384,22 @@ export class Store {
           this.run(`DELETE FROM ${table} WHERE host = ?`, old_key);
         }
       }
+      this.adopt_grants(targets);
     });
   }
 
-  // The configured target with that id, or null for one no longer configured.
-  target(target_id: string): TargetKey | null {
-    return this.targets.get(target_id) ?? null;
+  // Turns each user's older grants on repositories into grants on the jobs writing there, read against the configured
+  // targets, then drops the column they were kept in; a repository no job writes to stays granted as itself.
+  private adopt_grants(targets: TargetKey[]): void {
+    const columns = this.columns("users");
+    if (!columns.has("repositories")) return;
+    if (!columns.has("jobs")) this.database.exec("ALTER TABLE users ADD COLUMN jobs TEXT");
+    for (const row of this.all("SELECT name, repositories FROM users WHERE repositories IS NOT NULL")) {
+      const names = JSON.parse(String(row.repositories)) as string[];
+      const grants = distinct_grants(names.flatMap((name) => grants_from_repository(name, targets)));
+      this.run("UPDATE users SET jobs = ? WHERE name = ?", JSON.stringify(grants), String(row.name));
+    }
+    this.database.exec("ALTER TABLE users DROP COLUMN repositories");
   }
 
   // The entity names a new row of the target takes.
@@ -484,8 +501,11 @@ export class Store {
 
   // The newest events first, for one target, host, job or repository or all of them, at one level or all.
   events(options: EventFilter = {}): EventRow[] {
-    if (options.granted?.length === 0) return [];
-    const [where, values] = conditions([...target_conditions(options), ["level = ?", options.level]]);
+    const [where, values] = conditions([
+      ...target_conditions(options),
+      [in_list("target_id", options.visible?.targets), options.visible?.targets],
+      ["level = ?", options.level],
+    ]);
     const sql = `SELECT * FROM events ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
     return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map((row) => ({
       id: Number(row.id),
@@ -599,9 +619,13 @@ export class Store {
 
   // The newest runs first, narrowed by whatever the filter names.
   runs(options: RunFilter = {}): RunRow[] {
-    if (options.granted?.length === 0) return [];
+    const visible = options.visible;
     const [where, values] = conditions([
       ...target_conditions(options),
+      [
+        `(${in_list("target_id", visible?.targets)} OR (${in_list("repository", visible?.repositories)} AND ${repository_run_sql}))`,
+        visible === undefined ? undefined : [...visible.targets, ...visible.repositories],
+      ],
       ["(kind = ? OR kind LIKE ? || '-%')", options.kind === undefined ? undefined : [options.kind, options.kind]],
       ["state = ?", options.state],
       ["started_epoch >= ?", options.since_epoch],
@@ -754,15 +778,16 @@ function target_columns(row: Record<string, unknown>): TargetColumns {
   return { target_id: String(row.target_id), host: string_or_null(row.host), job: string_or_null(row.job), repository: string_or_null(row.repository) };
 }
 
-// The conditions a filter by target or entity gives; a grant matches a target by its id or its repository's name.
+// The run kinds access.ts's repository_run counts as the repository's own.
+const repository_run_sql = "(kind = 'compact' OR kind = 'check' OR kind LIKE 'check-%')";
+
+// The conditions a filter by target or entity gives.
 function target_conditions(filter: RunFilter | EventFilter): [sql: string, value: SQLInputValue | SQLInputValue[] | undefined][] {
-  const granted = filter.granted;
   return [
     ["target_id = ?", filter.target_id],
     ["host = ?", filter.host],
     ["job = ?", filter.job],
     ["repository = ?", filter.repository],
-    [`(${in_list("target_id", granted)} OR ${in_list("repository", granted)})`, granted === undefined ? undefined : [...granted, ...granted]],
   ];
 }
 

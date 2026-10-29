@@ -1,14 +1,15 @@
 // Who is asking and what they may do: sessions from a password (with a second factor), a single sign-on provider or a
 // trusted proxy's header, read-only API tokens, and the role each route needs.
 //
-// viewer sees the repositories it is given; operator also runs actions and reads archive contents; admin also changes
-// the config, users and tokens. A token is a viewer that can only read.
+// viewer sees the jobs it is granted, as access.ts reads them; operator also runs actions and reads archive contents;
+// admin also changes the config, users and tokens. A token is a viewer of everything that can only read.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
+import type { Grant } from "./access.ts";
 import { AccountError, has_role, type Accounts, type Role, type User } from "./accounts.ts";
 import type { OidcClient } from "./oidc.ts";
 
@@ -19,8 +20,8 @@ export { hash_password, load_password_hash, verify_password } from "./passwords.
 export interface Viewer {
   name: string;
   role: Role;
-  // The repository ids the viewer sees, or null for all of them.
-  repositories: string[] | null;
+  // The jobs, and repositories no job writes to, the viewer is granted, or null for everything.
+  grants: Grant[] | null;
   via: "session" | "token" | "proxy";
 }
 
@@ -41,8 +42,8 @@ export interface AuthOptions {
   accounts: Accounts;
   oidc?: OidcClient | null;
   proxy?: ProxyLogin | null;
-  // The names a grant may give for a target; its own id unless set.
-  grant_names?: (target_id: string) => string[];
+  // Whether the viewer sees the target; every target unless set.
+  sees_target?: (request: FastifyRequest, target_id: string) => boolean;
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -79,12 +80,6 @@ export function needed(method: string, path: string): "open" | "any" | Role {
   if (method === "POST") return "operator";
   if (archive_contents.test(path)) return "operator";
   return "viewer";
-}
-
-// Whether the viewer sees a target, granted under any of its names; handlers that list across targets filter with this.
-export function visible(request: FastifyRequest, names: string[]): boolean {
-  const repositories = request.viewer?.repositories;
-  return repositories === null || repositories === undefined || names.some((name) => repositories.includes(name));
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
@@ -134,13 +129,13 @@ function cookie(request: FastifyRequest, name: string, value: string, max_age_se
 }
 
 function as_viewer(user: User, via: Viewer["via"]): Viewer {
-  return { name: user.name, role: user.role, repositories: user.repositories, via };
+  return { name: user.name, role: user.role, grants: user.grants, via };
 }
 
 // ── Registration ─────────────────────────────────────────────────────────────
 
 export function register_auth(app: FastifyInstance, options: AuthOptions): void {
-  const { accounts, oidc = null, proxy = null, grant_names = (target_id: string) => [target_id] } = options;
+  const { accounts, oidc = null, proxy = null, sees_target = () => true } = options;
   const sessions = new Sessions();
   const failures = new Map<string, { count: number; until: number }>();
 
@@ -160,9 +155,9 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
     if (need !== "any" && !has_role(viewer.role, need)) {
       return reply.code(403).send({ error: `This needs the ${need} role; ${viewer.name} is ${viewer.role === "admin" ? "an" : "a"} ${viewer.role}.` });
     }
-    // A repository the viewer may not see answers as if it did not exist.
+    // A target the viewer may not see answers as if it did not exist.
     const repository = /^\/api\/repositories\/([^/]+)/.exec(path)?.[1];
-    if (repository !== undefined && !visible(request, grant_names(decodeURIComponent(repository)))) {
+    if (repository !== undefined && !sees_target(request, decodeURIComponent(repository))) {
       return reply.code(404).send({ error: `No repository '${decodeURIComponent(repository)}'.` });
     }
   });
@@ -176,7 +171,7 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
     const authorization = request.headers.authorization ?? "";
     if (authorization.startsWith("Bearer ")) {
       const token_name = accounts.check_token(authorization.slice("Bearer ".length).trim());
-      if (token_name !== null) return { name: `token:${token_name}`, role: "viewer", repositories: null, via: "token" };
+      if (token_name !== null) return { name: `token:${token_name}`, role: "viewer", grants: null, via: "token" };
     }
     if (proxy !== null && proxy.trusted.has(request.ip)) {
       const header = request.headers[proxy.header];
@@ -282,14 +277,14 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
 
   app.post<{ Body: Record<string, unknown> }>("/api/users", async (request, reply) => {
     const body = request.body ?? {};
-    const user = accounts.create_user({ name: body.name, role: body.role, repositories: body.repositories, password: body.password });
+    const user = accounts.create_user({ name: body.name, role: body.role, grants: body.grants, password: body.password });
     request.log.info(`${request.viewer!.name} added the user ${user.name} as ${user.role}`);
     return reply.code(201).send(user);
   });
 
   app.put<{ Params: { name: string }; Body: Record<string, unknown> }>("/api/users/:name", async (request) => {
     const body = request.body ?? {};
-    const user = accounts.update_user(request.params.name, { role: body.role, repositories: body.repositories, password: body.password });
+    const user = accounts.update_user(request.params.name, { role: body.role, grants: body.grants, password: body.password });
     sessions.close_user(user.name);
     request.log.info(`${request.viewer!.name} changed the user ${user.name}`);
     return user;
