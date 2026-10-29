@@ -1,9 +1,9 @@
-// One repository: its header and actions, then tabs for its overview, archives, jobs, sources, schedule, events and config.
+// One repository: its header and actions, then tabs for its overview, archives, runs, sources, schedule, events and config.
 
 import { action_descriptions, run_action, start_action, type ActionTarget } from "../actions.ts";
 import { overdue, repository_reasons } from "../attention.ts";
 import {
-  api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type DownloadRecord, type EventRow, type History, type Job,
+  api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type DownloadRecord, type EventRow, type History, type Run,
   type RepositoryConfig, type RepositoryDetail, type TimerRow,
 } from "../api.ts";
 import { bar_chart, line_chart, strip } from "../charts.ts";
@@ -15,7 +15,7 @@ import {
 } from "../ui.ts";
 import { can } from "../session.ts";
 import { config_form, config_read_only, config_tools } from "./config_form.ts";
-import { events_list, jobs_table, timers_table, touches, type View } from "./shared.ts";
+import { events_list, runs_table, timers_table, touches, type View } from "./shared.ts";
 
 const history_span_in_seconds = 90 * 86400;
 const page_size = 50;
@@ -26,14 +26,14 @@ const header_actions = new Set(["run_backup", "dry_run_backup"]);
 const tab_list: [id: string, label: string][] = [
   ["overview", "Overview"],
   ["archives", "Archives"],
-  ["jobs", "Jobs"],
+  ["runs", "Runs"],
   ["sources", "Sources"],
   ["schedule", "Schedule"],
   ["events", "Events"],
   ["config", "Config"],
 ];
 
-export const job_kinds: [value: string, text: string][] = [
+export const run_kinds: [value: string, text: string][] = [
   ["", "Any kind"],
   ["backup", "Backup"],
   ["dry-run", "Dry run"],
@@ -46,7 +46,7 @@ export const job_kinds: [value: string, text: string][] = [
   ["purge-preview", "Purge preview"],
 ];
 
-export const job_states: [value: string, text: string][] = [
+export const run_states: [value: string, text: string][] = [
   ["", "Any outcome"],
   ["running", "Running"],
   ["succeeded", "Succeeded"],
@@ -63,7 +63,7 @@ export function repository_view(id: string, tab: string): View {
   let detail: RepositoryDetail | null = null;
   let refresh_tab: (quiet: boolean) => Promise<void> = async () => {};
 
-  const target = (): ActionTarget => ({ repository_id: id, repository_name: detail?.name ?? id, done: () => void update(true) });
+  const target = (): ActionTarget => ({ target_id: id, repository_name: detail?.name ?? id, done: () => void update(true) });
 
   const update = async (quiet: boolean): Promise<void> => {
     const answer = await attempt(header, quiet, () => api<RepositoryDetail>(base), () => void update(false));
@@ -75,7 +75,7 @@ export function repository_view(id: string, tab: string): View {
 
   const tab_context: TabContext = { id, base, body, detail: () => detail!, target, refresh: () => void update(true) };
   const builders: Record<string, (context: TabContext) => (quiet: boolean) => Promise<void>> = {
-    overview: overview_tab, archives: archives_tab, jobs: jobs_tab, sources: sources_tab, schedule: schedule_tab, events: events_tab, config: config_tab,
+    overview: overview_tab, archives: archives_tab, runs: runs_tab, sources: sources_tab, schedule: schedule_tab, events: events_tab, config: config_tab,
   };
 
   void (async () => {
@@ -94,7 +94,7 @@ export function repository_view(id: string, tab: string): View {
       body,
     ),
     update: async (changes) => {
-      if (touches(changes, id, ["repository", "job", "timers", "config"])) await update(true);
+      if (touches(changes, id, ["repository", "run", "timers", "config"])) await update(true);
     },
   };
 }
@@ -118,8 +118,8 @@ function repository_header(repository: RepositoryDetail, target: ActionTarget): 
       h("h1", {}, repository.name),
       status_badge(repository.status),
       repository.source === "declared" ? chip("declared", "Set in the Nix configuration; edit it there") : chip("added here", "Added from this page; edit it on its Config tab"),
-      repository.running_job && h("a", { class: "chip chip-info", href: link(["jobs", String(repository.running_job.id)]) },
-        `${repository.running_job.kind} running${repository.running_job.progress ? ` · ${repository.running_job.progress}` : ""}`),
+      repository.running_run && h("a", { class: "chip chip-info", href: link(["runs", String(repository.running_run.id)]) },
+        `${repository.running_run.kind} running${repository.running_run.progress ? ` · ${repository.running_run.progress}` : ""}`),
       repository.downloads.length > 0 && h("a", { class: "chip chip-info", href: link(["repositories", repository.id]) },
         repository.downloads.length === 1 ? "download running" : `${repository.downloads.length} downloads running`),
     ),
@@ -146,7 +146,7 @@ function action_button(action: Action, target: ActionTarget, class_name = ""): H
 async function poll_now(target: ActionTarget): Promise<void> {
   toast("Polling…");
   try {
-    await api(`${repository_path(target.repository_id)}/poll`, {});
+    await api(`${repository_path(target.target_id)}/poll`, {});
     toast("Poll finished.", { tone: "good" });
   } catch (error) {
     toast(`Poll failed: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
@@ -174,11 +174,11 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
     maintenance.replaceChildren(...maintenance_cards(repository, context.target()));
     const since = Math.floor(now_seconds() - history_span_in_seconds);
     await load(charts, async () => {
-      const [history, jobs] = await Promise.all([
+      const [history, runs] = await Promise.all([
         api<History>(`${context.base}/history${query({ since })}`),
-        api<Job[]>(`/api/jobs${query({ repository: context.id, limit: 60 })}`),
+        api<Run[]>(`/api/runs${query({ target: context.id, limit: 60 })}`),
       ]);
-      return history_charts(repository, history, jobs, since);
+      return history_charts(repository, history, runs, since);
     }, { quiet });
   };
 }
@@ -246,7 +246,7 @@ function maintenance_cards(repository: RepositoryDetail, target: ActionTarget): 
   ));
 }
 
-const job_colors: Record<Job["state"], string> = {
+const run_colors: Record<Run["state"], string> = {
   succeeded: "var(--status-success)",
   warning: "var(--status-warning)",
   failed: "var(--status-danger)",
@@ -254,10 +254,10 @@ const job_colors: Record<Job["state"], string> = {
   running: "var(--accent)",
 };
 
-function history_charts(repository: RepositoryDetail, history: History, jobs: Job[], since: number): HTMLElement[] {
+function history_charts(repository: RepositoryDetail, history: History, runs: Run[], since: number): HTMLElement[] {
   const polls = history.polls;
   const archives = history.archives.slice(0, 40).reverse();
-  const finished = jobs.filter((job) => job.ended_epoch !== null).slice(0, 40).reverse();
+  const finished = runs.filter((run) => run.ended_epoch !== null).slice(0, 40).reverse();
   const warns = repository.warn_age > 0 && repository.warn_age < repository.max_age;
   return [
     line_chart("Time since last backup", [
@@ -281,8 +281,8 @@ function history_charts(repository: RepositoryDetail, history: History, jobs: Jo
     bar_chart("New data in each archive", archives.map((archive) => ({
       label: archive.name, value: archive.deduplicated_size ?? 0, color: "var(--series-3)",
     })), size),
-    bar_chart("Job durations", finished.map((job) => ({
-      label: `${job.kind} #${job.id} ${job.state}`, value: job.ended_epoch! - job.started_epoch, color: job_colors[job.state],
+    bar_chart("Run durations", finished.map((run) => ({
+      label: `${run.kind} #${run.id} ${run.state}`, value: run.ended_epoch! - run.started_epoch, color: run_colors[run.state],
     })), duration),
     strip("Checks", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.checks_passed }))),
     strip("Restore canary", polls.slice(-60).map((poll) => ({ label: stamp(poll.epoch), ok: poll.canary_ok }))),
@@ -398,9 +398,9 @@ export function delete_archive(target: ActionTarget, archive: string, after?: ()
   });
 }
 
-// ── Jobs tab ─────────────────────────────────────────────────────────────────
+// ── Runs tab ─────────────────────────────────────────────────────────────────
 
-function jobs_tab(context: TabContext): (quiet: boolean) => Promise<void> {
+function runs_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   const route_query = current_route().query;
   let kind = route_query.get("kind") ?? "";
   let state = route_query.get("state") ?? "";
@@ -409,20 +409,20 @@ function jobs_tab(context: TabContext): (quiet: boolean) => Promise<void> {
 
   const refresh = async (quiet: boolean) => {
     await load(list, async () => {
-      const jobs = await api<Job[]>(`/api/jobs${query({ repository: context.id, kind, state, limit: page_size + 1, offset: (page - 1) * page_size })}`);
+      const runs = await api<Run[]>(`/api/runs${query({ target: context.id, kind, state, limit: page_size + 1, offset: (page - 1) * page_size })}`);
       return [
-        jobs_table(jobs.slice(0, page_size), { with_repository: false, refresh: context.refresh }),
-        pager(page, jobs.length > page_size, (next) => { page = next; replace_query({ page: next === 1 ? null : next }); void refresh(false); }),
+        runs_table(runs.slice(0, page_size), { with_repository: false, refresh: context.refresh }),
+        pager(page, runs.length > page_size, (next) => { page = next; replace_query({ page: next === 1 ? null : next }); void refresh(false); }),
       ];
     }, { quiet });
   };
   const refilter = () => { page = 1; replace_query({ kind, state, page: null }); void refresh(false); };
 
-  context.body.replaceChildren(section("Jobs", h("div", {},
+  context.body.replaceChildren(section("Runs", h("div", {},
     toolbar(
-      select("Kind", job_kinds, kind, (value) => { kind = value; refilter(); }),
-      select("Outcome", job_states, state, (value) => { state = value; refilter(); }),
-      h("a", { href: link(["jobs"], { repository: context.id }) }, "Open in all jobs"),
+      select("Kind", run_kinds, kind, (value) => { kind = value; refilter(); }),
+      select("Outcome", run_states, state, (value) => { state = value; refilter(); }),
+      h("a", { href: link(["runs"], { repository: context.id }) }, "Open in all runs"),
     ),
     list)));
   return refresh;
@@ -471,7 +471,7 @@ function events_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   const list = h("div", {}, skeleton(5));
   const refresh = async (quiet: boolean) => {
     await load(list, async () => {
-      const events = await api<EventRow[]>(`/api/events${query({ repository: context.id, level, limit: page_size + 1, offset: (page - 1) * page_size })}`);
+      const events = await api<EventRow[]>(`/api/events${query({ target: context.id, level, limit: page_size + 1, offset: (page - 1) * page_size })}`);
       return [
         events_list(events.slice(0, page_size), false),
         pager(page, events.length > page_size, (next) => { page = next; replace_query({ page: next === 1 ? null : next }); void refresh(false); }),

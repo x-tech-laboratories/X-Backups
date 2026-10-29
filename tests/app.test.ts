@@ -17,7 +17,7 @@ const password_hash = hash_password("correct horse");
 
 const LIST = JSON.stringify({ archives: [{ name: "a1", time: "2026-10-01T10:00:00" }, { name: "a0", time: "2026-09-30T10:00:00" }] });
 
-// A job poll's answer while the job is still running and has written nothing.
+// A run poll's answer while the run is still going and has written nothing.
 const RUNNING = "===XBACKUPS_SIZE===\n0\n===XBACKUPS_EXIT===\n\n===XBACKUPS_ALIVE===\n1\n===XBACKUPS_OUT===\n";
 
 const CONFIG: Config = {
@@ -139,7 +139,7 @@ describe("repositories", () => {
 
     const [odin] = (await get("/api/repositories")).json();
 
-    expect(odin).toMatchObject({ id: "odin", archive_count: 2, running_job: null });
+    expect(odin).toMatchObject({ id: "odin", archive_count: 2, running_run: null, target_id: "odin", host: "local", job: "odin", repository: "odin" });
   });
 
   it("maps a repository without a host onto this server, from its sources", async () => {
@@ -195,7 +195,7 @@ describe("archives, config and search", () => {
 
     const found = (await get("/api/search?q=A1")).json();
 
-    expect(found.archives).toEqual([{ repository_id: "odin", name: "a1", epoch: expect.any(Number) }]);
+    expect(found.archives).toEqual([{ target_id: "odin", name: "a1", epoch: expect.any(Number) }]);
     expect((await get("/api/search?q=odi")).json().repositories).toEqual([{ id: "odin", name: "odin" }]);
   });
 });
@@ -225,7 +225,7 @@ describe("downloads", () => {
     expect(response.headers["content-disposition"]).toContain(`filename="a1.tar.gz"`);
     expect(streamed[0].command).toContain("export-tar --tar-filter=gzip");
     expect(streamed[0].command).toContain("::a1 - etc home");
-    expect(store.events({ repository_id: "odin" }).some((event) => event.message.includes("downloaded etc, home from a1"))).toBe(true);
+    expect(store.events({ target_id: "odin" }).some((event) => event.message.includes("downloaded etc, home from a1"))).toBe(true);
   });
 
   it("lists a running download with who started it, and stops it", async () => {
@@ -264,22 +264,22 @@ describe("downloads", () => {
   });
 });
 
-// ── Actions and jobs ─────────────────────────────────────────────────────────
+// ── Actions and runs ─────────────────────────────────────────────────────────
 
-describe("actions and jobs", () => {
-  it("starts a backup job, shows it and cancels it", async () => {
+describe("actions and runs", () => {
+  it("starts a backup run, shows it and cancels it", async () => {
     const started = (await post("/api/repositories/odin/actions/run_backup")).json();
     expect(started.success).toBe(true);
 
-    const [job] = (await get("/api/jobs?repository=odin")).json();
-    expect(job).toMatchObject({ kind: "backup", state: "running", pid: 4242 });
-    expect((await get(`/api/jobs/${job.id}`)).json().output).toEqual([]);
+    const [run] = (await get("/api/runs?target=odin")).json();
+    expect(run).toMatchObject({ kind: "backup", state: "running", pid: 4242, target_id: "odin", host: "local", job: "odin", repository: "odin", task: null });
+    expect((await get(`/api/runs/${run.id}`)).json().output).toEqual([]);
 
-    const cancelled = (await post(`/api/jobs/${job.id}/cancel`)).json();
+    const cancelled = (await post(`/api/runs/${run.id}/cancel`)).json();
     expect(cancelled.success).toBe(true);
     expect(commands.at(-1)).toBe("kill -TERM -- -4242");
-    expect((await get(`/api/jobs/${job.id}`)).json().state).toBe("cancelled");
-    expect((await post(`/api/jobs/${job.id}/cancel`)).statusCode).toBe(409);
+    expect((await get(`/api/runs/${run.id}`)).json().state).toBe("cancelled");
+    expect((await post(`/api/runs/${run.id}/cancel`)).statusCode).toBe(409);
   });
 
   it("answers a refusal without running anything", async () => {
@@ -293,18 +293,18 @@ describe("actions and jobs", () => {
     expect((await post("/api/repositories/odin/actions/format_disk")).statusCode).toBe(404);
   });
 
-  it("runs a finished job's action again", async () => {
+  it("runs a finished run's action again", async () => {
     await post("/api/repositories/odin/actions/run_backup");
-    const [job] = (await get("/api/jobs")).json();
-    expect(job.retry).toBe(false);
-    expect((await post(`/api/jobs/${job.id}/retry`)).statusCode).toBe(409);
-    await post(`/api/jobs/${job.id}/cancel`);
-    expect((await get(`/api/jobs/${job.id}`)).json().retry).toBe(true);
+    const [run] = (await get("/api/runs")).json();
+    expect(run.retry).toBe(false);
+    expect((await post(`/api/runs/${run.id}/retry`)).statusCode).toBe(409);
+    await post(`/api/runs/${run.id}/cancel`);
+    expect((await get(`/api/runs/${run.id}`)).json().retry).toBe(true);
 
-    const retried = (await post(`/api/jobs/${job.id}/retry`)).json();
+    const retried = (await post(`/api/runs/${run.id}/retry`)).json();
 
     expect(retried.success).toBe(true);
-    expect((await get("/api/jobs?kind=backup")).json()).toHaveLength(2);
+    expect((await get("/api/runs?kind=backup")).json()).toHaveLength(2);
   });
 
   it("logs events", async () => {

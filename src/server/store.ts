@@ -1,4 +1,5 @@
-// Keeps each repository's state, its poll history, archives, events and jobs in one SQLite file under X_BACKUPS_STATE_DIR.
+// Keeps each target's state, its poll history, archives, events and runs in one SQLite file under X_BACKUPS_STATE_DIR,
+// each row beside the host, job and repository its target is built from.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
@@ -9,9 +10,33 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import type { HostSample } from "./host_health.ts";
 import type { Timer } from "./timers.ts";
-import type { CollectResult, JobRecord, JobState, JobStore, LogLevel, MonitorStatus, RepositoryState } from "./borg/types.ts";
+import { own_host_name } from "./config.ts";
+import type { CollectResult, LogLevel, MonitorStatus, RepositoryState, RunRecord, RunState, RunStore } from "./borg/types.ts";
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
+
+// A target with the entities it is built from; a repository only watched has no job.
+export interface TargetKey {
+  target_id: string;
+  host: string;
+  job: string | null;
+  repository: string;
+}
+
+// The entity names a row keeps beside its target, null on an older row of a target no longer configured.
+export interface TargetColumns {
+  target_id: string;
+  host: string | null;
+  job: string | null;
+  repository: string | null;
+}
+
+// A host as the store needs it, to move rows kept under its address to its name.
+export interface HostKey {
+  name: string;
+  kind: string;
+  address: string | null;
+}
 
 export interface PollRow {
   epoch: number;
@@ -36,9 +61,8 @@ export interface ArchiveRow {
   file_count: number | null;
 }
 
-export interface EventRow {
+export interface EventRow extends TargetColumns {
   id: number;
-  repository_id: string;
   epoch: number;
   level: LogLevel;
   message: string;
@@ -72,23 +96,27 @@ const timer_run_retention_in_seconds = 90 * 86400;
 // How far before its listed elapse a timer may trigger and still count as that run, for systemd's AccuracySec.
 const timer_trigger_slack_in_seconds = 60;
 
-export interface JobRow extends JobRecord {
-  repository_id: string;
+export interface RunRow extends RunRecord, TargetColumns {
+  // The task the run belongs to, or null for an action started by hand.
+  task: string | null;
   started_epoch: number;
   ended_epoch: number | null;
 }
 
 // What changed, so a page that listens can fetch only what it shows.
 export interface Change {
-  kind: "repository" | "job" | "timers" | "hosts" | "config";
-  repository_id: string | null;
-  job_id?: number;
+  kind: "repository" | "run" | "timers" | "hosts" | "config";
+  target_id: string | null;
+  run_id?: number;
 }
 
-export interface JobFilter {
-  repository_id?: string;
-  // The repositories a viewer may see; an empty list matches nothing.
-  repository_ids?: string[];
+export interface RunFilter {
+  target_id?: string;
+  host?: string;
+  job?: string;
+  repository?: string;
+  // The target ids and repository names a viewer is granted; an empty list matches nothing.
+  granted?: string[];
   // A kind matches itself and its variants, so "check" also matches "check-data".
   kind?: string;
   state?: string;
@@ -98,8 +126,11 @@ export interface JobFilter {
 }
 
 export interface EventFilter {
-  repository_id?: string;
-  repository_ids?: string[];
+  target_id?: string;
+  host?: string;
+  job?: string;
+  repository?: string;
+  granted?: string[];
   level?: string;
   limit?: number;
   offset?: number;
@@ -107,13 +138,25 @@ export interface EventFilter {
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
+// The tables keyed by target, each with the entity names beside.
+const target_tables = ["repository_states", "polls", "archives", "events", "runs"] as const;
+
+// The tables keyed by a host's name.
+const host_tables = ["timers", "timer_runs", "timer_upcoming", "host_samples"] as const;
+
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS repository_states (
-    repository_id TEXT PRIMARY KEY,
+    target_id TEXT PRIMARY KEY,
+    host TEXT,
+    job TEXT,
+    repository TEXT,
     state TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS polls (
-    repository_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    host TEXT,
+    job TEXT,
+    repository TEXT,
     epoch INTEGER NOT NULL,
     status TEXT,
     original_size INTEGER,
@@ -125,28 +168,38 @@ const SCHEMA = `
     last_backup_epoch INTEGER,
     canary_ok INTEGER,
     checks_passed INTEGER,
-    PRIMARY KEY (repository_id, epoch)
+    PRIMARY KEY (target_id, epoch)
   );
   CREATE TABLE IF NOT EXISTS archives (
-    repository_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    host TEXT,
+    job TEXT,
+    repository TEXT,
     name TEXT NOT NULL,
     epoch INTEGER NOT NULL,
     original_size INTEGER,
     compressed_size INTEGER,
     deduplicated_size INTEGER,
     file_count INTEGER,
-    PRIMARY KEY (repository_id, name)
+    PRIMARY KEY (target_id, name)
   );
   CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
-    repository_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    host TEXT,
+    job TEXT,
+    repository TEXT,
     epoch INTEGER NOT NULL,
     level TEXT NOT NULL,
     message TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS jobs (
+  CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY,
-    repository_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    host TEXT,
+    job TEXT,
+    repository TEXT,
+    task TEXT,
     kind TEXT NOT NULL,
     command TEXT NOT NULL,
     workdir TEXT,
@@ -159,11 +212,11 @@ const SCHEMA = `
     started_epoch INTEGER NOT NULL,
     ended_epoch INTEGER
   );
-  CREATE TABLE IF NOT EXISTS job_output (
-    job_id INTEGER NOT NULL,
+  CREATE TABLE IF NOT EXISTS run_output (
+    run_id INTEGER NOT NULL,
     line_number INTEGER NOT NULL,
     line TEXT NOT NULL,
-    PRIMARY KEY (job_id, line_number)
+    PRIMARY KEY (run_id, line_number)
   );
   CREATE TABLE IF NOT EXISTS timers (
     host TEXT NOT NULL,
@@ -201,8 +254,8 @@ const SCHEMA = `
     epoch INTEGER NOT NULL,
     PRIMARY KEY (host, unit, epoch)
   );
-  CREATE INDEX IF NOT EXISTS events_by_repository ON events (repository_id, id);
-  CREATE INDEX IF NOT EXISTS jobs_by_repository ON jobs (repository_id, id);
+  CREATE INDEX IF NOT EXISTS events_by_target ON events (target_id, id);
+  CREATE INDEX IF NOT EXISTS runs_by_target ON runs (target_id, id);
   CREATE TABLE IF NOT EXISTS users (
     name TEXT PRIMARY KEY,
     role TEXT NOT NULL,
@@ -236,11 +289,14 @@ export class Store {
   private readonly database: DatabaseSync;
   // Emits a "change" with a Change after each write a page might show.
   readonly changes = new EventEmitter();
+  // The configured targets by id, whose entity names each new row takes.
+  private readonly targets = new Map<string, TargetKey>();
 
   // A path of ":memory:" keeps everything in memory, for tests.
   constructor(path: string) {
     this.database = new DatabaseSync(path);
     this.database.exec("PRAGMA journal_mode = WAL");
+    this.migrate();
     this.database.exec(SCHEMA);
     // Every open page listens, so more listeners than Node's default is normal rather than a leak.
     this.changes.setMaxListeners(0);
@@ -261,57 +317,122 @@ export class Store {
     this.database.close();
   }
 
-  // ── Repository state ─────────────────────────────────────────────────────
+  // ── Targets ──────────────────────────────────────────────────────────────
 
-  load_state(repository_id: string): RepositoryState | null {
-    const row = this.get("SELECT state FROM repository_states WHERE repository_id = ?", repository_id);
+  // Brings a database from before targets and runs to today's tables, keeping every row; running it again changes nothing.
+  private migrate(): void {
+    const tables = new Set(this.all("SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => String(row.name)));
+    if (tables.has("jobs") && !tables.has("runs")) this.database.exec("ALTER TABLE jobs RENAME TO runs");
+    if (tables.has("job_output") && !tables.has("run_output")) this.database.exec("ALTER TABLE job_output RENAME TO run_output");
+    if (this.columns("run_output").has("job_id")) this.database.exec("ALTER TABLE run_output RENAME COLUMN job_id TO run_id");
+    this.database.exec("DROP INDEX IF EXISTS events_by_repository");
+    this.database.exec("DROP INDEX IF EXISTS jobs_by_repository");
+    for (const table of target_tables) {
+      const columns = this.columns(table);
+      // A table not made yet is made whole by the schema.
+      if (columns.size === 0) continue;
+      if (columns.has("repository_id")) this.database.exec(`ALTER TABLE ${table} RENAME COLUMN repository_id TO target_id`);
+      for (const column of ["host", "job", "repository", ...(table === "runs" ? ["task"] : [])]) {
+        if (!columns.has(column)) this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+      }
+    }
+  }
+
+  private columns(table: string): Set<string> {
+    return new Set(this.all(`PRAGMA table_info(${table})`).map((row) => String(row.name)));
+  }
+
+  // Takes the configured targets and hosts: new rows take each target's entity names, rows kept before they had any
+  // are given them, and a host's timers and readings kept under its address move to its name.
+  adopt_targets(targets: TargetKey[], hosts: HostKey[] = []): void {
+    this.transaction(() => {
+      for (const target of targets) {
+        this.targets.set(target.target_id, target);
+        for (const table of target_tables) {
+          this.run(
+            `UPDATE ${table} SET host = ?, job = ?, repository = ? WHERE target_id = ? AND repository IS NULL`,
+            target.host, target.job, target.repository, target.target_id,
+          );
+        }
+      }
+      for (const host of hosts) {
+        // Rows were kept under the address commands reached, or "local" for this machine.
+        const old_key = host.address ?? own_host_name;
+        if (host.kind !== "managed" || old_key === host.name || hosts.some((other) => other.name === old_key)) continue;
+        for (const table of host_tables) {
+          this.run(`UPDATE OR IGNORE ${table} SET host = ? WHERE host = ?`, host.name, old_key);
+          this.run(`DELETE FROM ${table} WHERE host = ?`, old_key);
+        }
+      }
+    });
+  }
+
+  // The configured target with that id, or null for one no longer configured.
+  target(target_id: string): TargetKey | null {
+    return this.targets.get(target_id) ?? null;
+  }
+
+  // The entity names a new row of the target takes.
+  names(target_id: string): [host: string | null, job: string | null, repository: string | null] {
+    const target = this.targets.get(target_id);
+    return target === undefined ? [null, null, null] : [target.host, target.job, target.repository];
+  }
+
+  // ── Target state ─────────────────────────────────────────────────────────
+
+  load_state(target_id: string): RepositoryState | null {
+    const row = this.get("SELECT state FROM repository_states WHERE target_id = ?", target_id);
     return row ? JSON.parse(String(row.state)) as RepositoryState : null;
   }
 
   // Keeps what a poll or action reports: its new state, its events, and for a poll one history row.
-  apply(repository_id: string, result: CollectResult, options: { poll: boolean; epoch?: number }): void {
+  apply(target_id: string, result: CollectResult, options: { poll: boolean; epoch?: number }): void {
     const epoch = options.epoch ?? now_seconds();
     this.transaction(() => {
-      if (result.state !== null) this.save_state(repository_id, result.state);
-      if (options.poll && result.state !== null) this.add_poll(repository_id, epoch, result.state, result.status);
+      if (result.state !== null) this.save_state(target_id, result.state);
+      if (options.poll && result.state !== null) this.add_poll(target_id, epoch, result.state, result.status);
       // A repository poll's routine lines would bury everything else, so only its warnings and errors are kept.
       const routine = options.poll && result.status !== null;
       for (const [message, level] of result.logs) {
         if (routine && level === "INFO") continue;
-        this.run("INSERT INTO events (repository_id, epoch, level, message) VALUES (?, ?, ?, ?)", repository_id, epoch, level, message);
+        this.run(
+          "INSERT INTO events (target_id, host, job, repository, epoch, level, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          target_id, ...this.names(target_id), epoch, level, message,
+        );
       }
     });
-    this.changed({ kind: "repository", repository_id });
+    this.changed({ kind: "repository", target_id });
   }
 
-  private save_state(repository_id: string, state: RepositoryState): void {
+  private save_state(target_id: string, state: RepositoryState): void {
     this.run(
-      "INSERT INTO repository_states (repository_id, state) VALUES (?, ?) ON CONFLICT (repository_id) DO UPDATE SET state = excluded.state",
-      repository_id, JSON.stringify(state),
+      `INSERT INTO repository_states (target_id, host, job, repository, state) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (target_id) DO UPDATE SET state = excluded.state`,
+      target_id, ...this.names(target_id), JSON.stringify(state),
     );
     for (const archive of state.archives) {
       this.run(
-        `INSERT INTO archives (repository_id, name, epoch, original_size, compressed_size, deduplicated_size, file_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (repository_id, name) DO UPDATE SET
+        `INSERT INTO archives (target_id, host, job, repository, name, epoch, original_size, compressed_size, deduplicated_size, file_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (target_id, name) DO UPDATE SET
            original_size = coalesce(excluded.original_size, original_size),
            compressed_size = coalesce(excluded.compressed_size, compressed_size),
            deduplicated_size = coalesce(excluded.deduplicated_size, deduplicated_size),
            file_count = coalesce(excluded.file_count, file_count)`,
-        repository_id, archive.name, archive.epoch, archive.original ?? null, archive.compressed ?? null,
+        target_id, ...this.names(target_id), archive.name, archive.epoch, archive.original ?? null, archive.compressed ?? null,
         archive.deduplicated ?? null, archive.nfiles ?? null,
       );
     }
   }
 
-  // Only a poll of the repository itself adds a row; a poll that only followed a job leaves the state alone.
-  private add_poll(repository_id: string, epoch: number, state: RepositoryState, status: MonitorStatus | null): void {
+  // Only a poll of the repository itself adds a row; a poll that only followed a run leaves the state alone.
+  private add_poll(target_id: string, epoch: number, state: RepositoryState, status: MonitorStatus | null): void {
     const stats = state.stats;
     this.run(
-      `INSERT OR REPLACE INTO polls (repository_id, epoch, status, original_size, compressed_size, deduplicated_size,
+      `INSERT OR REPLACE INTO polls (target_id, host, job, repository, epoch, status, original_size, compressed_size, deduplicated_size,
          total_chunks, unique_chunks, archive_count, last_backup_epoch, canary_ok, checks_passed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      repository_id, epoch, status, stats?.original_size ?? null, stats?.compressed_size ?? null,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      target_id, ...this.names(target_id), epoch, status, stats?.original_size ?? null, stats?.compressed_size ?? null,
       stats?.deduplicated_size ?? null, stats?.total_chunks ?? null, stats?.unique_chunks ?? null,
       state.archive_count, state.last_backup_epoch, flag(state.canary?.ok), flag(state.checks?.passed),
     );
@@ -319,8 +440,8 @@ export class Store {
 
   // ── History ──────────────────────────────────────────────────────────────
 
-  polls(repository_id: string, since_epoch = 0): PollRow[] {
-    return this.all("SELECT * FROM polls WHERE repository_id = ? AND epoch >= ? ORDER BY epoch", repository_id, since_epoch)
+  polls(target_id: string, since_epoch = 0): PollRow[] {
+    return this.all("SELECT * FROM polls WHERE target_id = ? AND epoch >= ? ORDER BY epoch", target_id, since_epoch)
       .map((row) => ({
         epoch: Number(row.epoch),
         status: row.status as MonitorStatus | null,
@@ -337,8 +458,8 @@ export class Store {
   }
 
   // Every archive ever listed, newest first.
-  archives(repository_id: string): ArchiveRow[] {
-    return this.all("SELECT * FROM archives WHERE repository_id = ? ORDER BY epoch DESC", repository_id).map((row) => ({
+  archives(target_id: string): ArchiveRow[] {
+    return this.all("SELECT * FROM archives WHERE target_id = ? ORDER BY epoch DESC", target_id).map((row) => ({
       name: String(row.name),
       epoch: Number(row.epoch),
       original_size: number_or_null(row.original_size),
@@ -348,18 +469,14 @@ export class Store {
     }));
   }
 
-  // The newest events first, for one repository or all of them, at one level or all.
+  // The newest events first, for one target, host, job or repository or all of them, at one level or all.
   events(options: EventFilter = {}): EventRow[] {
-    if (options.repository_ids?.length === 0) return [];
-    const [where, values] = conditions([
-      ["repository_id = ?", options.repository_id],
-      [in_list("repository_id", options.repository_ids), options.repository_ids],
-      ["level = ?", options.level],
-    ]);
+    if (options.granted?.length === 0) return [];
+    const [where, values] = conditions([...target_conditions(options), ["level = ?", options.level]]);
     const sql = `SELECT * FROM events ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
     return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map((row) => ({
       id: Number(row.id),
-      repository_id: String(row.repository_id),
+      ...target_columns(row),
       epoch: Number(row.epoch),
       level: row.level as LogLevel,
       message: String(row.message),
@@ -396,7 +513,7 @@ export class Store {
         for (const elapse of timer.upcoming) this.run("INSERT OR IGNORE INTO timer_upcoming (host, unit, epoch) VALUES (?, ?, ?)", host, timer.unit, elapse);
       }
     });
-    this.changed({ kind: "timers", repository_id: null });
+    this.changed({ kind: "timers", target_id: null });
   }
 
   // ── Hosts ────────────────────────────────────────────────────────────────
@@ -410,7 +527,7 @@ export class Store {
         host, epoch, sample.load1, sample.cpus, sample.memory_total, sample.memory_available, sample.disk_size, sample.disk_available,
       );
     });
-    this.changed({ kind: "hosts", repository_id: null });
+    this.changed({ kind: "hosts", target_id: null });
   }
 
   // Every host's readings from `since` on, oldest first.
@@ -457,34 +574,34 @@ export class Store {
     }));
   }
 
-  // ── Jobs ─────────────────────────────────────────────────────────────────
+  // ── Runs ─────────────────────────────────────────────────────────────────
 
-  jobs_for(repository_id: string): JobStore {
-    return new RepositoryJobs(this, repository_id);
+  runs_for(target: TargetKey): RunStore {
+    this.targets.set(target.target_id, target);
+    return new TargetRuns(this, target.target_id);
   }
 
-  job(job_id: number): JobRow | null {
-    const row = this.get("SELECT * FROM jobs WHERE id = ?", job_id);
-    return row ? job_row(row) : null;
+  run_row(run_id: number): RunRow | null {
+    const row = this.get("SELECT * FROM runs WHERE id = ?", run_id);
+    return row ? run_row(row) : null;
   }
 
-  // The newest jobs first, narrowed by whatever the filter names.
-  jobs(options: JobFilter = {}): JobRow[] {
-    if (options.repository_ids?.length === 0) return [];
+  // The newest runs first, narrowed by whatever the filter names.
+  runs(options: RunFilter = {}): RunRow[] {
+    if (options.granted?.length === 0) return [];
     const [where, values] = conditions([
-      ["repository_id = ?", options.repository_id],
-      [in_list("repository_id", options.repository_ids), options.repository_ids],
+      ...target_conditions(options),
       ["(kind = ? OR kind LIKE ? || '-%')", options.kind === undefined ? undefined : [options.kind, options.kind]],
       ["state = ?", options.state],
       ["started_epoch >= ?", options.since_epoch],
     ]);
-    const sql = `SELECT * FROM jobs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
-    return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map(job_row);
+    const sql = `SELECT * FROM runs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
+    return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map(run_row);
   }
 
-  // The job's output lines after the first skipped ones, so a page can fetch only what is new.
-  job_output(job_id: number, skip = 0): string[] {
-    return this.all("SELECT line FROM job_output WHERE job_id = ? AND line_number >= ? ORDER BY line_number", job_id, skip)
+  // The run's output lines after the first skipped ones, so a page can fetch only what is new.
+  run_output(run_id: number, skip = 0): string[] {
+    return this.all("SELECT line FROM run_output WHERE run_id = ? AND line_number >= ? ORDER BY line_number", run_id, skip)
       .map((row) => String(row.line));
   }
 
@@ -514,88 +631,91 @@ export class Store {
   }
 }
 
-// ── One repository's jobs ────────────────────────────────────────────────────
+// ── One target's runs ────────────────────────────────────────────────────────
 
-class RepositoryJobs implements JobStore {
+class TargetRuns implements RunStore {
   private readonly store: Store;
-  private readonly repository_id: string;
+  private readonly target_id: string;
 
-  constructor(store: Store, repository_id: string) {
+  constructor(store: Store, target_id: string) {
     this.store = store;
-    this.repository_id = repository_id;
+    this.target_id = target_id;
   }
 
-  running(): JobRecord | null {
-    const row = this.store.get("SELECT * FROM jobs WHERE repository_id = ? AND state = 'running' ORDER BY id DESC LIMIT 1", this.repository_id);
-    return row ? job_row(row) : null;
+  running(): RunRecord | null {
+    const row = this.store.get("SELECT * FROM runs WHERE target_id = ? AND state = 'running' ORDER BY id DESC LIMIT 1", this.target_id);
+    return row ? run_row(row) : null;
   }
 
-  // A detached action's job is kept under the action's own id as its kind.
-  action_job(action_id: string): JobRecord | null {
+  // A detached action's run is kept under the action's own id as its kind.
+  action_run(action_id: string): RunRecord | null {
     const row = this.store.get(
-      "SELECT * FROM jobs WHERE repository_id = ? AND kind = ? AND state = 'running' ORDER BY id DESC LIMIT 1",
-      this.repository_id, action_id,
+      "SELECT * FROM runs WHERE target_id = ? AND kind = ? AND state = 'running' ORDER BY id DESC LIMIT 1",
+      this.target_id, action_id,
     );
-    return row ? job_row(row) : null;
+    return row ? run_row(row) : null;
   }
 
+  // Every run is an action started by hand until the scheduler starts tasks, so none has a task yet.
   create(kind: string, command: string, workdir: string | null): number {
-    const job_id = this.store.run(
-      "INSERT INTO jobs (repository_id, kind, command, workdir, state, started_epoch) VALUES (?, ?, ?, ?, 'running', ?)",
-      this.repository_id, kind, command, workdir, now_seconds(),
+    const run_id = this.store.run(
+      `INSERT INTO runs (target_id, host, job, repository, task, kind, command, workdir, state, started_epoch)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'running', ?)`,
+      this.target_id, ...this.store.names(this.target_id), kind, command, workdir, now_seconds(),
     );
-    this.changed(job_id);
-    return job_id;
+    this.changed(run_id);
+    return run_id;
   }
 
-  set_pid(job_id: number, pid: number): void {
-    this.store.run("UPDATE jobs SET pid = ? WHERE id = ?", pid, job_id);
+  set_pid(run_id: number, pid: number): void {
+    this.store.run("UPDATE runs SET pid = ? WHERE id = ?", pid, run_id);
   }
 
-  set_progress(job_id: number, summary: string): void {
-    this.store.run("UPDATE jobs SET progress = ? WHERE id = ?", summary, job_id);
-    this.changed(job_id);
+  set_progress(run_id: number, summary: string): void {
+    this.store.run("UPDATE runs SET progress = ? WHERE id = ?", summary, run_id);
+    this.changed(run_id);
   }
 
-  append_output(job_id: number, lines: string[]): void {
+  append_output(run_id: number, lines: string[]): void {
     this.store.transaction(() => {
-      const row = this.store.get("SELECT count(*) AS count FROM job_output WHERE job_id = ?", job_id);
+      const row = this.store.get("SELECT count(*) AS count FROM run_output WHERE run_id = ?", run_id);
       let line_number = Number(row?.count ?? 0);
       for (const line of lines) {
-        this.store.run("INSERT INTO job_output (job_id, line_number, line) VALUES (?, ?, ?)", job_id, line_number++, line);
+        this.store.run("INSERT INTO run_output (run_id, line_number, line) VALUES (?, ?, ?)", run_id, line_number++, line);
       }
     });
-    this.changed(job_id);
+    this.changed(run_id);
   }
 
-  bump_output_seq(job_id: number, new_seq: number): void {
-    this.store.run("UPDATE jobs SET output_seq = ? WHERE id = ?", new_seq, job_id);
+  bump_output_seq(run_id: number, new_seq: number): void {
+    this.store.run("UPDATE runs SET output_seq = ? WHERE id = ?", new_seq, run_id);
   }
 
-  finish(job_id: number, state: JobState, details: { exit_code?: number | null; error?: string | null }): void {
+  finish(run_id: number, state: RunState, details: { exit_code?: number | null; error?: string | null }): void {
     this.store.run(
-      "UPDATE jobs SET state = ?, exit_code = ?, error = ?, ended_epoch = ? WHERE id = ?",
-      state, details.exit_code ?? null, details.error ?? null, now_seconds(), job_id,
+      "UPDATE runs SET state = ?, exit_code = ?, error = ?, ended_epoch = ? WHERE id = ?",
+      state, details.exit_code ?? null, details.error ?? null, now_seconds(), run_id,
     );
-    this.changed(job_id);
+    this.changed(run_id);
   }
 
-  private changed(job_id: number): void {
-    this.store.changed({ kind: "job", repository_id: this.repository_id, job_id });
+  private changed(run_id: number): void {
+    this.store.changed({ kind: "run", target_id: this.target_id, run_id });
   }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function job_row(row: Record<string, unknown>): JobRow {
+function run_row(row: Record<string, unknown>): RunRow {
   return {
     id: Number(row.id),
-    repository_id: String(row.repository_id),
+    ...target_columns(row),
+    task: string_or_null(row.task),
     kind: String(row.kind),
     command: String(row.command),
     workdir: row.workdir === null ? null : String(row.workdir),
     pid: number_or_null(row.pid),
-    state: row.state as JobState,
+    state: row.state as RunState,
     progress: row.progress === null ? null : String(row.progress),
     output_seq: Number(row.output_seq),
     exit_code: number_or_null(row.exit_code),
@@ -603,6 +723,22 @@ function job_row(row: Record<string, unknown>): JobRow {
     started_epoch: Number(row.started_epoch),
     ended_epoch: number_or_null(row.ended_epoch),
   };
+}
+
+function target_columns(row: Record<string, unknown>): TargetColumns {
+  return { target_id: String(row.target_id), host: string_or_null(row.host), job: string_or_null(row.job), repository: string_or_null(row.repository) };
+}
+
+// The conditions a filter by target or entity gives; a grant matches a target by its id or its repository's name.
+function target_conditions(filter: RunFilter | EventFilter): [sql: string, value: SQLInputValue | SQLInputValue[] | undefined][] {
+  const granted = filter.granted;
+  return [
+    ["target_id = ?", filter.target_id],
+    ["host = ?", filter.host],
+    ["job = ?", filter.job],
+    ["repository = ?", filter.repository],
+    [`(${in_list("target_id", granted)} OR ${in_list("repository", granted)})`, granted === undefined ? undefined : [...granted, ...granted]],
+  ];
 }
 
 // A WHERE clause from the conditions whose value is given, with the values in order; an array fills several marks.
@@ -615,6 +751,10 @@ function conditions(parts: [sql: string, value: SQLInputValue | SQLInputValue[] 
 // `column IN (?, ?, …)` with a mark per value.
 function in_list(column: string, values: string[] | undefined): string {
   return `${column} IN (${(values ?? []).map(() => "?").join(", ")})`;
+}
+
+function string_or_null(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 function number_or_null(value: unknown): number | null {

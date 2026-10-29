@@ -763,7 +763,7 @@ describe("backup launch", () => {
     const harness = make(BACKUP_CFG);
     const outcome = launch(harness, "run_backup", 1234) as CollectResult;
     expect(outcome.success).toBe(true);
-    const job = harness.jobs.running()!;
+    const job = harness.runs.running()!;
     expect(job.kind).toBe("backup");
     expect(job.pid).toBe(1234);
     expect(job.state).toBe("running");
@@ -772,7 +772,7 @@ describe("backup launch", () => {
   it("records a dry run under its own kind", () => {
     const harness = make(BACKUP_CFG);
     launch(harness, "dry_run_backup");
-    expect(harness.jobs.running()!.kind).toBe("dry-run");
+    expect(harness.runs.running()!.kind).toBe("dry-run");
   });
 
   it("records no job when the launch fails", () => {
@@ -780,14 +780,14 @@ describe("backup launch", () => {
     const outcome = outcome_of(harness, "run_backup", [cmd_result(1, "", "boom")]);
     harness.apply(outcome);
     expect(outcome.success).toBe(false);
-    expect(harness.jobs.running()).toBeNull();
+    expect(harness.runs.running()).toBeNull();
   });
 
   it("stores the launched command with the passphrase hidden", () => {
     const harness = make(BACKUP_CFG);
     harness.repository.passphrase = "s3cret";
     launch(harness);
-    const stored = harness.jobs.running()!.command;
+    const stored = harness.runs.running()!.command;
     expect(stored).not.toContain("s3cret");
     expect(stored).toContain("BORG_PASSPHRASE_FD=0");
   });
@@ -813,14 +813,14 @@ describe("backup polling", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(10, null, true, "working\n"));
-    expect(harness.jobs.running()).not.toBeNull();
+    expect(harness.runs.running()).not.toBeNull();
   });
 
   it("leaves the job running when the poll goes unanswered", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     const result = poll_once(harness, cmd_result(-1, "", "Agent 'x' is not connected"));
-    expect(harness.jobs.running()).not.toBeNull();
+    expect(harness.runs.running()).not.toBeNull();
     expect(messages(result)).toContain("Could not poll");
   });
 
@@ -830,47 +830,47 @@ describe("backup polling", () => {
     expect(commands.length).toBeGreaterThanOrEqual(1);
     launch(harness);
     harness.apply(harness.repository.parse(commands.map(() => cmd_result(1, "", "repo busy"))));
-    expect(harness.jobs.running()).not.toBeNull();
+    expect(harness.runs.running()).not.toBeNull();
   });
 
   it("marks a finished job succeeded", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(20, 0, false, "done\n"));
-    expect(harness.jobs.running()).toBeNull();
-    expect(harness.jobs.recent()[0].state).toBe("succeeded");
+    expect(harness.runs.running()).toBeNull();
+    expect(harness.runs.recent()[0].state).toBe("succeeded");
   });
 
   it("keeps a finished job's last line though it arrives without its newline", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(30, null, true, "first line\nhalf a li"));
-    const job_id = harness.jobs.recent()[0].id;
-    expect(harness.jobs.output(job_id)).toEqual(["first line"]);
+    const run_id = harness.runs.recent()[0].id;
+    expect(harness.runs.output(run_id)).toEqual(["first line"]);
     poll_once(harness, job_poll(40, 3, false, "half a line"));
-    expect(harness.jobs.output(job_id)).toEqual(["first line", "half a line"]);
+    expect(harness.runs.output(run_id)).toEqual(["first line", "half a line"]);
   });
 
   it("marks borg's warning exit as finished with warnings", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(5, 1, false, ""));
-    expect(harness.jobs.recent()[0].state).toBe("warning");
+    expect(harness.runs.recent()[0].state).toBe("warning");
   });
 
   it("counts borg's error exit as failure", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(5, 2, false, ""));
-    expect(harness.jobs.recent()[0].state).toBe("failed");
-    expect(harness.jobs.recent()[0].exit_code).toBe(2);
+    expect(harness.runs.recent()[0].state).toBe("failed");
+    expect(harness.runs.recent()[0].exit_code).toBe(2);
   });
 
   it("fails a process that died without an exit file", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(5, null, false, "partial"));
-    expect(harness.jobs.recent()[0].state).toBe("failed");
+    expect(harness.runs.recent()[0].state).toBe("failed");
   });
 
   it("reads progress from borg's JSON log", () => {
@@ -878,8 +878,8 @@ describe("backup polling", () => {
     launch(harness);
     const progress = JSON.stringify({ type: "archive_progress", path: "/home/user/file.txt", original_size: 1048576, deduplicated_size: 524288, nfiles: 42 });
     poll_once(harness, job_poll(progress.length + 1, null, true, progress + "\n"));
-    expect(harness.jobs.running()!.progress).toContain("42 files");
-    expect(harness.jobs.running()!.progress).toContain("/home/user/file.txt");
+    expect(harness.runs.running()!.progress).toContain("42 files");
+    expect(harness.runs.running()!.progress).toContain("/home/user/file.txt");
   });
 
   it("ignores progress lines with zero counters", () => {
@@ -888,34 +888,34 @@ describe("backup polling", () => {
     const real = JSON.stringify({ original_size: 1048576, deduplicated_size: 524288, nfiles: 42, path: "src/big.bin", type: "archive_progress", finished: false });
     const opening = JSON.stringify({ original_size: 0, deduplicated_size: 0, nfiles: 0, path: "src", type: "archive_progress", finished: false });
     poll_once(harness, job_poll(real.length + 1, null, true, real + "\n"));
-    expect(harness.jobs.running()!.progress).toContain("42 files");
-    const offset = harness.jobs.running()!.output_seq;
+    expect(harness.runs.running()!.progress).toContain("42 files");
+    const offset = harness.runs.running()!.output_seq;
     poll_once(harness, job_poll(offset + opening.length + 1, null, true, opening + "\n"));
-    expect(harness.jobs.running()!.progress).toContain("42 files");
+    expect(harness.runs.running()!.progress).toContain("42 files");
   });
 
   it("stores the output lines", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(12, 0, false, "line1\nline2\n"));
-    expect(harness.jobs.output(harness.jobs.recent()[0].id)).toEqual(["line1", "line2"]);
+    expect(harness.runs.output(harness.runs.recent()[0].id)).toEqual(["line1", "line2"]);
   });
 
   it("completes a partial line across polls", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(4, null, true, "par"));
-    const job_id = harness.jobs.running()!.id;
-    expect(harness.jobs.output(job_id)).toEqual([]);
+    const run_id = harness.runs.running()!.id;
+    expect(harness.runs.output(run_id)).toEqual([]);
     poll_once(harness, job_poll(8, 0, false, "partial\n"));
-    expect(harness.jobs.output(job_id)).toEqual(["partial"]);
+    expect(harness.runs.output(run_id)).toEqual(["partial"]);
   });
 
   it("counts consumed output in bytes", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
     poll_once(harness, job_poll(6, null, true, "café\n"));
-    expect(harness.jobs.running()!.output_seq).toBe(6);
+    expect(harness.runs.running()!.output_seq).toBe(6);
   });
 });
 
@@ -1293,7 +1293,7 @@ describe("restore", () => {
     const harness = make(RESTORE_CFG);
     const outcome = outcome_of(harness, "restore_archive", [cmd_result(0, "77\n", "")], { archive: "a1", path: "etc" });
     harness.apply(outcome);
-    expect(harness.jobs.running()!.kind).toBe("restore");
+    expect(harness.runs.running()!.kind).toBe("restore");
     expect(outcome.content).toContain("/var/tmp/r/a1-");
   });
 
@@ -1374,7 +1374,7 @@ describe("maintenance", () => {
     expect(plan.commands[0]).toContain(args);
     expect(plan.commands[0]).toContain("--log-json");
     harness.apply(plan.read([cmd_result(0, "91\n", "")]));
-    expect(harness.jobs.running()!.kind).toBe(kind);
+    expect(harness.runs.running()!.kind).toBe(kind);
   });
 
   it("prunes by the retention policy for real", () => {
@@ -1419,7 +1419,7 @@ describe("purge", () => {
   it.each([["purge_preview", "purge-preview"], ["purge_excluded", "purge"]])("runs %s as a detached %s job", (action_id, kind) => {
     const harness = make(PURGE_CFG);
     launch(harness, action_id, 91);
-    expect(harness.jobs.running()!.kind).toBe(kind);
+    expect(harness.runs.running()!.kind).toBe(kind);
   });
 
   it("rewrites with the backup's exclusions, then compacts", () => {
@@ -1685,7 +1685,7 @@ describe("job preflight", () => {
     const outcome = outcome_of(harness, "run_backup", [cmd_result(0, "__XBACKUPS_SKIP__ host:22 is not answering SSH\n", "")]);
     expect(outcome.success).toBe(true);
     expect(outcome.status).toBeNull();
-    expect(harness.jobs.running()).toBeNull();
+    expect(harness.runs.running()).toBeNull();
     expect(outcome.content).toBe("Backup skipped: host:22 is not answering SSH");
   });
 
@@ -1792,7 +1792,7 @@ describe("check kinds", () => {
     const plan = plan_of(harness, "check_repo", { kind });
     expect(plan.commands[0]).toContain(option);
     harness.apply(plan.read([cmd_result(0, "91\n", "")]));
-    expect(harness.jobs.running()!.kind).toBe(job);
+    expect(harness.runs.running()!.kind).toBe(job);
   });
 
   it("dry runs the newest archive for an extract check", () => {

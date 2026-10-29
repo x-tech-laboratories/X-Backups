@@ -1,6 +1,6 @@
 // Runs a repository's actions from any page: what each does, how it is confirmed, and how its outcome is shown.
 
-import { api, query, repository_path, type Action, type Job, type Outcome } from "./api.ts";
+import { api, query, repository_path, type Action, type Run, type Outcome } from "./api.ts";
 import { h } from "./dom.ts";
 import { link } from "./router.ts";
 import { confirm_dialog, open_dialog, text_dialog, toast } from "./ui.ts";
@@ -31,7 +31,7 @@ const check_kinds: [kind: string, text: string][] = [
 ];
 
 export interface ActionTarget {
-  repository_id: string;
+  target_id: string;
   repository_name: string;
   // Called once the action has answered, so the page can refresh what it shows.
   done?: () => void;
@@ -68,25 +68,25 @@ function choose_check(target: ActionTarget): void {
 
 export async function run_action(target: ActionTarget, action_id: string, name: string, body: object = {}): Promise<void> {
   try {
-    const outcome = await api<Outcome>(`${repository_path(target.repository_id)}/actions/${action_id}`, body);
-    await show_outcome(target.repository_id, name, outcome);
+    const outcome = await api<Outcome>(`${repository_path(target.target_id)}/actions/${action_id}`, body);
+    await show_outcome(target.target_id, name, outcome);
   } catch (error) {
     toast(`${name} failed: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
   }
   target.done?.();
 }
 
-// A short answer becomes a toast, linking to the job it started; a long one, such as a preview, opens in a dialog.
-export async function show_outcome(repository_id: string, name: string, outcome: Outcome): Promise<void> {
+// A short answer becomes a toast, linking to the run it started; a long one, such as a preview, opens in a dialog.
+export async function show_outcome(target_id: string, name: string, outcome: Outcome): Promise<void> {
   const text = outcome.content ?? outcome.logs.map(([message]) => message).join("\n");
   if (text.includes("\n")) {
     text_dialog(name, text);
     return;
   }
-  let job_link: { href: string; text: string } | undefined;
+  let run_link: { href: string; text: string } | undefined;
   if (outcome.success && / started\b/.test(text)) {
-    const [job] = await api<Job[]>(`/api/jobs${query({ repository: repository_id, limit: 1 })}`).catch(() => []);
-    if (job?.state === "running") job_link = { href: link(["jobs", String(job.id)]), text: "Follow it" };
+    const [run] = await api<Run[]>(`/api/runs${query({ target: target_id, limit: 1 })}`).catch(() => []);
+    if (run?.state === "running") run_link = { href: link(["runs", String(run.id)]), text: "Follow it" };
   }
-  toast(text || `${name} done.`, { tone: outcome.success ? "good" : "bad", link: job_link });
+  toast(text || `${name} done.`, { tone: outcome.success ? "good" : "bad", link: run_link });
 }

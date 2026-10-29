@@ -123,7 +123,7 @@ export interface Stack {
   parts: Bar[];
 }
 
-// One bar per bucket, its parts stacked in order, such as the jobs of each hour by outcome.
+// One bar per bucket, its parts stacked in order, such as the runs of each hour by outcome.
 export function stacked_bar_chart(title: string, stacks: Stack[], legend: [label: string, color: string][], format: (value: number) => string): HTMLElement {
   const totals = stacks.map((stack) => stack.parts.reduce((sum, part) => sum + part.value, 0));
   if (totals.every((total) => total === 0)) return empty(title, "Nothing ran in this period.");

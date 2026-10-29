@@ -556,7 +556,7 @@ a.tile:hover { border-top-color: var(--border-hover); border-right-color: var(--
 .check-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); max-height: 220px; overflow: auto; }
 .secret-once { font-size: var(--text-h3); letter-spacing: var(--letter-spacing-caps); user-select: all; }
 
-/* ── Jobs ─────────────────────────────────────────────────────────────────── */
+/* ── Runs ─────────────────────────────────────────────────────────────────── */
 
 .result-bar { padding: var(--space-5) var(--space-6); border-radius: var(--radius-default); font-weight: 600; }
 .duration { display: inline-flex; align-items: center; gap: var(--space-4); }
@@ -581,7 +581,7 @@ a.tile:hover { border-top-color: var(--border-hover); border-right-color: var(--
   white-space: pre-wrap;
   word-break: break-word;
 }
-.job-output { min-height: 120px; }
+.run-output { min-height: 120px; }
 
 .events { list-style: none; padding: 0; margin: 0; }
 .events li { display: flex; gap: var(--space-5); align-items: baseline; flex-wrap: wrap; padding: var(--space-3) 0; border-bottom: var(--border-width) solid var(--border-default); font-size: var(--text-control); }

@@ -41,6 +41,8 @@ export interface AuthOptions {
   accounts: Accounts;
   oidc?: OidcClient | null;
   proxy?: ProxyLogin | null;
+  // The names a grant may give for a target; its own id unless set.
+  grant_names?: (target_id: string) => string[];
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -75,10 +77,10 @@ export function needed(method: string, path: string): "open" | "any" | Role {
   return "viewer";
 }
 
-// Whether the viewer sees the repository; handlers that list across repositories filter with this.
-export function visible(request: FastifyRequest, repository_id: string): boolean {
+// Whether the viewer sees a target, granted under any of its names; handlers that list across targets filter with this.
+export function visible(request: FastifyRequest, names: string[]): boolean {
   const repositories = request.viewer?.repositories;
-  return repositories === null || repositories === undefined || repositories.includes(repository_id);
+  return repositories === null || repositories === undefined || names.some((name) => repositories.includes(name));
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
@@ -134,7 +136,7 @@ function as_viewer(user: User, via: Viewer["via"]): Viewer {
 // ── Registration ─────────────────────────────────────────────────────────────
 
 export function register_auth(app: FastifyInstance, options: AuthOptions): void {
-  const { accounts, oidc = null, proxy = null } = options;
+  const { accounts, oidc = null, proxy = null, grant_names = (target_id: string) => [target_id] } = options;
   const sessions = new Sessions();
   const failures = new Map<string, { count: number; until: number }>();
 
@@ -156,7 +158,7 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
     }
     // A repository the viewer may not see answers as if it did not exist.
     const repository = /^\/api\/repositories\/([^/]+)/.exec(path)?.[1];
-    if (repository !== undefined && !visible(request, decodeURIComponent(repository))) {
+    if (repository !== undefined && !visible(request, grant_names(decodeURIComponent(repository)))) {
       return reply.code(404).send({ error: `No repository '${decodeURIComponent(repository)}'.` });
     }
   });

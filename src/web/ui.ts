@@ -1,6 +1,6 @@
 // The page's building blocks: badges, dialogs, toasts, tabs, tables, filters, and the loading, empty and error states.
 
-import { LoginNeeded, type JobState, type Level, type Status } from "./api.ts";
+import { LoginNeeded, type RunState, type Level, type Status } from "./api.ts";
 import { h, nodes, type Child } from "./dom.ts";
 
 // ── Badges ───────────────────────────────────────────────────────────────────
@@ -24,10 +24,10 @@ export function status_tone(status: Status | null): "good" | "warn" | "bad" | "n
   return "none";
 }
 
-const job_tones: Record<JobState, string> = { running: "info", succeeded: "good", warning: "warn", failed: "bad", cancelled: "none" };
+const run_tones: Record<RunState, string> = { running: "info", succeeded: "good", warning: "warn", failed: "bad", cancelled: "none" };
 
-export function job_badge(state: JobState): HTMLElement {
-  return h("span", { class: `badge tone-${job_tones[state]}` }, state);
+export function run_badge(state: RunState): HTMLElement {
+  return h("span", { class: `badge tone-${run_tones[state]}` }, state);
 }
 
 const level_tones: Record<Level, string> = { INFO: "none", WARNING: "warn", ERROR: "bad" };

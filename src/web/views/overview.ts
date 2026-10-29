@@ -1,11 +1,11 @@
-// The fleet at a glance: tiles that open filtered views, what needs attention and why, backup ages and sizes, jobs and archives over time, and what runs next.
+// The fleet at a glance: tiles that open filtered views, what needs attention and why, backup ages and sizes, runs and archives over time, and what runs next.
 
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
-import { api, query, repository_path, type History, type HostSample, type Job, type RepositorySummary, type TimerRow } from "../api.ts";
+import { api, query, repository_path, type History, type HostSample, type Run, type RepositorySummary, type TimerRow } from "../api.ts";
 import { donut, line_chart, meters, sparkline, stacked_bar_chart, timeline, type Meter, type Stack } from "../charts.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
-import { attempt, empty, job_badge, load, section, skeleton } from "../ui.ts";
+import { attempt, empty, run_badge, load, section, skeleton } from "../ui.ts";
 import { repository_card, status_rank, touches, type View } from "./shared.ts";
 
 const day_in_seconds = 86400;
@@ -26,7 +26,7 @@ export function overview_view(): View {
   const stored = h("div");
   const grid = h("div", { class: "grid" });
   let span = current_route().query.get("span") === "24h" ? "24h" : "7d";
-  let jobs: Job[] = [];
+  let runs: Run[] = [];
   let repositories: RepositorySummary[] = [];
   let histories: Map<string, History> | null = null;
 
@@ -37,28 +37,28 @@ export function overview_view(): View {
         span = value;
         replace_query({ span: value === "7d" ? null : value });
         for (const button of (event.target as HTMLElement).parentElement!.children) button.setAttribute("aria-pressed", String(button.textContent === value));
-        void load(activity, async () => job_panels(jobs, span), { quiet: true });
-        if (histories) void load(timeline_box, async () => activity_timeline(repositories, jobs, histories!, span), { quiet: true });
+        void load(activity, async () => run_panels(runs, span), { quiet: true });
+        if (histories) void load(timeline_box, async () => activity_timeline(repositories, runs, histories!, span), { quiet: true });
       },
     }, value)));
 
   const update = async (quiet: boolean, with_history = true): Promise<void> => {
     const answer = await attempt(tiles, quiet, () => Promise.all([
       api<RepositorySummary[]>("/api/repositories"),
-      api<Job[]>(`/api/jobs${query({ since: Math.floor(now_seconds() - 7 * day_in_seconds), limit: 2000 })}`),
+      api<Run[]>(`/api/runs${query({ since: Math.floor(now_seconds() - 7 * day_in_seconds), limit: 2000 })}`),
       api<TimerRow[]>("/api/timers"),
       api<HostSample[]>(`/api/hosts/samples${query({ since: Math.floor(now_seconds() - day_in_seconds) })}`),
     ]), () => void update(false));
     if (answer === null) return;
     const [listed, recent, timers, samples] = answer;
     repositories = listed;
-    jobs = recent;
+    runs = recent;
     await Promise.all([
       load(tiles, async () => overview_tiles(listed, timers, recent), { quiet }),
       load(attention, async () => attention_list(listed, timers), { quiet }),
       load(ages, async () => backup_ages(listed), { quiet }),
       load(storage, async () => storage_bars(listed), { quiet }),
-      load(activity, async () => job_panels(recent, span), { quiet }),
+      load(activity, async () => run_panels(recent, span), { quiet }),
       load(running, async () => running_list(recent), { quiet }),
       load(upcoming, async () => upcoming_list(timers), { quiet }),
       load(hosts_box, async () => host_health(samples), { quiet }),
@@ -83,17 +83,17 @@ export function overview_view(): View {
       tiles,
       h("div", { class: "columns" },
         section("Needs attention", attention),
-        section("Jobs", activity, span_switch),
+        section("Runs", activity, span_switch),
       ),
       h("div", { class: "columns" },
         section("Time since last backup", ages, h("span", { class: "muted small" }, "ticks at the warning and max age")),
         section("Storage per repository", storage, h("span", { class: "muted small" }, `against its quota or disk; ticks at ${storage_warning_percent}% and ${storage_danger_percent}%`)),
       ),
-      section("Activity", timeline_box, h("span", { class: "muted small" }, "jobs and archives, by the period above")),
+      section("Activity", timeline_box, h("span", { class: "muted small" }, "runs and archives, by the period above")),
       section("Hosts", hosts_box, h("span", { class: "muted small" }, "last 24 hours, read every five minutes")),
       h("div", { class: "columns" },
         h("div", { class: "stack" },
-          section("Running now", running, h("a", { href: link(["jobs"], { state: "running" }) }, "All running")),
+          section("Running now", running, h("a", { href: link(["runs"], { state: "running" }) }, "All running")),
           section("Next timer runs", upcoming, h("a", { href: link(["schedules"]) }, "All schedules")),
         ),
         section("Stored over time", stored, h("span", { class: "muted small" }, `last ${stored_span_in_days} days`)),
@@ -101,17 +101,17 @@ export function overview_view(): View {
       section("Repositories", grid, h("a", { href: link(["repositories"]) }, "Filter and sort")),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "job", "timers", "hosts", "config"])) await update(true, touches(changes, null, ["repository", "config"]));
+      if (touches(changes, null, ["repository", "run", "timers", "hosts", "config"])) await update(true, touches(changes, null, ["repository", "config"]));
     },
   };
 }
 
-function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], jobs: Job[]): HTMLElement {
+function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], runs: Run[]): HTMLElement {
   const bad = repositories.filter(failing).length;
   const late = repositories.filter((repository) => repository.last_poll_epoch !== null && overdue(repository)).length;
   const timer_trouble = timers.filter((timer) => timer_problem(timer) !== null).length;
-  const running = jobs.filter((job) => job.state === "running").length;
-  const failed_today = jobs.filter((job) => job.state === "failed" && job.started_epoch > now_seconds() - day_in_seconds).length;
+  const running = runs.filter((run) => run.state === "running").length;
+  const failed_today = runs.filter((run) => run.state === "failed" && run.started_epoch > now_seconds() - day_in_seconds).length;
   const total = repositories.reduce((sum, repository) => sum + (repository.stats?.deduplicated_size ?? 0), 0);
   const tile = (label: string, value: string | number, href: string | null, tone: "bad" | "info" | "" = "") => {
     const body = [h("span", { class: "tile-value" }, value), h("span", { class: "tile-label" }, label)];
@@ -122,8 +122,8 @@ function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], j
     tile("failing", bad, link(["repositories"], { status: "failing" }), bad > 0 ? "bad" : ""),
     tile("overdue", late, link(["repositories"], { status: "overdue" }), late > 0 ? "bad" : ""),
     tile("timer problems", timer_trouble, link(["schedules"], { state: "problem" }), timer_trouble > 0 ? "bad" : ""),
-    tile("jobs running", running, link(["jobs"], { state: "running" }), running > 0 ? "info" : ""),
-    tile("failed jobs, 24 h", failed_today, link(["jobs"], { state: "failed" }), failed_today > 0 ? "bad" : ""),
+    tile("runs in progress", running, link(["runs"], { state: "running" }), running > 0 ? "info" : ""),
+    tile("failed runs, 24 h", failed_today, link(["runs"], { state: "failed" }), failed_today > 0 ? "bad" : ""),
     tile("stored", size(total), null),
   );
 }
@@ -237,32 +237,32 @@ function host_health(samples: HostSample[]): HTMLElement {
   }));
 }
 
-// The outcome donut beside the jobs per period.
-function job_panels(jobs: Job[], span: string): HTMLElement {
-  return h("div", { class: "stack" }, outcome_donut(jobs, span), jobs_chart(jobs, span));
+// The outcome donut beside the runs per period.
+function run_panels(runs: Run[], span: string): HTMLElement {
+  return h("div", { class: "stack" }, outcome_donut(runs, span), runs_chart(runs, span));
 }
 
-// How the finished jobs of the period ended, with the share that succeeded in the middle.
-function outcome_donut(jobs: Job[], span: string): HTMLElement {
+// How the finished runs of the period ended, with the share that succeeded in the middle.
+function outcome_donut(runs: Run[], span: string): HTMLElement {
   const since = now_seconds() - (span === "24h" ? day_in_seconds : 7 * day_in_seconds);
-  const inside = jobs.filter((job) => job.started_epoch >= since && job.state !== "running");
-  const parts = outcome_parts.filter(([state]) => state !== "running").map(([state, label, color]) => ({ label, color, value: inside.filter((job) => job.state === state).length }));
+  const inside = runs.filter((run) => run.started_epoch >= since && run.state !== "running");
+  const parts = outcome_parts.filter(([state]) => state !== "running").map(([state, label, color]) => ({ label, color, value: inside.filter((run) => run.state === state).length }));
   const succeeded = parts[0].value;
   return donut(span === "24h" ? "Outcomes, last 24 hours" : "Outcomes, last 7 days", parts,
-    inside.length ? `${Math.round(succeeded / inside.length * 100)}%` : "—", "succeeded", "No job finished in this period.");
+    inside.length ? `${Math.round(succeeded / inside.length * 100)}%` : "—", "succeeded", "No run finished in this period.");
 }
 
-// One lane per repository over the period: each job as a span in its outcome's color, and each archive as a tick when it was made.
-function activity_timeline(repositories: RepositorySummary[], jobs: Job[], histories: Map<string, History>, span: string): HTMLElement {
+// One lane per repository over the period: each run as a span in its outcome's color, and each archive as a tick when it was made.
+function activity_timeline(repositories: RepositorySummary[], runs: Run[], histories: Map<string, History>, span: string): HTMLElement {
   const now = now_seconds();
   const from = now - (span === "24h" ? day_in_seconds : 7 * day_in_seconds);
   const rows = [...repositories].sort((a, b) => a.name.localeCompare(b.name)).map((repository) => ({
     label: repository.name,
     href: link(["repositories", repository.id]),
     marks: [
-      ...jobs.filter((job) => job.repository_id === repository.id && (job.ended_epoch ?? now) >= from).map((job) => ({
-        start: job.started_epoch, end: job.ended_epoch ?? now, color: job_color(job.state),
-        title: `${job.kind} #${job.id} ${job.state}, ${stamp(job.started_epoch)}, took ${duration((job.ended_epoch ?? now) - job.started_epoch)}`,
+      ...runs.filter((run) => run.target_id === repository.id && (run.ended_epoch ?? now) >= from).map((run) => ({
+        start: run.started_epoch, end: run.ended_epoch ?? now, color: run_color(run.state),
+        title: `${run.kind} #${run.id} ${run.state}, ${stamp(run.started_epoch)}, took ${duration((run.ended_epoch ?? now) - run.started_epoch)}`,
       })),
       ...(histories.get(repository.id)?.archives ?? []).filter((archive) => archive.epoch >= from).map((archive) => ({
         start: archive.epoch, end: null, color: "var(--text-heading)", title: `archive ${archive.name}, ${stamp(archive.epoch)}`,
@@ -271,14 +271,14 @@ function activity_timeline(repositories: RepositorySummary[], jobs: Job[], histo
   }));
   return timeline(span === "24h" ? "Last 24 hours" : "Last 7 days", rows, from, now,
     [...outcome_parts.map(([, label, color]): [string, string] => [label, color]), ["archive", "var(--text-heading)"]],
-    "No jobs or archives in this period.");
+    "No runs or archives in this period.");
 }
 
-function job_color(state: Job["state"]): string {
+function run_color(state: Run["state"]): string {
   return outcome_parts.find(([candidate]) => candidate === state)![2];
 }
 
-const outcome_parts: [state: Job["state"], label: string, color: string][] = [
+const outcome_parts: [state: Run["state"], label: string, color: string][] = [
   ["succeeded", "succeeded", "var(--status-success)"],
   ["warning", "with warnings", "var(--status-warning)"],
   ["failed", "failed", "var(--status-danger)"],
@@ -286,8 +286,8 @@ const outcome_parts: [state: Job["state"], label: string, color: string][] = [
   ["running", "running", "var(--accent)"],
 ];
 
-// Jobs per hour over the last day, or per day over the last week, stacked by outcome.
-function jobs_chart(jobs: Job[], span: string): HTMLElement {
+// Runs per hour over the last day, or per day over the last week, stacked by outcome.
+function runs_chart(runs: Run[], span: string): HTMLElement {
   const hours = span === "24h";
   const bucket = hours ? 3600 : day_in_seconds;
   const count = hours ? 24 : 7;
@@ -295,14 +295,14 @@ function jobs_chart(jobs: Job[], span: string): HTMLElement {
   const start = hours ? Math.floor(now / bucket) * bucket - (count - 1) * bucket : start_of_day(now) - (count - 1) * day_in_seconds;
   const stacks: Stack[] = Array.from({ length: count }, (_, index) => {
     const from = start + index * bucket;
-    const inside = jobs.filter((job) => job.started_epoch >= from && job.started_epoch < from + bucket);
+    const inside = runs.filter((run) => run.started_epoch >= from && run.started_epoch < from + bucket);
     const when = new Date(from * 1000);
     return {
       label: hours ? `${String(when.getHours()).padStart(2, "0")}:00` : when.toLocaleDateString(undefined, { weekday: "short" }),
-      parts: outcome_parts.map(([state, label, color]) => ({ label, color, value: inside.filter((job) => job.state === state).length })),
+      parts: outcome_parts.map(([state, label, color]) => ({ label, color, value: inside.filter((run) => run.state === state).length })),
     };
   });
-  return stacked_bar_chart(hours ? "Jobs per hour, last 24 hours" : "Jobs per day, last 7 days", stacks,
+  return stacked_bar_chart(hours ? "Runs per hour, last 24 hours" : "Runs per day, last 7 days", stacks,
     outcome_parts.map(([, label, color]) => [label, color]), (value) => String(Math.round(value)));
 }
 
@@ -312,14 +312,14 @@ function start_of_day(epoch: number): number {
   return date.getTime() / 1000;
 }
 
-function running_list(jobs: Job[]): HTMLElement {
-  const running = jobs.filter((job) => job.state === "running");
+function running_list(runs: Run[]): HTMLElement {
+  const running = runs.filter((run) => run.state === "running");
   if (running.length === 0) return empty("Nothing is running.");
-  return h("ul", { class: "plain-list" }, ...running.map((job) => h("li", {},
-    job_badge(job.state), " ",
-    h("a", { href: link(["jobs", String(job.id)]) }, `${job.kind} #${job.id}`),
-    h("span", { class: "muted" }, ` on ${job.repository_id}, started ${age(job.started_epoch)}`),
-    job.progress && h("div", { class: "muted small" }, job.progress),
+  return h("ul", { class: "plain-list" }, ...running.map((run) => h("li", {},
+    run_badge(run.state), " ",
+    h("a", { href: link(["runs", String(run.id)]) }, `${run.kind} #${run.id}`),
+    h("span", { class: "muted" }, ` on ${run.target_id}, started ${age(run.started_epoch)}`),
+    run.progress && h("div", { class: "muted small" }, run.progress),
   )));
 }
 

@@ -155,28 +155,29 @@ export class CollectResult implements CollectFields {
 
 // ── Stores the repository reads ──────────────────────────────────────────────
 
-export type JobState = "running" | "succeeded" | "warning" | "failed" | "cancelled";
+export type RunState = "running" | "succeeded" | "warning" | "failed" | "cancelled";
 
-export interface JobRecord {
+// One execution of a task or of an action started by hand.
+export interface RunRecord {
   id: number;
   kind: string;
   command: string;
   workdir: string | null;
   pid: number | null;
-  state: JobState;
+  state: RunState;
   progress: string | null;
   output_seq: number;
   exit_code: number | null;
   error: string | null;
 }
 
-export interface JobStore {
-  running(): JobRecord | null;
-  action_job(action_id: string): JobRecord | null;
+export interface RunStore {
+  running(): RunRecord | null;
+  action_run(action_id: string): RunRecord | null;
   create(kind: string, command: string, workdir: string | null): number;
-  set_pid(job_id: number, pid: number): void;
-  set_progress(job_id: number, summary: string): void;
-  append_output(job_id: number, lines: string[]): void;
-  bump_output_seq(job_id: number, new_seq: number): void;
-  finish(job_id: number, state: JobState, details: { exit_code?: number | null; error?: string | null }): void;
+  set_pid(run_id: number, pid: number): void;
+  set_progress(run_id: number, summary: string): void;
+  append_output(run_id: number, lines: string[]): void;
+  bump_output_seq(run_id: number, new_seq: number): void;
+  finish(run_id: number, state: RunState, details: { exit_code?: number | null; error?: string | null }): void;
 }

@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CollectResult, empty_state, type RepositoryState } from "../src/server/borg/types.ts";
-import { Store } from "../src/server/store.ts";
+import { Store, type TargetKey } from "../src/server/store.ts";
 
 let store: Store;
 
@@ -17,6 +21,9 @@ function state_with(fields: Partial<RepositoryState>): RepositoryState {
   return { ...empty_state(), ...fields };
 }
 
+const odin: TargetKey = { target_id: "odin", host: "local", job: "odin", repository: "odin" };
+const thor: TargetKey = { target_id: "thor", host: "local", job: "thor", repository: "thor" };
+
 // ── State and history ────────────────────────────────────────────────────────
 
 describe("state and history", () => {
@@ -28,7 +35,7 @@ describe("state and history", () => {
     expect(store.load_state("thor")).toBeNull();
   });
 
-  it("adds one history row per repository poll and none per job poll or action", () => {
+  it("adds one history row per repository poll and none per run poll or action", () => {
     const stats = { original_size: 300, compressed_size: 200, deduplicated_size: 100, total_chunks: 9, unique_chunks: 5 };
     const state = state_with({ stats, archive_count: 2, canary: { ok: true, checked_epoch: 5, detail: "" } });
     store.apply("odin", new CollectResult({ state, status: "online" }), { poll: true, epoch: 100 });
@@ -66,7 +73,7 @@ describe("state and history", () => {
     store.apply("thor", new CollectResult({ logs: [["Listed 3 archives", "INFO"]], status: "online" }), { poll: true, epoch: 3 });
 
     expect(store.events().map((event) => event.message)).toEqual(["second", "first"]);
-    expect(store.events({ repository_id: "odin" })).toHaveLength(1);
+    expect(store.events({ target_id: "odin" })).toHaveLength(1);
   });
 });
 
@@ -105,59 +112,144 @@ describe("timers", () => {
   });
 });
 
-// ── Jobs ─────────────────────────────────────────────────────────────────────
+// ── Runs ─────────────────────────────────────────────────────────────────────
 
-describe("jobs", () => {
-  it("follows a job from start to finish", () => {
-    const jobs = store.jobs_for("odin");
-    const job_id = jobs.create("backup", "borg create", "/tmp/w");
-    jobs.set_pid(job_id, 42);
-    jobs.append_output(job_id, ["one", "two"]);
-    jobs.append_output(job_id, ["three"]);
+describe("runs", () => {
+  it("follows a run from start to finish, keeping its target's entities beside it", () => {
+    const runs = store.runs_for({ target_id: "web:odin:vault", host: "odin", job: "web", repository: "vault" });
+    const run_id = runs.create("backup", "borg create", "/tmp/w");
+    runs.set_pid(run_id, 42);
+    runs.append_output(run_id, ["one", "two"]);
+    runs.append_output(run_id, ["three"]);
 
-    expect(jobs.running()!.pid).toBe(42);
-    expect(store.jobs_for("thor").running()).toBeNull();
-    expect(store.job_output(job_id, 1)).toEqual(["two", "three"]);
+    expect(runs.running()!.pid).toBe(42);
+    expect(store.runs_for(thor).running()).toBeNull();
+    expect(store.run_output(run_id, 1)).toEqual(["two", "three"]);
 
-    jobs.finish(job_id, "succeeded", { exit_code: 0 });
+    runs.finish(run_id, "succeeded", { exit_code: 0 });
 
-    expect(jobs.running()).toBeNull();
-    expect(store.job(job_id)).toMatchObject({ state: "succeeded", exit_code: 0, repository_id: "odin" });
-    expect(store.job(job_id)!.ended_epoch).not.toBeNull();
+    expect(runs.running()).toBeNull();
+    expect(store.run_row(run_id)).toMatchObject({
+      state: "succeeded", exit_code: 0, target_id: "web:odin:vault", host: "odin", job: "web", repository: "vault", task: null,
+    });
+    expect(store.run_row(run_id)!.ended_epoch).not.toBeNull();
   });
 
-  it("narrows the job list by repository, kind, state and start, a page at a time", () => {
-    const odin = store.jobs_for("odin");
-    const check = odin.create("check-data", "borg check", null);
-    odin.finish(check, "failed", { exit_code: 2 });
-    odin.create("backup", "borg create", null);
-    store.jobs_for("thor").create("check", "borg check", null);
+  it("narrows the run list by target, entity, kind, state and start, a page at a time", () => {
+    const runs = store.runs_for(odin);
+    const check = runs.create("check-data", "borg check", null);
+    runs.finish(check, "failed", { exit_code: 2 });
+    runs.create("backup", "borg create", null);
+    store.runs_for({ ...thor, repository: "vault" }).create("check", "borg check", null);
 
-    expect(store.jobs({ kind: "check" }).map((job) => job.kind)).toEqual(["check", "check-data"]);
-    expect(store.jobs({ repository_id: "odin", state: "failed" }).map((job) => job.id)).toEqual([check]);
-    expect(store.jobs({ limit: 1, offset: 1 }).map((job) => job.kind)).toEqual(["backup"]);
-    expect(store.jobs({ since_epoch: Date.now() / 1000 + 60 })).toEqual([]);
+    expect(store.runs({ kind: "check" }).map((run) => run.kind)).toEqual(["check", "check-data"]);
+    expect(store.runs({ target_id: "odin", state: "failed" }).map((run) => run.id)).toEqual([check]);
+    expect(store.runs({ repository: "vault" }).map((run) => run.target_id)).toEqual(["thor"]);
+    expect(store.runs({ limit: 1, offset: 1 }).map((run) => run.kind)).toEqual(["backup"]);
+    expect(store.runs({ since_epoch: Date.now() / 1000 + 60 })).toEqual([]);
+  });
+
+  it("matches a grant on a target's id or its repository's name", () => {
+    store.runs_for(odin).create("backup", "borg create", null);
+    store.runs_for({ target_id: "web:thor:vault", host: "thor", job: "web", repository: "vault" }).create("backup", "borg create", null);
+
+    expect(store.runs({ granted: ["vault"] }).map((run) => run.target_id)).toEqual(["web:thor:vault"]);
+    expect(store.runs({ granted: ["odin"] }).map((run) => run.target_id)).toEqual(["odin"]);
+    expect(store.runs({ granted: [] })).toEqual([]);
   });
 
   it("tells listeners what changed", () => {
     const changes: unknown[] = [];
     store.changes.on("change", (change) => changes.push(change));
-    const job_id = store.jobs_for("odin").create("backup", "borg create", null);
+    const run_id = store.runs_for(odin).create("backup", "borg create", null);
     store.apply("odin", new CollectResult({ logs: [["Backup started", "INFO"]] }), { poll: false });
     store.replace_timers("odin.example.org", []);
 
     expect(changes).toEqual([
-      { kind: "job", repository_id: "odin", job_id },
-      { kind: "repository", repository_id: "odin" },
-      { kind: "timers", repository_id: null },
+      { kind: "run", target_id: "odin", run_id },
+      { kind: "repository", target_id: "odin" },
+      { kind: "timers", target_id: null },
     ]);
   });
 
-  it("finds a detached action's job by its id", () => {
-    const jobs = store.jobs_for("odin");
-    jobs.create("diff_archive", "borg diff", null);
+  it("finds a detached action's run by its id", () => {
+    const runs = store.runs_for(odin);
+    runs.create("diff_archive", "borg diff", null);
 
-    expect(jobs.action_job("diff_archive")).not.toBeNull();
-    expect(jobs.action_job("verify_restore")).toBeNull();
+    expect(runs.action_run("diff_archive")).not.toBeNull();
+    expect(runs.action_run("verify_restore")).toBeNull();
+  });
+});
+
+// ── Migration ────────────────────────────────────────────────────────────────
+
+describe("migration", () => {
+  let folder: string;
+
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "x-backups-store-"));
+  });
+
+  afterEach(() => {
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  // A database as it was kept before targets and runs, with a row in each table keyed by repository.
+  function old_database(path: string): void {
+    const database = new DatabaseSync(path);
+    database.exec(`
+      CREATE TABLE repository_states (repository_id TEXT PRIMARY KEY, state TEXT NOT NULL);
+      CREATE TABLE polls (repository_id TEXT NOT NULL, epoch INTEGER NOT NULL, status TEXT, original_size INTEGER, compressed_size INTEGER,
+        deduplicated_size INTEGER, total_chunks INTEGER, unique_chunks INTEGER, archive_count INTEGER, last_backup_epoch INTEGER,
+        canary_ok INTEGER, checks_passed INTEGER, PRIMARY KEY (repository_id, epoch));
+      CREATE TABLE archives (repository_id TEXT NOT NULL, name TEXT NOT NULL, epoch INTEGER NOT NULL, original_size INTEGER,
+        compressed_size INTEGER, deduplicated_size INTEGER, file_count INTEGER, PRIMARY KEY (repository_id, name));
+      CREATE TABLE events (id INTEGER PRIMARY KEY, repository_id TEXT NOT NULL, epoch INTEGER NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL);
+      CREATE TABLE jobs (id INTEGER PRIMARY KEY, repository_id TEXT NOT NULL, kind TEXT NOT NULL, command TEXT NOT NULL, workdir TEXT, pid INTEGER,
+        state TEXT NOT NULL, progress TEXT, output_seq INTEGER NOT NULL DEFAULT 0, exit_code INTEGER, error TEXT, started_epoch INTEGER NOT NULL,
+        ended_epoch INTEGER);
+      CREATE TABLE job_output (job_id INTEGER NOT NULL, line_number INTEGER NOT NULL, line TEXT NOT NULL, PRIMARY KEY (job_id, line_number));
+      CREATE TABLE timers (host TEXT NOT NULL, unit TEXT NOT NULL, service TEXT NOT NULL, next_epoch INTEGER, last_epoch INTEGER, result TEXT,
+        exit_status INTEGER, read_epoch INTEGER NOT NULL, PRIMARY KEY (host, unit));
+      CREATE INDEX events_by_repository ON events (repository_id, id);
+      CREATE INDEX jobs_by_repository ON jobs (repository_id, id);
+      INSERT INTO polls (repository_id, epoch, status, archive_count) VALUES ('odin', 100, 'online', 3);
+      INSERT INTO archives (repository_id, name, epoch) VALUES ('odin', 'odin-2026-10-01T03:00:00', 90);
+      INSERT INTO events (repository_id, epoch, level, message) VALUES ('odin', 100, 'INFO', 'Backup started');
+      INSERT INTO jobs (repository_id, kind, command, state, started_epoch) VALUES ('odin', 'backup', 'borg create', 'succeeded', 100);
+      INSERT INTO job_output VALUES (1, 0, 'done');
+      INSERT INTO timers VALUES ('odin.lan', 'borgmatic.timer', 'borgmatic.service', NULL, 50, 'success', 0, 60);
+      INSERT INTO timers VALUES ('local', 'borgmatic.timer', 'borgmatic.service', NULL, 50, 'success', 0, 60);
+    `);
+    database.prepare("INSERT INTO repository_states VALUES ('odin', ?)").run(JSON.stringify(state_with({ archive_count: 3 })));
+    database.close();
+  }
+
+  it("keeps every row, moving it to the target its flat entry expands into, and changes nothing when run again", () => {
+    const path = join(folder, "x-backups.sqlite");
+    old_database(path);
+    const hosts = [{ name: "odin", kind: "managed", address: "odin.lan" }, { name: "server", kind: "managed", address: null }];
+
+    for (let opening = 0; opening < 2; opening++) {
+      const reopened = new Store(path);
+      reopened.adopt_targets([{ target_id: "odin", host: "odin", job: "odin", repository: "odin" }], hosts);
+
+      expect(reopened.load_state("odin")!.archive_count).toBe(3);
+      expect(reopened.polls("odin").map((poll) => poll.archive_count)).toEqual([3]);
+      expect(reopened.archives("odin").map((archive) => archive.name)).toEqual(["odin-2026-10-01T03:00:00"]);
+      expect(reopened.events({ repository: "odin" })).toMatchObject([{ target_id: "odin", host: "odin", job: "odin", message: "Backup started" }]);
+      expect(reopened.runs({ job: "odin" })).toMatchObject([{ id: 1, target_id: "odin", repository: "odin", task: null, kind: "backup" }]);
+      expect(reopened.run_output(1)).toEqual(["done"]);
+      expect(reopened.timers().map((timer) => timer.host)).toEqual(["odin", "server"]);
+      reopened.close();
+    }
+  });
+
+  it("names new rows after the adopted target, leaving an unknown target's names empty", () => {
+    store.adopt_targets([{ target_id: "web:odin:vault", host: "odin", job: "web", repository: "vault" }]);
+    store.apply("web:odin:vault", CollectResult.failed("unreachable"), { poll: true });
+    store.apply("gone", CollectResult.failed("unreachable"), { poll: true });
+
+    expect(store.events().map((event) => [event.target_id, event.repository])).toEqual([["gone", null], ["web:odin:vault", "vault"]]);
   });
 });

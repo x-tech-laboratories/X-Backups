@@ -4,12 +4,12 @@
 // one after another so the calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
 // failed; an unreachable host, a missing borg, an unreadable repo, a lock borg gave up on, or unparseable output is
 // unavailable. Optional extras are a restore canary, check freshness read from systemd units or tracked per kind, and
-// actions that back up, browse, restore, download, diff, check, compact, prune, delete and purge, the last ones as detached jobs.
+// actions that back up, browse, restore, download, diff, check, compact, prune, delete and purge, the last ones as detached runs.
 
 import { readFileSync } from "node:fs";
 
 import {
-  CHECK_KINDS, TRACKED_CHECKS, canary_verdict, check_job_kind, check_unit_script, covered_by_check_job,
+  CHECK_KINDS, TRACKED_CHECKS, canary_verdict, check_run_kind, check_unit_script, covered_by_check_run,
   merge_unit, observed_unit, parse_check_units, type CheckState,
 } from "./checks.ts";
 import { cancel_command, launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
@@ -24,7 +24,7 @@ import {
 } from "./shell.ts";
 import {
   ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
-  type DownloadPlan, type JobRecord, type JobStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
+  type DownloadPlan, type RunRecord, type RunStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
   type StorageRecord,
 } from "./types.ts";
 
@@ -115,7 +115,8 @@ const DIFF_CACHE = 16;
 export interface ActionSpec {
   name: string;
   action_id: string;
-  job?: string | string[];
+  // The run kinds that show this action as running.
+  run?: string | string[];
   confirm?: string;
   detached?: boolean;
 }
@@ -149,7 +150,7 @@ export class BorgRepository {
   readonly id: string;
   timeout: number;
   state: RepositoryState = empty_state();
-  jobs: JobStore | null = null;
+  runs: RunStore | null = null;
 
   repo: string | null;
   max_age: number;
@@ -211,7 +212,7 @@ export class BorgRepository {
   repository_actions_on: string | null;
 
   poll_calls: string[] = [];
-  private polling_job: JobRecord | null = null;
+  private polling_run: RunRecord | null = null;
   // Archives never change once written, so a folder listed once stays true until the archive is deleted.
   private listings = new Map<string, CachedListing>();
   // Each diffed pair's changes, keyed by both names since a prune can change the archive before one.
@@ -439,12 +440,12 @@ export class BorgRepository {
   // ── Polling ────────────────────────────────────────────────────────────────
 
   commands(): Command[] {
-    // While a job runs, the cycle polls it instead of listing the repo.
-    const job = this.running_job();
-    // parse() must read results the way they were asked for, even if a job starts or ends mid-cycle.
-    this.polling_job = job;
+    // While a run is going, the cycle polls it instead of listing the repo.
+    const run = this.active_run();
+    // parse() must read results the way they were asked for, even if a run starts or ends mid-cycle.
+    this.polling_run = run;
     const timeout = this.timeout || null;
-    if (job !== null) return [{ text: poll_command(job.workdir!, job.pid!, job.output_seq), timeout, stdin: null }];
+    if (run !== null) return [{ text: poll_command(run.workdir!, run.pid!, run.output_seq), timeout, stdin: null }];
     if (!this.repo) return [];
     const plan = this.poll_plan();
     this.poll_calls = plan.map(([name]) => name);
@@ -452,15 +453,15 @@ export class BorgRepository {
     return plan.map(([name, text]) => name === "space" ? { text, timeout, stdin: null } : { text: with_passphrase(text), timeout, stdin: this.stdin_for([text]) });
   }
 
-  private running_job(): JobRecord | null {
-    const job = this.jobs ? this.jobs.running() : null;
-    return job && job.pid && job.workdir ? job : null;
+  private active_run(): RunRecord | null {
+    const run = this.runs ? this.runs.running() : null;
+    return run && run.pid && run.workdir ? run : null;
   }
 
   parse(results: CmdResult[]): CollectResult {
-    const job = this.polling_job;
-    this.polling_job = null;
-    if (job !== null) return this.parse_job_poll(job, results[0]);
+    const run = this.polling_run;
+    this.polling_run = null;
+    if (run !== null) return this.parse_run_poll(run, results[0]);
 
     if (!this.repo) return CollectResult.failed("No 'repo' configured for borg monitor");
 
@@ -701,8 +702,8 @@ export class BorgRepository {
     const has_retention = Object.keys(this.retention).length > 0;
     if (this.source_paths.length > 0) {
       actions.push(
-        { name: "Run Backup", action_id: "run_backup", job: "backup" },
-        { name: "Dry Run", action_id: "dry_run_backup", job: "dry-run" },
+        { name: "Run Backup", action_id: "run_backup", run: "backup" },
+        { name: "Dry Run", action_id: "dry_run_backup", run: "dry-run" },
       );
     }
     if (this.canary_path) {
@@ -710,8 +711,8 @@ export class BorgRepository {
     }
     if (this.repo && this.repository_actions_on === null) {
       actions.push(
-        { name: "Check", action_id: "check_repo", job: Object.keys(CHECK_KINDS).map(check_job_kind) },
-        { name: "Compact", action_id: "compact_repo", job: "compact" },
+        { name: "Check", action_id: "check_repo", run: Object.keys(CHECK_KINDS).map(check_run_kind) },
+        { name: "Compact", action_id: "compact_repo", run: "compact" },
       );
     }
     if (has_retention) {
@@ -719,16 +720,16 @@ export class BorgRepository {
     }
     if (this.allow_delete && has_retention) {
       actions.push({
-        name: "Prune", action_id: "prune_repo", job: "prune",
+        name: "Prune", action_id: "prune_repo", run: "prune",
         confirm: `Prune ${this.repo} by its retention policy? Archives it drops are gone for good — run Prune Preview ` +
           "first to see which. Space is freed by a Compact afterwards.",
       });
     }
     if (this.allow_purge) {
       actions.push(
-        { name: "Purge Preview", action_id: "purge_preview", job: "purge-preview" },
+        { name: "Purge Preview", action_id: "purge_preview", run: "purge-preview" },
         {
-          name: "Purge Excluded", action_id: "purge_excluded", job: "purge",
+          name: "Purge Excluded", action_id: "purge_excluded", run: "purge",
           confirm: `Rewrite every archive in ${this.repo} without the files its exclude patterns now drop, then compact? ` +
             "Those files are gone from every archive for good — run Purge Preview first to see which. It holds the " +
             "repository lock for the whole run, so backups wait until it ends.",
@@ -745,18 +746,18 @@ export class BorgRepository {
     return actions;
   }
 
-  // How an action shows now: accent while its job runs, disabled while another job runs, else normal.
+  // How an action shows now: accent while its run is going, disabled while another is, else normal.
   action_state(action: ActionSpec): ActionState {
-    // Break Lock greys out while a job runs, since that job holds the lock it would break.
-    if (action.action_id === "break_lock" && this.running_job() !== null) return "disabled";
-    if (action.detached && this.jobs) return this.jobs.action_job(action.action_id) ? "accent" : "normal";
-    const job = this.jobs && action.job ? this.jobs.running() : null;
-    if (job === null) return "normal";
-    const kinds = typeof action.job === "string" ? [action.job] : action.job ?? [];
-    return kinds.includes(job.kind) ? "accent" : "disabled";
+    // Break Lock greys out while a run is going, since that run holds the lock it would break.
+    if (action.action_id === "break_lock" && this.active_run() !== null) return "disabled";
+    if (action.detached && this.runs) return this.runs.action_run(action.action_id) ? "accent" : "normal";
+    const run = this.runs && action.run ? this.runs.running() : null;
+    if (run === null) return "normal";
+    const kinds = typeof action.run === "string" ? [action.run] : action.run ?? [];
+    return kinds.includes(run.kind) ? "accent" : "disabled";
   }
 
-  // Records a launched job from the pid its launch printed, or says why it was skipped or never started.
+  // Records a launched run from the pid its launch printed, or says why it was skipped or never started.
   private read_launch(kind: string, redacted: string, workdir: string, started: string, result: CmdResult): CollectResult {
     const skipped = result.exit_code === 0 ? skip_reason(result.stdout) : null;
     if (skipped !== null) {
@@ -769,8 +770,8 @@ export class BorgRepository {
       return CollectResult.failed(`Failed to launch ${kind}: ${(result.stderr || result.stdout).trim().slice(0, 200)}`);
     }
 
-    const job_id = this.jobs!.create(kind, redacted, workdir);
-    this.jobs!.set_pid(job_id, pid);
+    const run_id = this.runs!.create(kind, redacted, workdir);
+    this.runs!.set_pid(run_id, pid);
     const message = `${capitalize(kind)} started (pid ${pid})${started}`;
     return new CollectResult({ logs: [[message, "INFO"]], content: message, success: true });
   }
@@ -799,10 +800,10 @@ export class BorgRepository {
     return new ActionPlan(commands, read, { stdin: this.stdin_for(calls), detached: true });
   }
 
-  // Launches the command as a detached job, whose reader records the pid it prints.
+  // Launches the command as a detached run, whose reader records the pid it prints.
   private launch(kind: string, command: string, started = ""): ActionPlan {
     const workdir = workdir_for(`${this.id}-${now_seconds()}`);
-    const wrapped = wrap_job(command, this.job_wrappers(kind), this.job_lock);
+    const wrapped = wrap_job(command, this.run_wrappers(kind), this.job_lock);
     const redacted = redact(wrapped);
     return new ActionPlan(
       [with_passphrase(with_preflight(this.preflight(), launch_command(wrapped, workdir)), { detached: true })],
@@ -811,8 +812,8 @@ export class BorgRepository {
     );
   }
 
-  // The argv every job runs under: the shared job lock, the sleep inhibitor, then the lowered priority.
-  private job_wrappers(kind: string): string[] {
+  // The argv every run goes under: the shared job lock, the sleep inhibitor, then the lowered priority.
+  private run_wrappers(kind: string): string[] {
     const argv: string[] = [];
     if (this.job_lock) argv.push("flock", this.job_lock);
     if (this.inhibit_sleep) {
@@ -823,16 +824,16 @@ export class BorgRepository {
     return argv;
   }
 
-  // Shell that finds a reason to skip a job before it starts, such as a repository server that is not answering.
+  // Shell that finds a reason to skip a run before it starts, such as a repository server that is not answering.
   private preflight(): string | null {
     const endpoint = this.skip_when_unreachable ? ssh_endpoint(this.repo) : null;
     return preflight_script(endpoint, this.skip_while_active);
   }
 
-  // The refusal for starting a job without a repo or while another one runs, else null.
-  private job_refusal(what: string): CollectResult | null {
+  // The refusal for starting a run without a repo or while another one runs, else null.
+  private run_refusal(what: string): CollectResult | null {
     if (!this.repo) return BorgRepository.refused(`Cannot ${what}: no 'repo' configured`);
-    if (this.running_job() !== null) return BorgRepository.refused("A job is already running for this monitor");
+    if (this.active_run() !== null) return BorgRepository.refused("A run is already going for this monitor");
     return null;
   }
 
@@ -841,7 +842,7 @@ export class BorgRepository {
   private backup_refusal(): CollectResult | null {
     if (!this.repo) return CollectResult.failed("Cannot back up: no 'repo' configured");
     if (this.source_paths.length === 0) return CollectResult.failed("Cannot back up: no 'source_paths' configured");
-    if (this.running_job() !== null) return CollectResult.failed("A backup is already running for this monitor", "WARNING", null);
+    if (this.active_run() !== null) return CollectResult.failed("A backup is already running for this monitor", "WARNING", null);
     return null;
   }
 
@@ -854,7 +855,8 @@ export class BorgRepository {
     if (refusal) return refusal;
     const steps: [string, string][] = [];
     if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), ...this.repo_args()])]);
-    if (this.compact_after_backup) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", ...this.repo_args()])]);
+    // Compact acts on the whole repository, so of the targets sharing one only the one offering its actions compacts.
+    if (this.compact_after_backup && this.repository_actions_on === null) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", ...this.repo_args()])]);
     return this.launch("backup", then_steps(this.backup_command(), steps));
   }
 
@@ -1011,7 +1013,7 @@ export class BorgRepository {
     const folder = (target?.trim() || this.restore_dir).replace(/\/+$/, "") || "/";
     const problem = target_problem(folder);
     if (problem) return BorgRepository.refused(`Cannot restore into ${folder}: ${problem}`);
-    const refusal = this.job_refusal("restore");
+    const refusal = this.run_refusal("restore");
     if (refusal) return refusal;
     const destination = fresh ? `${folder === "/" ? "" : folder}/${archive}-${utc_compact_stamp(new Date())}` : folder;
     return this.launch("restore", this.restore_command(archive, members as string[], destination), ` into ${destination}`);
@@ -1028,8 +1030,8 @@ export class BorgRepository {
     }
     const members = paths.map(archive_member);
     if (members.some((member) => member === null)) return BorgRepository.refused("A path may not contain '.' or '..' components");
-    // A download holds the repository's lock like a backup would wait on, so it does not start beside a job of ours.
-    if (this.running_job() !== null) return BorgRepository.refused("A job is running on this repository; download once it ends");
+    // A download holds the repository's lock like a backup would wait on, so it does not start beside a run of ours.
+    if (this.active_run() !== null) return BorgRepository.refused("A run is going on this repository; download once it ends");
     const named = members.filter(Boolean) as string[];
     const source = this.archive_args(archive);
     const lock_wait = ["--lock-wait", String(this.lock_wait)];
@@ -1071,20 +1073,20 @@ export class BorgRepository {
     if (!Object.hasOwn(CHECK_KINDS, kind)) {
       return BorgRepository.refused(`Unknown check kind '${kind}': use ${Object.keys(CHECK_KINDS).join(", ")}`);
     }
-    const refusal = this.repository_refusal() ?? this.job_refusal("check the repository");
+    const refusal = this.repository_refusal() ?? this.run_refusal("check the repository");
     if (refusal) return refusal;
     if (kind === "extract") {
       const newest = this.state.archives[0]?.name ?? null;
       if (!newest) return BorgRepository.refused("Cannot run an extract check: no archive listed yet");
       const command = this.maintenance_command(["extract", "--dry-run", "--progress", ...this.archive_args(newest)]);
-      return this.launch(check_job_kind(kind), command, ` on ${newest}`);
+      return this.launch(check_run_kind(kind), command, ` on ${newest}`);
     }
     const args = ["check", "--progress", ...CHECK_KINDS[kind].options];
-    return this.launch(check_job_kind(kind), this.maintenance_command([...args, ...this.repo_args()]));
+    return this.launch(check_run_kind(kind), this.maintenance_command([...args, ...this.repo_args()]));
   }
 
   compact_repo(): ActionStart {
-    const refusal = this.repository_refusal() ?? this.job_refusal("compact the repository");
+    const refusal = this.repository_refusal() ?? this.run_refusal("compact the repository");
     if (refusal) return refusal;
     return this.launch("compact", this.maintenance_command(["compact", "--progress", ...this.repo_args()]));
   }
@@ -1092,7 +1094,7 @@ export class BorgRepository {
   prune_repo(): ActionStart {
     if (!this.allow_delete) return BorgRepository.refused("Pruning is off for this monitor — set allow_delete: true to enable it");
     if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot prune: no keep_* retention configured");
-    const refusal = this.job_refusal("prune");
+    const refusal = this.run_refusal("prune");
     if (refusal) return refusal;
     return this.launch("prune", this.maintenance_command([...this.prune_args(), ...this.repo_args()]));
   }
@@ -1109,7 +1111,7 @@ export class BorgRepository {
     if (!archive || !this.state.archives.some((listed) => listed.name === archive)) {
       return BorgRepository.refused(`Cannot delete ${archive || "an unnamed archive"}: it is not in the archive list`);
     }
-    const refusal = this.job_refusal("delete an archive");
+    const refusal = this.run_refusal("delete an archive");
     if (refusal) return refusal;
     for (const [key, cached] of this.listings) {
       if (cached.archive === archive) this.listings.delete(key);
@@ -1126,7 +1128,7 @@ export class BorgRepository {
     if (!(this.exclude.length > 0 || this.exclude_from || this.exclude_if_present.length > 0 || this.exclude_caches)) {
       return BorgRepository.refused("Cannot purge: no exclude patterns configured");
     }
-    return this.job_refusal("purge excluded files");
+    return this.run_refusal("purge excluded files");
   }
 
   private purge_scope(): string[] {
@@ -1153,7 +1155,7 @@ export class BorgRepository {
     const leftovers = this.maintenance_command(["delete", ...this.match_args("*.recreate"), ...this.repo_args()]);
     const recreate = this.maintenance_command(["recreate", "--info", "--stats", "--progress", ...scope, ...this.exclude_args(), ...this.repo_args()]);
     const compact = this.maintenance_command(["compact", "--progress", ...this.repo_args()]);
-    // A plain exit would leave before the job records its status, so a subshell carries the failure instead.
+    // A plain exit would leave before the run records its status, so a subshell carries the failure instead.
     return this.launch("purge", `${leftovers}; ${recreate}; rc=$?; if [ "$rc" -le 1 ]; then ${compact}; else (exit "$rc"); fi`);
   }
 
@@ -1161,7 +1163,7 @@ export class BorgRepository {
 
   break_lock(): ActionStart {
     if (!this.allow_delete) return BorgRepository.refused("Breaking locks is off for this monitor — set allow_delete: true to enable it");
-    const refusal = this.job_refusal("break the lock");
+    const refusal = this.run_refusal("break the lock");
     if (refusal) return refusal;
     return this.run_one(this.build([this.borg_bin, "break-lock", ...this.repo_args()], { persistent_cache: true }), (result) => this.read_break_lock(result));
   }
@@ -1230,54 +1232,54 @@ export class BorgRepository {
 
   // ── Cancel ───────────────────────────────────────────────────────────────
 
-  cancel_job(): ActionStart {
-    const job = this.running_job();
-    if (job === null) return BorgRepository.refused("No job is running for this repository");
-    return this.run_one(cancel_command(job.pid!), (result) => this.read_cancel(job, result));
+  cancel_run(): ActionStart {
+    const run = this.active_run();
+    if (run === null) return BorgRepository.refused("Nothing is running for this repository");
+    return this.run_one(cancel_command(run.pid!), (result) => this.read_cancel(run, result));
   }
 
-  read_cancel(job: JobRecord, call: CmdResult): CollectResult {
+  read_cancel(run: RunRecord, call: CmdResult): CollectResult {
     if (call.exit_code !== 0) {
-      return BorgRepository.refused(`Could not cancel the ${job.kind}: ${(call.stderr || call.stdout).trim().slice(0, 200)}`);
+      return BorgRepository.refused(`Could not cancel the ${run.kind}: ${(call.stderr || call.stdout).trim().slice(0, 200)}`);
     }
-    this.jobs!.finish(job.id, "cancelled", { error: "Cancelled" });
-    const message = `${capitalize(job.kind)} cancelled`;
+    this.runs!.finish(run.id, "cancelled", { error: "Cancelled" });
+    const message = `${capitalize(run.kind)} cancelled`;
     return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
   }
 
-  // ── Running jobs ───────────────────────────────────────────────────────────
+  // ── Following a run ────────────────────────────────────────────────────────
 
-  // Advances a running job from one poll's output, finishing it once it has ended.
-  private parse_job_poll(job: JobRecord, result: CmdResult): CollectResult {
-    const jobs = this.jobs!;
-    // A poll that never reached the host says nothing about the job; only a real answer may finish it.
+  // Advances a run from one poll's output, finishing it once it has ended.
+  private parse_run_poll(run: RunRecord, result: CmdResult): CollectResult {
+    const runs = this.runs!;
+    // A poll that never reached the host says nothing about the run; only a real answer may finish it.
     if (result.exit_code !== 0 && !result.stdout.trim()) {
       const reason = (result.stderr || "").trim().slice(0, 200) || `exit ${result.exit_code}`;
-      return new CollectResult({ logs: [[`Could not poll the running ${job.kind}: ${reason}`, "WARNING"]] });
+      return new CollectResult({ logs: [[`Could not poll the running ${run.kind}: ${reason}`, "WARNING"]] });
     }
     const poll = parse_poll(result.stdout);
 
     const [lines, consumed] = split_job_output(poll.new_output, poll.exit_code !== null || !poll.alive);
     if (lines.length > 0) {
-      jobs.append_output(job.id, lines);
-      jobs.bump_output_seq(job.id, job.output_seq + consumed);
+      runs.append_output(run.id, lines);
+      runs.bump_output_seq(run.id, run.output_seq + consumed);
       const summary = progress_from_lines(lines);
-      if (summary) jobs.set_progress(job.id, summary);
+      if (summary) runs.set_progress(run.id, summary);
     }
 
     if (poll.exit_code === null && poll.alive) return new CollectResult();
 
-    // The process vanished without an exit file, such as when the host rebooted mid-job.
-    const kind = job.kind;
+    // The process vanished without an exit file, such as when the host rebooted mid-run.
+    const kind = run.kind;
     if (poll.exit_code === null) {
-      jobs.finish(job.id, "failed", { exit_code: -1, error: "Process ended without writing an exit code" });
+      runs.finish(run.id, "failed", { exit_code: -1, error: "Process ended without writing an exit code" });
       return CollectResult.failed(`${capitalize(kind)} ended unexpectedly`);
     }
 
     const exit_code = poll.exit_code;
     const succeeded = exit_code === 0 || exit_code === 1;
     const state = exit_code === 0 ? "succeeded" : exit_code === 1 ? "warning" : "failed";
-    jobs.finish(job.id, state, { exit_code, error: succeeded ? null : `Exited with status ${exit_code}` });
+    runs.finish(run.id, state, { exit_code, error: succeeded ? null : `Exited with status ${exit_code}` });
 
     let outcome: CollectResult;
     if (exit_code === 0) {
@@ -1287,13 +1289,13 @@ export class BorgRepository {
     } else {
       outcome = CollectResult.failed(`${capitalize(kind)} failed (exit ${exit_code})`);
     }
-    this.record_check_job(kind, succeeded, exit_code, outcome);
+    this.record_check_run(kind, succeeded, exit_code, outcome);
     return outcome;
   }
 
   // Stores a finished Check's outcome against every tracked check it covers, so check_kinds can judge their age.
-  private record_check_job(kind: string, succeeded: boolean, exit_code: number, outcome: CollectResult): void {
-    const covered = covered_by_check_job(kind);
+  private record_check_run(kind: string, succeeded: boolean, exit_code: number, outcome: CollectResult): void {
+    const covered = covered_by_check_run(kind);
     if (covered.length === 0) return;
     const now = now_seconds();
     const states = this.stored_checks();
@@ -1342,11 +1344,11 @@ export class BorgRepository {
 
 // ── Progress ─────────────────────────────────────────────────────────────────
 
-// The latest human progress line in a batch of newly read job output.
+// The latest human progress line in a batch of newly read run output.
 export function progress_from_lines(lines: string[]): string | null {
   let summary: string | null = null;
   for (const text of lines) {
-    // A chained job names each step, and recreate prints which archive it is on as plain text.
+    // A chained run names each step, and recreate prints which archive it is on as plain text.
     if (text.startsWith(STEP_MARK)) {
       summary = text.slice(STEP_MARK.length).trim();
       continue;

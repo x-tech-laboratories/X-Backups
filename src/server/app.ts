@@ -18,9 +18,9 @@ import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
 import { host_name, type Poller, type Watched } from "./poller.ts";
-import { ConfigError, default_settings, field_list, type Config } from "./config.ts";
+import { ConfigError, default_settings, field_list, target_key, type Config } from "./config.ts";
 import { mask, type ConfigSources } from "./sources.ts";
-import type { Change, JobRow, Store } from "./store.ts";
+import type { Change, RunRow, Store } from "./store.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
@@ -52,7 +52,11 @@ interface ActionBody {
   fresh?: boolean;
 }
 
+// A list narrowed to one target, or to the targets of one host, job or repository.
 interface ListQuery {
+  target?: string;
+  host?: string;
+  job?: string;
   repository?: string;
   kind?: string;
   state?: string;
@@ -89,7 +93,7 @@ const actions: Record<string, (repository: BorgRepository, body: ActionBody) => 
   diff_archive: (repository, body) => repository.diff_archive(body.archive ?? null),
 };
 
-// The action a finished job reruns with, or null for one that needs a choice the job did not keep (restore, delete).
+// The action a finished run reruns with, or null for one that needs a choice the run did not keep (restore, delete).
 export function retry_action(kind: string): [action_id: string, body: ActionBody] | null {
   if (kind === "check") return ["check_repo", { kind: "all" }];
   if (kind.startsWith("check-")) return ["check_repo", { kind: kind.slice("check-".length) }];
@@ -112,24 +116,32 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   const { poller, store, sources } = options;
 
   const accounts = new Accounts(store, { name: options.admin_name ?? "admin", password_hash: options.password_hash });
-  register_auth(app, { accounts, oidc: options.oidc, proxy: options.proxy });
+  // A grant names a target by its id or by its repository's name, so a grant on a repository covers every target writing there.
+  const grant_names = (target_id: string): string[] => {
+    const repository = store.target(target_id)?.repository;
+    return repository === undefined || repository === target_id ? [target_id] : [target_id, repository];
+  };
+  const sees = (request: FastifyRequest, target_id: string, repository: string | null = null): boolean =>
+    visible(request, repository === null ? grant_names(target_id) : [target_id, repository]);
+
+  register_auth(app, { accounts, oidc: options.oidc, proxy: options.proxy, grant_names });
   if (options.agents) await register_agent_route(app, options.agents);
 
   // The repositories this viewer sees.
   const watched_by = (request: FastifyRequest): Watched[] =>
-    [...poller.repositories.values()].filter((watched) => visible(request, watched.repository.id));
+    [...poller.repositories.values()].filter((watched) => sees(request, watched.repository.id));
 
-  // The repository ids a list is narrowed to, or undefined when the viewer sees them all.
-  const allowed_ids = (request: FastifyRequest): string[] | undefined => request.viewer?.repositories ?? undefined;
+  // The target ids and repository names a list is narrowed to, or undefined when the viewer sees them all.
+  const granted = (request: FastifyRequest): string[] | undefined => request.viewer?.repositories ?? undefined;
 
-  const visible_job = (request: FastifyRequest, id: string) => {
-    const job = store.job(Number(id));
-    return job !== null && visible(request, job.repository_id) ? job : null;
+  const visible_run = (request: FastifyRequest, id: string) => {
+    const run = store.run_row(Number(id));
+    return run !== null && sees(request, run.target_id, run.repository) ? run : null;
   };
 
   // Keeps who ran an action beside what it did, so the events say who pruned or purged.
-  const note_actor = (request: FastifyRequest, repository_id: string, what: string) => {
-    store.apply(repository_id, new CollectResult({ logs: [[`${request.viewer?.name ?? "someone"} ${what}`, "INFO"]] }), { poll: false });
+  const note_actor = (request: FastifyRequest, target_id: string, what: string) => {
+    store.apply(target_id, new CollectResult({ logs: [[`${request.viewer?.name ?? "someone"} ${what}`, "INFO"]] }), { poll: false });
   };
 
   const find = (id: string, reply: FastifyReply): Watched | null => {
@@ -142,9 +154,9 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   const settle = async (id: string, start: ActionStart): Promise<CollectResult> =>
     start instanceof CollectResult ? start : poller.run_action(id, start);
 
-  // Polls at once after an action that started a job, so its output shows without waiting.
+  // Polls at once after an action that started a run, so its output shows without waiting.
   const outcome = (id: string, result: CollectResult) => {
-    if (poller.repositories.get(id)!.repository.jobs?.running()) void poller.poll(id);
+    if (poller.repositories.get(id)!.repository.runs?.running()) void poller.poll(id);
     return { success: result.success, content: result.content, logs: result.logs };
   };
 
@@ -321,10 +333,10 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   }));
 
   // Applies a config the sources accepted, logging what changed on the repository it concerns.
-  const applied = (config: Config, repository_id: string | null, message: string) => {
+  const applied = (config: Config, target_id: string | null, message: string) => {
     poller.apply_config(config);
-    if (repository_id !== null) store.apply(repository_id, new CollectResult({ logs: [[message, "INFO"]] }), { poll: false });
-    store.changed({ kind: "config", repository_id });
+    if (target_id !== null) store.apply(target_id, new CollectResult({ logs: [[message, "INFO"]] }), { poll: false });
+    store.changed({ kind: "config", target_id });
   };
 
   const editing = (reply: FastifyReply): ConfigSources | null => {
@@ -388,50 +400,50 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
         .slice(0, 10)
         .map((repository) => ({ id: repository.id, name: repository.name })),
       archives: watched
-        .flatMap((repository) => repository.state.archives.map((archive) => ({ repository_id: repository.id, name: archive.name, epoch: archive.epoch })))
+        .flatMap((repository) => repository.state.archives.map((archive) => ({ target_id: repository.id, name: archive.name, epoch: archive.epoch })))
         .filter((archive) => archive.name.toLowerCase().includes(text))
         .sort((left, right) => right.epoch - left.epoch)
         .slice(0, 20),
     };
   });
 
-  // ── Jobs and events ──────────────────────────────────────────────────────
+  // ── Runs and events ──────────────────────────────────────────────────
 
-  app.get<{ Querystring: ListQuery }>("/api/jobs", async (request) => {
+  app.get<{ Querystring: ListQuery }>("/api/runs", async (request) => {
     const query = request.query;
-    return store.jobs({
-      repository_id: query.repository, repository_ids: allowed_ids(request), kind: query.kind, state: query.state,
+    return store.runs({
+      ...target_filter(query), granted: granted(request), kind: query.kind, state: query.state,
       since_epoch: number_or_undefined(query.since),
       limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
     }).map(with_retry);
   });
 
-  app.get<{ Params: { id: string }; Querystring: { skip?: string } }>("/api/jobs/:id", async (request, reply) => {
-    const job = visible_job(request, request.params.id);
-    if (job === null) return reply.code(404).send({ error: "No such job." });
-    return { ...with_retry(job), output: store.job_output(job.id, Number(request.query.skip ?? 0)) };
+  app.get<{ Params: { id: string }; Querystring: { skip?: string } }>("/api/runs/:id", async (request, reply) => {
+    const run = visible_run(request, request.params.id);
+    if (run === null) return reply.code(404).send({ error: "No such run." });
+    return { ...with_retry(run), output: store.run_output(run.id, Number(request.query.skip ?? 0)) };
   });
 
-  app.post<{ Params: { id: string } }>("/api/jobs/:id/cancel", async (request, reply) => {
-    const job = visible_job(request, request.params.id);
-    const watched = job ? poller.repositories.get(job.repository_id) : undefined;
-    if (!job || !watched) return reply.code(404).send({ error: "No such job." });
-    if (watched.repository.jobs?.running()?.id !== job.id) return reply.code(409).send({ error: "That job is not running." });
-    note_actor(request, job.repository_id, `cancelled ${job.kind} #${job.id}`);
-    return outcome(job.repository_id, await settle(job.repository_id, watched.repository.cancel_job()));
+  app.post<{ Params: { id: string } }>("/api/runs/:id/cancel", async (request, reply) => {
+    const run = visible_run(request, request.params.id);
+    const watched = run ? poller.repositories.get(run.target_id) : undefined;
+    if (!run || !watched) return reply.code(404).send({ error: "No such run." });
+    if (watched.repository.runs?.running()?.id !== run.id) return reply.code(409).send({ error: "That run is not going." });
+    note_actor(request, run.target_id, `cancelled ${run.kind} #${run.id}`);
+    return outcome(run.target_id, await settle(run.target_id, watched.repository.cancel_run()));
   });
 
-  // Runs a finished job's action again, as if its button had been pressed.
-  app.post<{ Params: { id: string } }>("/api/jobs/:id/retry", async (request, reply) => {
-    const job = visible_job(request, request.params.id);
-    const watched = job ? poller.repositories.get(job.repository_id) : undefined;
-    if (!job || !watched) return reply.code(404).send({ error: "No such job." });
-    if (job.state === "running") return reply.code(409).send({ error: "That job is still running." });
-    const retry = retry_action(job.kind);
-    if (retry === null) return reply.code(409).send({ error: `A ${job.kind} is started again from its archive.` });
+  // Runs a finished run's action again, as if its button had been pressed.
+  app.post<{ Params: { id: string } }>("/api/runs/:id/retry", async (request, reply) => {
+    const run = visible_run(request, request.params.id);
+    const watched = run ? poller.repositories.get(run.target_id) : undefined;
+    if (!run || !watched) return reply.code(404).send({ error: "No such run." });
+    if (run.state === "running") return reply.code(409).send({ error: "That run is still going." });
+    const retry = retry_action(run.kind);
+    if (retry === null) return reply.code(409).send({ error: `A ${run.kind} is started again from its archive.` });
     const [action_id, body] = retry;
-    note_actor(request, job.repository_id, `ran ${job.kind} #${job.id} again`);
-    return outcome(job.repository_id, await settle(job.repository_id, actions[action_id](watched.repository, body)));
+    note_actor(request, run.target_id, `ran ${run.kind} #${run.id} again`);
+    return outcome(run.target_id, await settle(run.target_id, actions[action_id](watched.repository, body)));
   });
 
   // A host's timers show to whoever sees one of its repositories.
@@ -453,7 +465,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Querystring: ListQuery }>("/api/events", async (request) => {
     const query = request.query;
     return store.events({
-      repository_id: query.repository, repository_ids: allowed_ids(request), level: query.level,
+      ...target_filter(query), granted: granted(request), level: query.level,
       limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
     });
   });
@@ -468,7 +480,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     stream.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     stream.write("retry: 5000\n\n");
     const send = (change: Change) => {
-      if (change.repository_id === null || visible(request, change.repository_id)) stream.write(`data: ${JSON.stringify(change)}\n\n`);
+      if (change.target_id === null || sees(request, change.target_id)) stream.write(`data: ${JSON.stringify(change)}\n\n`);
     };
     const keepalive = setInterval(() => stream.write(": keepalive\n\n"), stream_keepalive_in_milliseconds);
     store.changes.on("change", send);
@@ -510,23 +522,31 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// A job as the page shows it, with whether it can be run again.
-function with_retry(job: JobRow) {
-  return { ...job, retry: job.state !== "running" && retry_action(job.kind) !== null };
+// A run as the page shows it, with whether it can be run again.
+function with_retry(run: RunRow) {
+  return { ...run, retry: run.state !== "running" && retry_action(run.kind) !== null };
+}
+
+function target_filter(query: ListQuery) {
+  return { target_id: query.target, host: query.host, job: query.job, repository: query.repository };
 }
 
 function number_or_undefined(value: string | undefined): number | undefined {
   return value === undefined || value === "" ? undefined : Number(value);
 }
 
-// What the repository list shows for one repository.
+// What the repository list shows for one target, with the host, job and repository it is built from.
 function summary(watched: Watched) {
   const repository = watched.repository;
   const state = repository.state;
+  const key = target_key(watched.config);
   return {
     id: repository.id,
     name: repository.name,
-    host: host_name(watched),
+    target_id: key.target_id,
+    host: key.host,
+    job: key.job,
+    repository: key.repository,
     status: watched.status,
     ...repository_health(watched),
     max_age: repository.max_age,
@@ -539,7 +559,7 @@ function summary(watched: Watched) {
     stats: state.stats,
     canary: state.canary,
     checks_passed: state.checks?.passed ?? null,
-    running_job: repository.jobs?.running() ?? null,
+    running_run: repository.runs?.running() ?? null,
     source: watched.config.source,
   };
 }

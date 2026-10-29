@@ -258,7 +258,7 @@ function pan_and_zoom(drawing: SVGElement, view: () => Box, set_view: (box: Box)
 // ── Pieces ───────────────────────────────────────────────────────────────────
 
 function tone_of(repository: MapRepository): "running" | "ok" | "warning" | "critical" {
-  return repository.running_job ? "running" : repository.level;
+  return repository.running_run ? "running" : repository.level;
 }
 
 // Retention as borg's flags read, such as 24h 7d 4w 12m 3y.
@@ -331,7 +331,7 @@ export function map_view(): View {
       section("What is backed up where", body, tools),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "job", "config"])) await update(true);
+      if (touches(changes, null, ["repository", "run", "config"])) await update(true);
     },
   };
 }

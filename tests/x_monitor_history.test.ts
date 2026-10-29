@@ -39,7 +39,7 @@ describe("X-Monitor history", () => {
     ]);
     const store = new Store(":memory:");
     const target = (store as unknown as { database: DatabaseSync }).database;
-    target.prepare("INSERT INTO polls (repository_id, epoch, archive_count) VALUES ('odin', ?, 6)").run(epoch("2026-10-03T03:00:00"));
+    target.prepare("INSERT INTO polls (target_id, epoch, archive_count) VALUES ('odin', ?, 6)").run(epoch("2026-10-03T03:00:00"));
     const mapping = new Map([["backup-laptop", "odin"]]);
 
     expect(import_x_monitor_history(source, target, mapping, true)[0]).toMatchObject({ found: 3, written: 2 });

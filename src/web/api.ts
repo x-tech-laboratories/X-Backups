@@ -2,22 +2,31 @@
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
+// The target a row belongs to and the host, job and repository it is built from; null on an older row of a target since removed.
+export interface TargetColumns {
+  target_id: string;
+  host: string | null;
+  job: string | null;
+  repository: string | null;
+}
+
 export type Status = "online" | "info" | "unavailable" | "warning" | "failed";
 
-export type JobState = "running" | "succeeded" | "warning" | "failed" | "cancelled";
+export type RunState = "running" | "succeeded" | "warning" | "failed" | "cancelled";
 
-export interface Job {
+export interface Run extends TargetColumns {
   id: number;
-  repository_id: string;
+  // The task the run belongs to, or null for an action started by hand.
+  task: string | null;
   kind: string;
   command: string;
-  state: JobState;
+  state: RunState;
   progress: string | null;
   exit_code: number | null;
   error: string | null;
   started_epoch: number;
   ended_epoch: number | null;
-  // Whether the job's action can be run again from its row.
+  // Whether the run's action can be run again from its row.
   retry: boolean;
   output?: string[];
 }
@@ -29,10 +38,14 @@ export interface Stats {
   dedup_ratio?: number;
 }
 
+// One target, with the host, job and repository it is built from; a repository only watched has no job.
 export interface RepositorySummary {
   id: string;
   name: string;
+  target_id: string;
   host: string;
+  job: string | null;
+  repository: string;
   status: Status | null;
   // How healthy the server judges the repository, and why.
   level: "ok" | "warning" | "critical";
@@ -50,7 +63,7 @@ export interface RepositorySummary {
   stats: Stats | null;
   canary: { ok: boolean; checked_epoch: number; detail: string } | null;
   checks_passed: boolean | null;
-  running_job: Job | null;
+  running_run: Run | null;
   source: "declared" | "page";
 }
 
@@ -101,7 +114,7 @@ export interface MapRepository extends RepositorySummary {
 // A download in progress, which holds the repository's lock while it runs.
 export interface DownloadRecord {
   id: number;
-  repository_id: string;
+  target_id: string;
   who: string;
   what: string;
   started_epoch: number;
@@ -146,9 +159,8 @@ export interface Diff {
 
 export type Level = "INFO" | "WARNING" | "ERROR";
 
-export interface EventRow {
+export interface EventRow extends TargetColumns {
   id: number;
-  repository_id: string;
   epoch: number;
   level: Level;
   message: string;
@@ -245,14 +257,14 @@ export const SECRET_MASK = "(set)";
 
 export interface SearchResults {
   repositories: { id: string; name: string }[];
-  archives: { repository_id: string; name: string; epoch: number }[];
+  archives: { target_id: string; name: string; epoch: number }[];
 }
 
 // What the server's stream says changed; null stands for "anything may have changed".
 export interface Change {
-  kind: "repository" | "job" | "timers" | "hosts" | "config";
-  repository_id: string | null;
-  job_id?: number;
+  kind: "repository" | "run" | "timers" | "hosts" | "config";
+  target_id: string | null;
+  run_id?: number;
 }
 
 // ── Requests ─────────────────────────────────────────────────────────────────

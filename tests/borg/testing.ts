@@ -1,7 +1,7 @@
 // In-memory stores and a cycle driver, so a repository can be exercised without a host or a database.
 
 import { BorgRepository, type BorgConfig } from "../../src/server/borg/repository.ts";
-import { cmd_result, type CmdResult, type Command, type JobRecord, type JobState, type JobStore, type LogEntry, type MonitorStatus } from "../../src/server/borg/types.ts";
+import { cmd_result, type CmdResult, type Command, type RunRecord, type RunState, type RunStore, type LogEntry, type MonitorStatus } from "../../src/server/borg/types.ts";
 import { CollectResult } from "../../src/server/borg/types.ts";
 
 // ── Outcome log ──────────────────────────────────────────────────────────────
@@ -21,57 +21,57 @@ export class MemoryOutcomeLog {
   }
 }
 
-// ── Job store ────────────────────────────────────────────────────────────────
+// ── Run store ────────────────────────────────────────────────────────────────
 
-export class MemoryJobStore implements JobStore {
-  private jobs: JobRecord[] = [];
+export class MemoryRunStore implements RunStore {
+  private runs: RunRecord[] = [];
   private outputs = new Map<number, string[]>();
 
-  running(): JobRecord | null {
-    return this.jobs.find((job) => job.state === "running") ?? null;
+  running(): RunRecord | null {
+    return this.runs.find((run) => run.state === "running") ?? null;
   }
 
-  action_job(_action_id: string): JobRecord | null {
+  action_run(_action_id: string): RunRecord | null {
     return null;
   }
 
   create(kind: string, command: string, workdir: string | null): number {
-    const id = this.jobs.length + 1;
-    this.jobs.push({ id, kind, command, workdir, pid: null, state: "running", progress: null, output_seq: 0, exit_code: null, error: null });
+    const id = this.runs.length + 1;
+    this.runs.push({ id, kind, command, workdir, pid: null, state: "running", progress: null, output_seq: 0, exit_code: null, error: null });
     this.outputs.set(id, []);
     return id;
   }
 
-  set_pid(job_id: number, pid: number): void {
-    this.job(job_id).pid = pid;
+  set_pid(run_id: number, pid: number): void {
+    this.run(run_id).pid = pid;
   }
 
-  set_progress(job_id: number, summary: string): void {
-    this.job(job_id).progress = summary;
+  set_progress(run_id: number, summary: string): void {
+    this.run(run_id).progress = summary;
   }
 
-  append_output(job_id: number, lines: string[]): void {
-    this.outputs.get(job_id)!.push(...lines);
+  append_output(run_id: number, lines: string[]): void {
+    this.outputs.get(run_id)!.push(...lines);
   }
 
-  bump_output_seq(job_id: number, new_seq: number): void {
-    this.job(job_id).output_seq = new_seq;
+  bump_output_seq(run_id: number, new_seq: number): void {
+    this.run(run_id).output_seq = new_seq;
   }
 
-  finish(job_id: number, state: JobState, details: { exit_code?: number | null; error?: string | null }): void {
-    Object.assign(this.job(job_id), { state, exit_code: details.exit_code ?? null, error: details.error ?? null });
+  finish(run_id: number, state: RunState, details: { exit_code?: number | null; error?: string | null }): void {
+    Object.assign(this.run(run_id), { state, exit_code: details.exit_code ?? null, error: details.error ?? null });
   }
 
-  recent(): JobRecord[] {
-    return [...this.jobs].reverse();
+  recent(): RunRecord[] {
+    return [...this.runs].reverse();
   }
 
-  output(job_id: number): string[] {
-    return this.outputs.get(job_id) ?? [];
+  output(run_id: number): string[] {
+    return this.outputs.get(run_id) ?? [];
   }
 
-  private job(job_id: number): JobRecord {
-    return this.jobs.find((job) => job.id === job_id)!;
+  private run(run_id: number): RunRecord {
+    return this.runs.find((run) => run.id === run_id)!;
   }
 }
 
@@ -80,11 +80,11 @@ export class MemoryJobStore implements JobStore {
 export class Harness {
   readonly repository: BorgRepository;
   readonly outcomes = new MemoryOutcomeLog();
-  readonly jobs = new MemoryJobStore();
+  readonly runs = new MemoryRunStore();
 
   constructor(name: string, config: BorgConfig) {
     this.repository = new BorgRepository(name, config);
-    this.repository.jobs = this.jobs;
+    this.repository.runs = this.runs;
   }
 
   // Keeps the state a result hands back, the way the store does between polls.

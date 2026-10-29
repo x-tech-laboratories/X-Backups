@@ -1,12 +1,12 @@
-// What several pages show the same way: repository cards, the jobs table, the events list and the timers table.
+// What several pages show the same way: repository cards, the runs table, the events list and the timers table.
 
 import { show_outcome } from "../actions.ts";
 import { overdue, timer_problem } from "../attention.ts";
-import { api, type Change, type EventRow, type Job, type Outcome, type RepositorySummary, type TimerRow } from "../api.ts";
+import { api, type Change, type EventRow, type Run, type Outcome, type RepositorySummary, type TimerRow } from "../api.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { link } from "../router.ts";
 import { can } from "../session.ts";
-import { chip, confirm_dialog, data_table, empty, job_badge, level_badge, status_badge, toast, verdict, type Sorting } from "../ui.ts";
+import { chip, confirm_dialog, data_table, empty, run_badge, level_badge, status_badge, toast, verdict, type Sorting } from "../ui.ts";
 
 // ── Views ────────────────────────────────────────────────────────────────────
 
@@ -19,9 +19,9 @@ export interface View {
 }
 
 // Whether any change concerns the repository (or any repository when none is named), of one of the kinds.
-export function touches(changes: Change[] | null, repository_id: string | null, kinds: Change["kind"][]): boolean {
+export function touches(changes: Change[] | null, target_id: string | null, kinds: Change["kind"][]): boolean {
   if (changes === null) return true;
-  return changes.some((change) => kinds.includes(change.kind) && (repository_id === null || change.repository_id === null || change.repository_id === repository_id));
+  return changes.some((change) => kinds.includes(change.kind) && (target_id === null || change.target_id === null || change.target_id === target_id));
 }
 
 // ── Repositories ─────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ export function repository_card(repository: RepositorySummary): HTMLElement {
     h("div", { class: "verdicts" }, verdict(repository.checks_passed, "checks"), verdict(repository.canary?.ok, "canary")),
     h("div", { class: "chips" },
       repository.source === "declared" ? chip("declared", "Set in the Nix configuration; edit it there") : chip("added here", "Added from this page; edit it on its Config tab"),
-      repository.running_job && chip(`${repository.running_job.kind} running${repository.running_job.progress ? ` · ${repository.running_job.progress}` : ""}`),
+      repository.running_run && chip(`${repository.running_run.kind} running${repository.running_run.progress ? ` · ${repository.running_run.progress}` : ""}`),
     ),
   );
 }
@@ -69,16 +69,16 @@ export function status_rank(repository: RepositorySummary): number {
 
 const level_tone = { critical: "bad", warning: "warn", ok: "good" } as const;
 
-// ── Jobs ─────────────────────────────────────────────────────────────────────
+// ── Runs ─────────────────────────────────────────────────────────────────────
 
-// The middle duration of each kind's finished jobs, which a job's duration bar is drawn against.
-export function medians(jobs: Job[]): Map<string, number> {
+// The middle duration of each kind's finished runs, which a run's duration bar is drawn against.
+export function medians(runs: Run[]): Map<string, number> {
   const by_kind = new Map<string, number[]>();
-  for (const job of jobs) {
-    if (job.ended_epoch === null || job.state !== "succeeded" && job.state !== "warning") continue;
-    const list = by_kind.get(job.kind) ?? [];
-    list.push(job.ended_epoch - job.started_epoch);
-    by_kind.set(job.kind, list);
+  for (const run of runs) {
+    if (run.ended_epoch === null || run.state !== "succeeded" && run.state !== "warning") continue;
+    const list = by_kind.get(run.kind) ?? [];
+    list.push(run.ended_epoch - run.started_epoch);
+    by_kind.set(run.kind, list);
   }
   return new Map([...by_kind].map(([kind, list]) => {
     list.sort((a, b) => a - b);
@@ -87,8 +87,8 @@ export function medians(jobs: Job[]): Map<string, number> {
 }
 
 // A bar where the kind's usual duration sits at the middle mark, turning warm when a run took twice as long.
-function duration_bar(job: Job, median: number | undefined): HTMLElement {
-  const took = (job.ended_epoch ?? now_seconds()) - job.started_epoch;
+function duration_bar(run: Run, median: number | undefined): HTMLElement {
+  const took = (run.ended_epoch ?? now_seconds()) - run.started_epoch;
   const text = duration(took);
   if (!median) return h("span", {}, text);
   const share = Math.min(100, took / median * 50);
@@ -98,51 +98,51 @@ function duration_bar(job: Job, median: number | undefined): HTMLElement {
     h("span", { class: "duration-track", "aria-hidden": "true" }, h("span", { class: `duration-fill tone-fill-${tone}`, style: `width: ${share.toFixed(0)}%` })));
 }
 
-export function jobs_table(jobs: Job[], options: { with_repository: boolean; refresh: () => void; usual?: Map<string, number> }): HTMLElement {
-  if (jobs.length === 0) return empty("No jobs here.", "Jobs appear when an action runs, such as a backup, check or prune.");
-  const usual = options.usual ?? medians(jobs);
-  return data_table<Job>([
-    ...(options.with_repository ? [{ label: "Repository", cell: (job: Job) => h("a", { href: link(["repositories", job.repository_id]) }, job.repository_id) }] : []),
-    { label: "Job", cell: (job) => h("a", { href: link(["jobs", String(job.id)]) }, `${job.kind} #${job.id}`) },
-    { label: "State", cell: (job) => [job_badge(job.state), job.progress && job.state === "running" ? h("span", { class: "muted" }, ` ${job.progress}`) : null] },
-    { label: "Started", cell: (job) => h("span", { title: stamp(job.started_epoch) }, age(job.started_epoch)) },
-    { label: "Took", cell: (job) => duration_bar(job, usual.get(job.kind)) },
-    { label: "", class: "actions-cell", cell: (job) => job_buttons(job, options.refresh) },
-  ], jobs, { caption: "Jobs" });
+export function runs_table(runs: Run[], options: { with_repository: boolean; refresh: () => void; usual?: Map<string, number> }): HTMLElement {
+  if (runs.length === 0) return empty("No runs here.", "Runs appear when an action runs, such as a backup, check or prune.");
+  const usual = options.usual ?? medians(runs);
+  return data_table<Run>([
+    ...(options.with_repository ? [{ label: "Repository", cell: (run: Run) => h("a", { href: link(["repositories", run.target_id]) }, run.target_id) }] : []),
+    { label: "Run", cell: (run) => h("a", { href: link(["runs", String(run.id)]) }, `${run.kind} #${run.id}`) },
+    { label: "State", cell: (run) => [run_badge(run.state), run.progress && run.state === "running" ? h("span", { class: "muted" }, ` ${run.progress}`) : null] },
+    { label: "Started", cell: (run) => h("span", { title: stamp(run.started_epoch) }, age(run.started_epoch)) },
+    { label: "Took", cell: (run) => duration_bar(run, usual.get(run.kind)) },
+    { label: "", class: "actions-cell", cell: (run) => run_buttons(run, options.refresh) },
+  ], runs, { caption: "Runs" });
 }
 
-export function job_buttons(job: Job, refresh: () => void): HTMLElement | null {
+export function run_buttons(run: Run, refresh: () => void): HTMLElement | null {
   if (!can("operator")) return null;
   return h("span", { class: "row-actions" },
-    job.state === "running" && h("button", { class: "danger", onclick: () => cancel_job(job, refresh) }, "Cancel"),
-    job.retry && h("button", { onclick: () => retry_job(job, refresh) }, "Retry"),
+    run.state === "running" && h("button", { class: "danger", onclick: () => cancel_run(run, refresh) }, "Cancel"),
+    run.retry && h("button", { onclick: () => retry_run(run, refresh) }, "Retry"),
   );
 }
 
-export function cancel_job(job: Job, refresh: () => void): void {
+export function cancel_run(run: Run, refresh: () => void): void {
   confirm_dialog({
-    title: `Cancel ${job.kind} #${job.id}?`,
-    message: `This stops the ${job.kind} on ${job.repository_id}. Borg keeps what was finished before it stopped, and the job can be run again.`,
-    confirm_label: "Cancel job",
+    title: `Cancel ${run.kind} #${run.id}?`,
+    message: `This stops the ${run.kind} on ${run.target_id}. Borg keeps what was finished before it stopped, and the run can be run again.`,
+    confirm_label: "Cancel run",
     busy_label: "Cancelling…",
     danger: true,
     run: async () => {
-      const outcome = await api<Outcome>(`/api/jobs/${job.id}/cancel`, {}).catch((error: Error) => ({ success: false, content: error.message, logs: [] }));
+      const outcome = await api<Outcome>(`/api/runs/${run.id}/cancel`, {}).catch((error: Error) => ({ success: false, content: error.message, logs: [] }));
       toast(outcome.content ?? "Cancelled.", { tone: outcome.success ? "warn" : "bad" });
       refresh();
     },
   });
 }
 
-export function retry_job(job: Job, refresh: () => void): void {
+export function retry_run(run: Run, refresh: () => void): void {
   confirm_dialog({
-    title: `Run ${job.kind} again?`,
-    message: `This starts the same ${job.kind} on ${job.repository_id} that job #${job.id} ran.`,
+    title: `Run ${run.kind} again?`,
+    message: `This starts the same ${run.kind} on ${run.target_id} that run #${run.id} ran.`,
     confirm_label: "Run again",
     busy_label: "Starting…",
     run: async () => {
       try {
-        await show_outcome(job.repository_id, job.kind, await api<Outcome>(`/api/jobs/${job.id}/retry`, {}));
+        await show_outcome(run.target_id, run.kind, await api<Outcome>(`/api/runs/${run.id}/retry`, {}));
       } catch (error) {
         toast(`Could not run it again: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
       }
@@ -158,7 +158,7 @@ export function events_list(events: EventRow[], with_repository: boolean): HTMLE
   return h("ul", { class: "events" }, ...events.map((event) => h("li", { class: `level-${event.level.toLowerCase()}` },
     h("span", { class: "muted event-time", title: stamp(event.epoch) }, age(event.epoch)),
     level_badge(event.level),
-    with_repository && h("a", { href: link(["repositories", event.repository_id]) }, event.repository_id),
+    with_repository && h("a", { href: link(["repositories", event.target_id]) }, event.target_id),
     h("span", { class: "event-message" }, event.message),
   )));
 }

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { build_app } from "../src/server/app.ts";
 import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
-import type { Config } from "../src/server/config.ts";
+import { parse_config, type Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
 import { Store } from "../src/server/store.ts";
 import { code_at } from "../src/server/totp.ts";
@@ -93,7 +93,7 @@ describe("roles", () => {
 // ── Repository access ────────────────────────────────────────────────────────
 
 describe("repository access", () => {
-  it("shows a limited user only their repositories, jobs and events", async () => {
+  it("shows a limited user only their repositories, runs and events", async () => {
     const admin = await login("admin", "declared admin pass");
     await call("POST", "/api/repositories/thor/actions/run_backup", admin);
     const limited = await add_user(admin, "lena", "operator", ["odin"]);
@@ -102,10 +102,33 @@ describe("repository access", () => {
     expect((await call("GET", "/api/map", limited)).json().repositories.map((repository: { id: string }) => repository.id)).toEqual(["odin"]);
     expect((await call("GET", "/api/repositories/thor", limited)).statusCode).toBe(404);
     expect((await call("POST", "/api/repositories/thor/actions/run_backup", limited)).statusCode).toBe(404);
-    expect((await call("GET", "/api/jobs", limited)).json()).toEqual([]);
-    expect((await call("GET", "/api/events", limited)).json().every((event: { repository_id: string }) => event.repository_id === "odin")).toBe(true);
-    const [job] = (await call("GET", "/api/jobs", admin)).json();
-    expect((await call("GET", `/api/jobs/${job.id}`, limited)).statusCode).toBe(404);
+    expect((await call("GET", "/api/runs", limited)).json()).toEqual([]);
+    expect((await call("GET", "/api/events", limited)).json().every((event: { target_id: string }) => event.target_id === "odin")).toBe(true);
+    const [run] = (await call("GET", "/api/runs", admin)).json();
+    expect((await call("GET", `/api/runs/${run.id}`, limited)).statusCode).toBe(404);
+  });
+
+  it("shows a user granted a repository every target writing there", async () => {
+    poller.stop();
+    await app.close();
+    const config = parse_config(JSON.stringify({
+      hosts: [{ name: "odin", address: "odin.lan" }, { name: "thor", address: "thor.lan" }],
+      repositories: [{ name: "vault", host: "odin", repo: "/srv/vault" }, { name: "spare", host: "odin", repo: "/srv/spare" }],
+      sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "media", host: "thor", source_paths: ["/srv/media"] }],
+      jobs: [{ name: "nightly", sources: ["home", "media"], repositories: ["vault"] }],
+    }), "test.json");
+    poller = new Poller(config, store, async (_target, command) => cmd_result(0, command.includes("list") ? LIST : "4242\n", ""));
+    app = await build_app({ serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store });
+    const admin = await login("admin", "declared admin pass");
+    await call("POST", "/api/repositories/nightly:thor:vault/actions/run_backup", admin);
+    const granted = await add_user(admin, "vic", "operator", ["vault"]);
+
+    const shown = (await call("GET", "/api/repositories", granted)).json();
+    expect(shown.map((target: { id: string }) => target.id)).toEqual(["nightly:odin:vault", "nightly:thor:vault"]);
+    expect(shown[1]).toMatchObject({ target_id: "nightly:thor:vault", host: "thor", job: "nightly", repository: "vault" });
+    expect((await call("GET", "/api/repositories/nightly:thor:vault", granted)).statusCode).toBe(200);
+    expect((await call("GET", "/api/repositories/spare", granted)).statusCode).toBe(404);
+    expect((await call("GET", "/api/runs", granted)).json().map((run: { target_id: string }) => run.target_id)).toEqual(["nightly:thor:vault"]);
   });
 });
 

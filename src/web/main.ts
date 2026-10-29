@@ -1,13 +1,13 @@
-// The page: the login, the shell around every view (header, sidebar, search, running jobs, theme), and the router between views.
+// The page: the login, the shell around every view (header, sidebar, search, runs in progress, theme), and the router between views.
 
-import { api, ApiError, LoginNeeded, query, type Change, type Job, type SearchResults } from "./api.ts";
+import { api, ApiError, LoginNeeded, query, type Change, type Run, type SearchResults } from "./api.ts";
 import { h, stamp } from "./dom.ts";
 import { connect, disconnect, on_changes, stream_up } from "./live.ts";
 import { current_route, link } from "./router.ts";
 import { can, forget_me, load_me } from "./session.ts";
 import { apply, next_theme, theme_choice, type Theme } from "./theme.ts";
 import { archive_view } from "./views/archive.ts";
-import { job_view, jobs_view } from "./views/jobs.ts";
+import { run_view, runs_view } from "./views/runs.ts";
 import { map_view } from "./views/map.ts";
 import { new_repository_view } from "./views/new_repository.ts";
 import { overview_view } from "./views/overview.ts";
@@ -36,8 +36,8 @@ function view_for(parts: string[]): View {
   if (section === "repositories" && id) return repository_view(id, tab ?? "overview");
   if (section === "repositories") return repositories_view();
   if (section === "map") return map_view();
-  if (section === "jobs" && id) return job_view(Number(id));
-  if (section === "jobs") return jobs_view();
+  if (section === "runs" && id) return run_view(Number(id));
+  if (section === "runs") return runs_view();
   if (section === "schedules") return schedules_view();
   if (section === "events") return events_view();
   if (section === "settings") return settings_view();
@@ -48,6 +48,8 @@ function view_for(parts: string[]): View {
 
 function show(): void {
   current?.dispose?.();
+  // A link to the old Jobs page opens the Runs page it became.
+  if (current_route().parts[0] === "jobs") history.replaceState(null, "", location.hash.replace(/^#\/?jobs/, "#/runs"));
   const route = current_route();
   current = view_for(route.parts);
   main.replaceChildren(current.root);
@@ -71,7 +73,7 @@ window.addEventListener("hashchange", () => {
 
 on_changes((changes: Change[] | null) => {
   void current?.update?.(changes);
-  if (changes === null || changes.some((change) => change.kind === "job")) void update_running();
+  if (changes === null || changes.some((change) => change.kind === "run")) void update_running();
   update_stream_state();
 });
 
@@ -162,16 +164,16 @@ async function start(): Promise<void> {
   setTimeout(update_stream_state, 2000);
 }
 
-// ── Running jobs ─────────────────────────────────────────────────────────────
+// ── Runs in progress ─────────────────────────────────────────────────────────
 
 const running = document.querySelector<HTMLAnchorElement>("#running")!;
 
 async function update_running(): Promise<void> {
-  const jobs = await api<Job[]>(`/api/jobs${query({ state: "running", limit: 100 })}`).catch(() => null);
-  if (jobs === null) return;
-  running.hidden = jobs.length === 0;
-  running.textContent = jobs.length === 1 ? `${jobs[0].kind} running on ${jobs[0].repository_id}` : `${jobs.length} jobs running`;
-  running.href = jobs.length === 1 ? link(["jobs", String(jobs[0].id)]) : link(["jobs"], { state: "running" });
+  const runs = await api<Run[]>(`/api/runs${query({ state: "running", limit: 100 })}`).catch(() => null);
+  if (runs === null) return;
+  running.hidden = runs.length === 0;
+  running.textContent = runs.length === 1 ? `${runs[0].kind} running on ${runs[0].target_id}` : `${runs.length} runs in progress`;
+  running.href = runs.length === 1 ? link(["runs", String(runs[0].id)]) : link(["runs"], { state: "running" });
 }
 
 function update_stream_state(): void {
@@ -238,8 +240,8 @@ search.addEventListener("input", () => {
     const items = [
       ...found.repositories.map((repository) => h("a", { href: link(["repositories", repository.id]), class: "search-item" },
         h("span", { class: "chip" }, "repository"), " ", repository.name)),
-      ...found.archives.map((archive) => h("a", { href: link(["repositories", archive.repository_id, "archives", archive.name], { tab: "changes" }), class: "search-item" },
-        h("span", { class: "chip" }, "archive"), " ", archive.name, h("span", { class: "muted small" }, ` in ${archive.repository_id}, ${stamp(archive.epoch)}`))),
+      ...found.archives.map((archive) => h("a", { href: link(["repositories", archive.target_id, "archives", archive.name], { tab: "changes" }), class: "search-item" },
+        h("span", { class: "chip" }, "archive"), " ", archive.name, h("span", { class: "muted small" }, ` in ${archive.target_id}, ${stamp(archive.epoch)}`))),
     ];
     results.replaceChildren(...(items.length > 0 ? items : [h("p", { class: "muted search-none" }, "Nothing matches.")]));
     results.hidden = false;

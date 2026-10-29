@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ActionPlan, CollectResult, cmd_result, type CmdResult } from "../src/server/borg/types.ts";
-import type { Config } from "../src/server/config.ts";
+import { parse_config, type Config } from "../src/server/config.ts";
 import { host_health_command } from "../src/server/host_health.ts";
 import { Poller, type Run } from "../src/server/poller.ts";
 import { Store } from "../src/server/store.ts";
@@ -137,19 +137,44 @@ describe("timers", () => {
   });
 });
 
-describe("jobs", () => {
-  it("polls the repository again at once when a job ends", async () => {
+describe("runs", () => {
+  it("polls the repository again at once when a run ends", async () => {
     const ended = "===XBACKUPS_SIZE===\n0\n===XBACKUPS_EXIT===\n0\n===XBACKUPS_ALIVE===\n0\n===XBACKUPS_OUT===\n";
     poller = make((command) => cmd_result(0, command.includes("kill -0") ? ended : LIST, ""));
-    const job_id = store.jobs_for("odin").create("backup", "borg create", "/tmp/w");
-    store.jobs_for("odin").set_pid(job_id, 42);
+    const runs = store.runs_for({ target_id: "odin", host: "local", job: "odin", repository: "odin" });
+    const run_id = runs.create("backup", "borg create", "/tmp/w");
+    runs.set_pid(run_id, 42);
 
     await poller.poll("odin");
     await poller.poll("odin");
 
-    expect(store.job(job_id)!.state).toBe("succeeded");
+    expect(store.run_row(run_id)!.state).toBe("succeeded");
     expect(commands.filter((command) => command.includes("kill -0"))).toHaveLength(1);
     expect(store.polls("odin")).toHaveLength(1);
+  });
+});
+
+// ── Targets ──────────────────────────────────────────────────────────────────
+
+describe("targets", () => {
+  it("keeps each target's rows beside its entities, and its host's timers under the host's name", async () => {
+    const config = parse_config(JSON.stringify({
+      hosts: [{ name: "odin", address: "odin.technet" }],
+      repositories: [{ name: "disk", host: "odin", repo: "/srv/borg" }],
+      sources: [{ name: "home", host: "odin", source_paths: ["/home"] }],
+      jobs: [{ name: "nightly", sources: ["home"], repositories: ["disk"] }],
+    }), "test.json");
+    const timers = '[{"next": 2000000000, "last": 1000000000, "unit": "borgbackup-job-home.timer", "activates": "borgbackup-job-home.service"}]' +
+      "\n===XBACKUPS_SERVICES===\nId=borgbackup-job-home.service\nResult=success\nExecMainStatus=0\n";
+    // The listing fails, so the poll keeps an event to find.
+    poller = new Poller(config, store, async (_target, command) =>
+      command.startsWith("systemctl") ? cmd_result(0, timers, "") : cmd_result(2, "", "Connection refused"));
+
+    await poller.poll("nightly:odin:disk");
+
+    expect(store.events({ job: "nightly" }).length).toBeGreaterThan(0);
+    expect(store.events({ repository: "disk" }).every((event) => event.target_id === "nightly:odin:disk" && event.host === "odin")).toBe(true);
+    expect(store.timers().map((timer) => timer.host)).toEqual(["odin"]);
   });
 });
 

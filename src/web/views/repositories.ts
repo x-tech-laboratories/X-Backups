@@ -12,7 +12,7 @@ const status_filters: [value: string, text: string][] = [
   ["failing", "Failing"],
   ["attention", "Needs attention"],
   ["overdue", "Overdue"],
-  ["running", "Job running"],
+  ["running", "Run in progress"],
   ["ok", "OK"],
 ];
 
@@ -114,7 +114,7 @@ export function repositories_view(): View {
       body,
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "job", "config"])) await update(true);
+      if (touches(changes, null, ["repository", "run", "config"])) await update(true);
     },
   };
 }
@@ -126,7 +126,7 @@ function matches(repository: RepositorySummary, text: string, status: string, ho
   if (status === "failing") return failing(repository);
   if (status === "attention") return repository_reasons(repository).length > 0;
   if (status === "overdue") return repository.last_poll_epoch !== null && overdue(repository);
-  if (status === "running") return repository.running_job !== null;
+  if (status === "running") return repository.running_run !== null;
   if (status === "ok") return repository_reasons(repository).length === 0;
   return true;
 }

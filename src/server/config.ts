@@ -9,6 +9,7 @@ import { parse_duration } from "./borg/durations.ts";
 import { BorgRepository, type BorgConfig, type TargetScope } from "./borg/repository.ts";
 import { as_list } from "./borg/shell.ts";
 import { repo_location } from "./map.ts";
+import type { TargetKey } from "./store.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -635,6 +636,13 @@ function build_targets(maps: EntityMaps, flat_targets: Map<string, RepositoryCon
 
 export function target_id(target: RepositoryConfig): string {
   return target.borg.id ?? target.name;
+}
+
+// The target's id with the host, job and repository it is built from; a config built by hand counts as a flat entry.
+export function target_key(target: RepositoryConfig): TargetKey {
+  const entities = target.target;
+  if (entities !== undefined) return { target_id: target_id(target), host: entities.host, job: entities.job, repository: entities.repository };
+  return { target_id: target_id(target), host: target.host ?? own_host_name, job: target.name, repository: target.name };
 }
 
 // One job's sources on one host to one repository, its archives named for both so prune and freshness tell targets apart.

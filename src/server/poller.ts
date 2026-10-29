@@ -1,10 +1,10 @@
-// Polls each repository at startup, then on its interval, or every ten seconds while one of its jobs runs, and runs its actions.
+// Polls each target at startup, then on its interval, or every ten seconds while one of its runs is going, and runs its actions.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
 import { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionPlan, type CmdResult, type MonitorStatus } from "./borg/types.ts";
-import { target_id, type Config, type Entities, type RepositoryConfig } from "./config.ts";
+import { target_id, target_key, type Config, type Entities, type RepositoryConfig } from "./config.ts";
 import { host_health_command, parse_host_health } from "./host_health.ts";
 import { run_command, stream_command, type CommandStream, type RunOptions, type RunTarget, type StreamOptions } from "./runner.ts";
 import type { Store } from "./store.ts";
@@ -19,7 +19,7 @@ export type Stream = (target: RunTarget, command: string, options: StreamOptions
 // A download in progress, which holds the repository's lock for as long as it runs, so the page shows it and can stop it.
 export interface DownloadRecord {
   id: number;
-  repository_id: string;
+  target_id: string;
   who: string;
   what: string;
   started_epoch: number;
@@ -32,7 +32,7 @@ export interface Watched {
   status: MonitorStatus | null;
 }
 
-const job_poll_interval_in_seconds = 10;
+const run_poll_interval_in_seconds = 10;
 
 // A host's timers are read again at most this often, however many of its repositories poll.
 const timer_read_interval_in_seconds = 300;
@@ -63,13 +63,19 @@ export class Poller {
     this.run = run;
     this.stream_run = stream_run;
     this.entities = config.entities ?? null;
+    this.adopt(config);
     for (const repository_config of config.repositories) this.watch(repository_config);
+  }
+
+  // Tells the store the targets and hosts, so their rows carry the entity names and older rows gain them.
+  private adopt(config: Config): void {
+    this.store.adopt_targets(config.repositories.map(target_key), config.entities?.hosts ?? []);
   }
 
   private watch(repository_config: RepositoryConfig): Watched {
     const repository = new BorgRepository(repository_config.name, repository_config.borg, repository_config.scope);
     repository.state = this.store.load_state(repository.id) ?? repository.state;
-    repository.jobs = this.store.jobs_for(repository.id);
+    repository.runs = this.store.runs_for(target_key(repository_config));
     const status = this.store.polls(repository.id).at(-1)?.status ?? null;
     const watched = { config: repository_config, repository, status };
     this.repositories.set(repository.id, watched);
@@ -80,6 +86,7 @@ export class Poller {
   // their stored state, and removed ones stop being polled while their history stays in the store.
   apply_config(config: Config): void {
     this.entities = config.entities ?? null;
+    this.adopt(config);
     const next = new Map(config.repositories.map((repository_config) => [target_id(repository_config), repository_config]));
     for (const id of this.repositories.keys()) {
       if (next.has(id)) continue;
@@ -97,7 +104,7 @@ export class Poller {
     }
   }
 
-  // Polls every repository now, which also picks up jobs left running before a restart, then keeps polling.
+  // Polls every repository now, which also picks up runs left going before a restart, then keeps polling.
   start(): void {
     this.stopped = false;
     for (const id of this.repositories.keys()) void this.poll(id);
@@ -113,15 +120,15 @@ export class Poller {
   poll(id: string): Promise<CollectResult> {
     const pending = this.pending_polls.get(id);
     if (pending) return pending;
-    const jobs = this.watched(id).repository.jobs;
+    const runs = this.watched(id).repository.runs;
     const poll = this.queued(id, async () => {
-      const followed_job = jobs?.running() != null;
+      const followed_run = runs?.running() != null;
       const result = await this.poll_now(id);
-      return { result, job_ended: followed_job && jobs?.running() == null };
-    }).then(({ result, job_ended }) => {
+      return { result, run_ended: followed_run && runs?.running() == null };
+    }).then(({ result, run_ended }) => {
       this.pending_polls.delete(id);
-      // A finished job changed the repository, so it is polled again at once rather than after its interval.
-      if (job_ended) void this.poll(id);
+      // A finished run changed the repository, so it is polled again at once rather than after its interval.
+      if (run_ended) void this.poll(id);
       else this.schedule(id);
       return result;
     });
@@ -148,24 +155,24 @@ export class Poller {
   // It is listed until it ends, with who started it, so whoever sees a backup waiting on it can stop it.
   stream(id: string, command: string, stdin: string | null, details: { who: string; what: string }): CommandStream {
     const stream = this.stream_run(this.watched(id).config, command, { stdin: stdin ?? undefined });
-    const record = { id: this.next_download_id++, repository_id: id, ...details, started_epoch: Math.floor(Date.now() / 1000) };
+    const record = { id: this.next_download_id++, target_id: id, ...details, started_epoch: Math.floor(Date.now() / 1000) };
     this.running_downloads.set(record.id, { record, stop: stream.stop });
-    this.store.changed({ kind: "repository", repository_id: id });
+    this.store.changed({ kind: "repository", target_id: id });
     void stream.done.then(() => {
       this.running_downloads.delete(record.id);
-      this.store.changed({ kind: "repository", repository_id: id });
+      this.store.changed({ kind: "repository", target_id: id });
     });
     return stream;
   }
 
   downloads(id: string): DownloadRecord[] {
-    return [...this.running_downloads.values()].map(({ record }) => record).filter((record) => record.repository_id === id);
+    return [...this.running_downloads.values()].map(({ record }) => record).filter((record) => record.target_id === id);
   }
 
   // Stops the repository's download with that id, saying whether there was one.
   stop_download(id: string, download_id: number): boolean {
     const download = this.running_downloads.get(download_id);
-    if (download === undefined || download.record.repository_id !== id) return false;
+    if (download === undefined || download.record.target_id !== id) return false;
     download.stop();
     return true;
   }
@@ -223,14 +230,14 @@ export class Poller {
     return next;
   }
 
-  // Sets the next poll: soon while a job runs, else after the repository's interval.
+  // Sets the next poll: soon while a run is going, else after the repository's interval.
   private schedule(id: string): void {
     // A repository removed while its poll ran is not polled again.
     if (this.stopped || !this.repositories.has(id)) return;
     clearTimeout(this.timers.get(id));
     const watched = this.watched(id);
-    const job_running = watched.repository.jobs?.running() != null;
-    const delay = job_running ? job_poll_interval_in_seconds : watched.config.interval_in_seconds;
+    const run_going = watched.repository.runs?.running() != null;
+    const delay = run_going ? run_poll_interval_in_seconds : watched.config.interval_in_seconds;
     this.timers.set(id, setTimeout(() => void this.poll(id), delay * 1000));
   }
 
@@ -243,9 +250,9 @@ export class Poller {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// The host a repository's commands run on, with this machine called local.
+// The name of the host a target's commands run on, which keys its timers and readings.
 export function host_name(watched: Watched): string {
-  return watched.config.host ?? "local";
+  return target_key(watched.config).host;
 }
 
 // Answers a failed run as the repository's own failure, so one broken host never stops the others.

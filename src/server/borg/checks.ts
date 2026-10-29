@@ -40,15 +40,15 @@ export const CHECK_KINDS: Record<string, { options: string[]; renews: string[] }
   extract: { options: [], renews: ["extract"] },
 };
 
-// The job name a Check of this kind runs under, which is how its end knows what it covered.
-export function check_job_kind(kind: string): string {
+// The run kind a Check of this kind runs under, which is how its end knows what it covered.
+export function check_run_kind(kind: string): string {
   return kind === "all" ? "check" : `check-${kind}`;
 }
 
-// The tracked checks a finished job renews, or none when it was not a Check.
-export function covered_by_check_job(job_kind: string): string[] {
-  if (job_kind === "check") return CHECK_KINDS.all.renews;
-  const kind = job_kind.startsWith("check-") ? job_kind.slice("check-".length) : null;
+// The tracked checks a finished run renews, or none when it was not a Check.
+export function covered_by_check_run(run_kind: string): string[] {
+  if (run_kind === "check") return CHECK_KINDS.all.renews;
+  const kind = run_kind.startsWith("check-") ? run_kind.slice("check-".length) : null;
   if (kind !== null && Object.hasOwn(CHECK_KINDS, kind)) return CHECK_KINDS[kind].renews;
   return [];
 }

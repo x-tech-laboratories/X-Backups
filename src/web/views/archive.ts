@@ -33,7 +33,7 @@ export function archive_view(id: string, name: string): View {
     const archive = repository.archives[index];
     const older = repository.archives[index + 1] ?? null;
     const newer = repository.archives[index - 1] ?? null;
-    const target: ActionTarget = { repository_id: id, repository_name: repository.name, done: () => void update(true) };
+    const target: ActionTarget = { target_id: id, repository_name: repository.name, done: () => void update(true) };
     header.replaceChildren(archive_header(repository, archive, older, newer, index, tab, target));
     // The tabs load once; a later change to the repository only refreshes the header's numbers.
     if (started) return;
@@ -290,14 +290,14 @@ function files_tab(body: HTMLElement, base: string, archive: string, restore_dir
       "Running downloads show on the repository's Overview tab, where they can be stopped."),
     holder,
   );
-  // A download is refused while a job runs, and the browser would save that refusal as a file, so it is checked first.
+  // A download is refused while a run is going, and the browser would save that refusal as a file, so it is checked first.
   files.addEventListener("click", async (event) => {
     const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[download]");
     if (!anchor?.href || anchor.dataset.checked === "yes") return;
     event.preventDefault();
     const repository = await api<RepositoryDetail>(base).catch(() => null);
-    if (repository?.running_job) {
-      toast(`A ${repository.running_job.kind} is running on ${repository.name}; download once it ends.`, { tone: "warn" });
+    if (repository?.running_run) {
+      toast(`A ${repository.running_run.kind} is running on ${repository.name}; download once it ends.`, { tone: "warn" });
       return;
     }
     anchor.dataset.checked = "yes";

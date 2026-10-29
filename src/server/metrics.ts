@@ -47,8 +47,8 @@ const metrics: Metric[] = [
     value: (watched) => flag(watched.repository.state.canary?.ok),
   },
   {
-    name: "x_backups_job_running", type: "gauge", help: "1 while a job runs on the repository",
-    value: (watched) => watched.repository.jobs?.running() ? 1 : 0,
+    name: "x_backups_job_running", type: "gauge", help: "1 while a run is going on the repository",
+    value: (watched) => watched.repository.runs?.running() ? 1 : 0,
   },
 ];
 

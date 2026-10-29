@@ -172,7 +172,7 @@ export function events_view(): View {
 
   const refresh = async (quiet: boolean) => {
     await load(list, async () => {
-      const events = await api<EventRow[]>(`/api/events${query({ repository, level, limit: page_size + 1, offset: (page - 1) * page_size })}`);
+      const events = await api<EventRow[]>(`/api/events${query({ target: repository, level, limit: page_size + 1, offset: (page - 1) * page_size })}`);
       return [
         events_list(events.slice(0, page_size), true),
         pager(page, events.length > page_size, (next) => { page = next; replace_query({ page: next === 1 ? null : next }); void refresh(false); }),
@@ -199,7 +199,7 @@ export function events_view(): View {
       list,
     ),
     update: async (changes) => {
-      if (page === 1 && touches(changes, null, ["repository", "job"])) await refresh(true);
+      if (page === 1 && touches(changes, null, ["repository", "run"])) await refresh(true);
     },
   };
 }

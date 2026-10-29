@@ -84,6 +84,21 @@ describe("job targets", () => {
     expect(thor.get_actions().map((action) => action.action_id)).toContain("compact_repo");
     expect(odin.compact_repo()).toMatchObject({ success: false, content: expect.stringContaining("nightly:thor:offsite") });
   });
+
+  it("compacts after a backup only from the target offering the repository's actions", () => {
+    const compacting = parse({
+      repositories: [{ name: "disk", host: "odin", repo: "/srv/borg" }],
+      sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "media", host: "thor", source_paths: ["/srv/media"] }],
+      jobs: [{ name: "nightly", sources: ["home", "media"], repositories: ["disk"], compact_after_backup: true }],
+    });
+    const backup_command = (target: RepositoryConfig) => {
+      const start = built(target).run_backup();
+      return "commands" in start ? start.commands.join("\n") : "";
+    };
+
+    expect(backup_command(compacting.repositories[0])).toContain("compact --progress");
+    expect(backup_command(compacting.repositories[1])).not.toContain("compact --progress");
+  });
 });
 
 // ── Watched repositories ─────────────────────────────────────────────────────

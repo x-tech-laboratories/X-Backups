@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 export interface ImportReport {
   monitor: string;
-  repository_id: string;
+  target_id: string;
   // Polls found in X-Monitor, and how many of them predate X-Backups' own first poll and were written.
   found: number;
   written: number;
@@ -38,24 +38,24 @@ const same_poll_gap_in_seconds = 10;
 
 // ── Import ───────────────────────────────────────────────────────────────────
 
-// Writes each monitor's polls into its repository, only those older than the repository's first X-Backups poll; a dry run writes nothing.
+// Writes each monitor's polls into its target, only those older than the target's first X-Backups poll; a dry run writes nothing.
 export function import_x_monitor_history(source: DatabaseSync, target: DatabaseSync, mapping: Map<string, string>, dry_run: boolean): ImportReport[] {
   const read = source.prepare(`SELECT timestamp, metric_name, value FROM metric WHERE plugin_id = ? AND metric_name IN (${Object.keys(metric_columns).map(() => "?").join(", ")}) ORDER BY timestamp`);
-  const first_own = target.prepare("SELECT MIN(epoch) AS epoch FROM polls WHERE repository_id = ?");
+  const first_own = target.prepare("SELECT MIN(epoch) AS epoch FROM polls WHERE target_id = ?");
   const insert = target.prepare(
-    `INSERT OR IGNORE INTO polls (repository_id, epoch, status, ${columns.join(", ")}) VALUES (?, ?, NULL, ${columns.map(() => "?").join(", ")})`,
+    `INSERT OR IGNORE INTO polls (target_id, epoch, status, ${columns.join(", ")}) VALUES (?, ?, NULL, ${columns.map(() => "?").join(", ")})`,
   );
 
   const reports: ImportReport[] = [];
-  for (const [monitor, repository_id] of mapping) {
+  for (const [monitor, target_id] of mapping) {
     const rows = read.all(monitor, ...Object.keys(metric_columns)) as { timestamp: string; metric_name: string; value: number }[];
     const polls = group_polls(rows);
-    const own = (first_own.get(repository_id) as { epoch: number | null }).epoch;
+    const own = (first_own.get(target_id) as { epoch: number | null }).epoch;
     const older = polls.filter((poll) => own === null || poll.epoch < own);
     if (!dry_run) {
       target.exec("BEGIN");
       try {
-        for (const poll of older) insert.run(repository_id, poll.epoch, ...columns.map((column) => poll[column]));
+        for (const poll of older) insert.run(target_id, poll.epoch, ...columns.map((column) => poll[column]));
         target.exec("COMMIT");
       } catch (error) {
         target.exec("ROLLBACK");
@@ -63,7 +63,7 @@ export function import_x_monitor_history(source: DatabaseSync, target: DatabaseS
       }
     }
     reports.push({
-      monitor, repository_id, found: polls.length, written: older.length,
+      monitor, target_id, found: polls.length, written: older.length,
       first_epoch: older[0]?.epoch ?? null, last_epoch: older.at(-1)?.epoch ?? null,
     });
   }
