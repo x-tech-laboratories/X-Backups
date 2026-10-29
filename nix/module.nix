@@ -20,20 +20,40 @@ let
   # systemd places each loaded secret here, readable only by the service.
   credentials_directory = "/run/credentials/x-backups.service";
 
-  repository_entry =
-    name: repository:
-    removeAttrs repository [ "passphraseFile" ]
+  nullable_options = [
+    "host"
+    "address"
+  ];
+
+  # A typed option left unset is left out, so an entry holds only what was declared.
+  entry =
+    name: fields:
+    lib.filterAttrs (field: value: !(lib.elem field nullable_options && value == null)) fields
     // {
       inherit name;
-    }
+    };
+
+  repository_entry =
+    name: repository:
+    entry name (removeAttrs repository [ "passphraseFile" ])
     // lib.optionalAttrs (repository.passphraseFile != null) {
       passphrase_file = "${credentials_directory}/passphrase-${name}";
     };
 
-  config_file = json.generate "x-backups.json" {
-    inherit (cfg) defaults;
-    repositories = lib.mapAttrsToList repository_entry cfg.repositories;
+  # A kind with no entries is left out, so a setup of flat repositories writes the same file as before.
+  entity_lists = lib.filterAttrs (_: list: list != [ ]) {
+    hosts = lib.mapAttrsToList entry cfg.hosts;
+    sources = lib.mapAttrsToList entry cfg.sources;
+    jobs = lib.mapAttrsToList entry cfg.jobs;
   };
+
+  config_file = json.generate "x-backups.json" (
+    {
+      inherit (cfg) defaults;
+      repositories = lib.mapAttrsToList repository_entry cfg.repositories;
+    }
+    // entity_lists
+  );
 
   # The page may add borg 2 repositories too, so only a declared-only setup without one goes without borg2.
   needs_borg2 =
@@ -42,6 +62,39 @@ let
   passphrase_credentials = lib.mapAttrsToList (name: repository: "passphrase-${name}:${repository.passphraseFile}") (
     lib.filterAttrs (_: repository: repository.passphraseFile != null) cfg.repositories
   );
+
+  # A flat repository entry with paths expands into a source of its name, which a job may name too.
+  declared_sources =
+    lib.attrNames cfg.sources
+    ++ lib.attrNames (lib.filterAttrs (_: repository: repository ? source_paths) cfg.repositories);
+
+  undeclared = names: declared: lib.filter (name: !lib.elem name declared) names;
+
+  # Only a declarative setup holds every source and repository here; in the other modes the page may add the rest.
+  job_assertions = lib.optionals (cfg.configMode == "declarative") (
+    lib.concatLists (
+      lib.mapAttrsToList (name: job: [
+        {
+          assertion = undeclared job.sources declared_sources == [ ];
+          message = "services.x-backups.jobs.${name}: no source named ${lib.concatStringsSep ", " (undeclared job.sources declared_sources)} is declared in services.x-backups.sources, and configMode is declarative so the page cannot add one.";
+        }
+        {
+          assertion = undeclared job.repositories (lib.attrNames cfg.repositories) == [ ];
+          message = "services.x-backups.jobs.${name}: no repository named ${lib.concatStringsSep ", " (undeclared job.repositories (lib.attrNames cfg.repositories))} is declared in services.x-backups.repositories, and configMode is declarative so the page cannot add one.";
+        }
+      ]) cfg.jobs
+    )
+  );
+
+  # The freeform fields of an entity, beside typed options for the ones it is known by.
+  entity =
+    options:
+    types.attrsOf (
+      types.submodule {
+        freeformType = json.type;
+        inherit options;
+      }
+    );
 in
 {
   imports = [
@@ -163,10 +216,10 @@ in
       default = "declarative";
       description = ''
         Whether the web page may change the config. `declarative` shows it read-only. `mixed` keeps
-        the repositories and defaults set here locked, and lets the page add its own repositories
-        and set the defaults left open here. `page` is the same, for a setup that declares nothing
-        here. The page keeps its part in the state directory, and a repository declared here
-        replaces a page one of the same name.
+        the hosts, repositories, sources, jobs and defaults set here locked, and lets the page add
+        its own and set the defaults left open here. `page` is the same, for a setup that declares
+        nothing here. The page keeps its part in the state directory, and an entity declared here
+        replaces a page one of the same kind and name.
 
         Anyone who can log in to a page that edits the config can make X-Backups run commands
         (`rsh`, `borg_bin`, `passphrase_command`) as its service user on this machine and on each
@@ -185,34 +238,159 @@ in
       '';
     };
 
+    hosts = mkOption {
+      default = { };
+      example = literalExpression ''
+        {
+          # On the server; fileserver itself enables nixosModules.agent with the token issued for it:
+          #   services.x-backups-agent = {
+          #     enable = true;
+          #     url = "wss://backups.example.org/api/agent";
+          #     tokenFile = "/run/secrets/x-backups-agent-token";
+          #   };
+          fileserver = {
+            address = "fileserver.example.org";
+            require_sudo = true;
+          };
+          storage = {
+            kind = "storage-only";
+            address = "storage.example.org";
+          };
+          # The managed host with no address is this server, run by the agent built into it.
+          server = { };
+        }
+      '';
+      description = ''
+        Hosts, keyed by name, each with the host fields of `config.example.json`. A managed host
+        runs `nixosModules.agent`, pointed at this server's `/api/agent` with the token an admin
+        issues on `POST /api/hosts/<name>/token`. The page shows each one as declared and locked.
+      '';
+      type = entity {
+        kind = mkOption {
+          type = types.enum [
+            "managed"
+            "storage-only"
+          ];
+          default = "managed";
+          description = ''
+            `managed` runs the X-Backups agent, which runs its commands; `storage-only` only holds
+            repositories reached through `borg serve` or a hosted service.
+          '';
+        };
+        address = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "fileserver.example.org";
+          description = "The host's network name, shown on the page. The one managed host without one is this server.";
+        };
+      };
+    };
+
     repositories = mkOption {
       default = { };
       example = literalExpression ''
         {
+          offsite = {
+            host = "storage";
+            repo = "ssh://borg@storage.example.org/./fileserver";
+            passphraseFile = "/run/secrets/borg-offsite";
+          };
+          # A flat entry, holding every field at once with host naming an address.
           fileserver = {
             host = "fileserver.example.org";
             repo = "ssh://borg@storage.example.org/./fileserver";
             passphraseFile = "/run/secrets/borg-fileserver";
-            max_age = "1d";
-            require_sudo = true;
+            source_paths = [ "/srv/data" ];
           };
         }
       '';
       description = ''
-        Repositories to watch, keyed by name. Each takes the fields of an entry in
-        `config.example.json` other than `name`, plus `passphraseFile`.
+        Repositories, keyed by name, each with the repository fields of `config.example.json` plus
+        `passphraseFile`. The page shows each one as declared and locked.
+
+        An entry whose `host` is not a declared host's name, or that holds fields a repository does
+        not (such as `source_paths` or `keep_daily`), is a flat entry of the older shape, written
+        as given and expanded by X-Backups into a host, repository, source and job of its name.
       '';
-      type = types.attrsOf (
-        types.submodule {
-          freeformType = json.type;
-          options.passphraseFile = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            example = "/run/secrets/borg-fileserver";
-            description = "File on this machine holding the repository's passphrase.";
+      type = entity {
+        host = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "storage";
+          description = "The host whose disk holds the repository; on a flat entry, the address it runs on, or none for this server.";
+        };
+        repo = mkOption {
+          type = types.str;
+          example = "ssh://borg@storage.example.org/./fileserver";
+          description = "The repository's borg URL or path.";
+        };
+        passphraseFile = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "/run/secrets/borg-fileserver";
+          description = "File on this machine holding the repository's passphrase.";
+        };
+      };
+    };
+
+    sources = mkOption {
+      default = { };
+      example = literalExpression ''
+        {
+          fileserver-data = {
+            host = "fileserver";
+            source_paths = [ "/srv/data" "/etc" ];
+            exclude = [ "*.tmp" ];
           };
         }
-      );
+      '';
+      description = ''
+        Sources, keyed by name, each with the source fields of `config.example.json`. The page shows
+        each one as declared and locked.
+      '';
+      type = entity {
+        host = mkOption {
+          type = types.str;
+          example = "fileserver";
+          description = "The managed host the paths are on.";
+        };
+        source_paths = mkOption {
+          type = types.listOf types.str;
+          example = [ "/srv/data" ];
+          description = "The paths to back up.";
+        };
+      };
+    };
+
+    jobs = mkOption {
+      default = { };
+      example = literalExpression ''
+        {
+          nightly = {
+            sources = [ "fileserver-data" ];
+            repositories = [ "offsite" ];
+            keep_daily = 7;
+            keep_weekly = 4;
+          };
+        }
+      '';
+      description = ''
+        Jobs, keyed by name, each with the job fields of `config.example.json`, such as retention and
+        `tasks`. With `configMode` declarative, each source and repository a job names must be
+        declared here; otherwise the page may add it. The page shows each job as declared and locked.
+      '';
+      type = entity {
+        sources = mkOption {
+          type = types.listOf types.str;
+          example = [ "fileserver-data" ];
+          description = "The sources the job backs up.";
+        };
+        repositories = mkOption {
+          type = types.listOf types.str;
+          example = [ "offsite" ];
+          description = "The repositories the job backs up to.";
+        };
+      };
     };
   };
 
@@ -226,7 +404,8 @@ in
     ++ lib.mapAttrsToList (name: repository: {
       assertion = !(repository ? passphrase);
       message = "services.x-backups.repositories.${name}: use passphraseFile, since passphrase would land in the Nix store.";
-    }) cfg.repositories;
+    }) cfg.repositories
+    ++ job_assertions;
 
     systemd.services.x-backups = {
       description = "X-Backups";
