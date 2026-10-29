@@ -775,13 +775,13 @@ export class BorgRepository {
     return new CollectResult({ logs: [[message, "INFO"]], content: message, success: true });
   }
 
-  // An action outcome that reports a problem without touching the monitor's status.
   // Compact and the repository check run once for the whole repository, from the target that offers them.
   private repository_refusal(): CollectResult | null {
     if (this.repository_actions_on === null) return null;
     return BorgRepository.refused(`Compact and check act on the whole repository, so they run from ${this.repository_actions_on}`);
   }
 
+  // An action outcome that reports a problem without touching the monitor's status.
   private static refused(message: string): CollectResult {
     return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: false });
   }
