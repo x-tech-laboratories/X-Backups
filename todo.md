@@ -637,15 +637,21 @@ and 56.
     target, host, job and repository; a grant on a repository's name covers its targets; compact
     after a backup runs only from the target that offers the repository's actions. Left for 66:
     filling `task`, and one compact after all of a repository's backups.
-65. [ ] **Agent.** `src/agent/`, shipped as `packages.agent` with a NixOS module. It dials the server's
+65. [x] **Agent.** `src/agent/`, shipped as `packages.agent` with a NixOS module. It dials the server's
     WebSocket with its host's token, runs the commands it is sent, streams their output, keeps a run
     going across a server restart and reports it on reconnect, stops one on request, and sends host
     health. The server enrols a host by issuing its token, built into the server for its own
     machine. Remove `src/server/runner.ts`'s SSH, `src/server/borg/detached.ts`'s `setsid` jobs and
     `sshKeyFile`.
-    Built: the agent, its protocol, the hub on `/api/agent` with token enrolment, the built-in
-    agent, `packages.agent` and `nixosModules.agent`. Left: wiring the hub into the poller and
-    actions in place of the runner, then removing SSH, `detached.ts` and `sshKeyFile`.
+    Built in `src/agent/`, `src/server/agents/` and `src/server/poller.ts`: every command runs on its
+    target's host through the hub, the managed host with no `address` being the server's own. A long
+    run is a `LongRunPlan` started under its record's `agent_run`, followed from `output_seq` and
+    forgotten once recorded; it waits while its agent is away, is followed again when the agent
+    connects, and is marked lost when the agent no longer knows it. `GET /api/hosts` shows each
+    host's agent and health, and an admin issues and revokes tokens on `/api/hosts/:name/token`.
+    `runner.ts`, `detached.ts`, the shell health read, `sshKeyFile` and a host's `ssh_user` are gone,
+    and the module keeps the built-in agent's runs across a restart with `KillMode=process`. Left for
+    66: starting tasks on their agents. Left for 67: the Hosts page on `/api/hosts`.
 66. [ ] **Scheduler.** Each task has a frequency (a duration or a calendar expression) with presets
     and a readable description, enable and disable, and Run now. X-Backups starts each due task on
     its agent, runs a missed one when the agent reconnects, and queues tasks that share a repository
