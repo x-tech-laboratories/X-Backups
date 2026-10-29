@@ -659,8 +659,14 @@ and 56.
 67. [ ] **Pages.** Hosts (agent state, health, enrolment), Sources, Jobs (definitions, targets,
     tasks and their schedules) and Runs, beside Repositories with its own tasks. The Map draws the
     entities, and the Overview reports targets.
-68. [ ] **Access per job.** A grant on a job shows its targets, runs, sources and repositories. A
+68. [x] **Access per job.** A grant on a job shows its targets, runs, sources and repositories. A
     repository grant becomes grants on the jobs that write there.
+    Built in `src/server/access.ts`, whose `scope_of` and `sees` decide every kind a route lists,
+    and `users.jobs`, a list of `{ job }` and `{ repository }` grants where a repository has no job.
+    `adopt_targets` turns `users.repositories` into those grants against the configured targets and
+    drops the column. A repository's compact and check runs show with the repository, and acting on
+    the whole repository needs an admin or every job writing there. The Users page picks jobs, and
+    repositories no job writes to.
 69. [x] **Nix module.** Declare `hosts`, `repositories`, `sources` and `jobs`, each locked on the page
     when declared, and `nixosModules.agent` for managed hosts.
     Built in `nix/module.nix`: each kind is an attribute set of freeform entries with typed options

@@ -78,17 +78,25 @@ accepted and unused; on a host, `ssh_user` is refused, since the agent replaces 
 ## Users and access
 
 The password hash file logs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds
-other users on the Users page, each with a role and the repositories they see; a repository shows
-every job target that writes to it:
+other users on the Users page, each with a role and the jobs they are granted, or everything:
 
 - `viewer` sees status, history, runs and events.
 - `operator` also runs actions, restores, and reads and downloads what is inside archives.
 - `admin` also changes the config, users and API tokens.
 
+A job's grant shows its targets with their runs, events and archives, the sources and repositories
+it uses, and the hosts those are on. A repository no job writes to, such as one a host's own
+borgmatic timer fills, is granted by itself. Where two jobs share a repository, a user granted one
+sees the repository and that job's targets and archives only, and sees the repository's own
+compact and check runs. Acting on the whole repository (compact, check, break lock, deleting or
+purging archives, and cancelling or rerunning those) needs an admin, or a user granted every job
+writing there; the server refuses it otherwise. A grant on a repository from an older release
+becomes grants on the jobs writing there on the first start.
+
 Anyone can turn on a second factor (an authenticator app, with recovery codes) on the Account
 page. Five wrong passwords for one name from one address lock that pair out for five minutes.
 
-API tokens, made on the Users page, read like a viewer of every repository and nothing more:
+API tokens, made on the Users page, read like a viewer of everything and nothing more:
 send one as `Authorization: Bearer <token>`. `/metrics` serves Prometheus metrics to a token or a
 logged-in user.
 
