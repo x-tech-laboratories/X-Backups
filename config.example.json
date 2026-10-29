@@ -4,7 +4,7 @@
     "max_age": "1d"
   },
   "hosts": [
-    { "name": "fileserver", "address": "fileserver.example.org", "ssh_user": "backup", "require_sudo": true },
+    { "name": "fileserver", "address": "fileserver.example.org", "require_sudo": true },
     { "name": "storage", "kind": "storage-only", "address": "storage.example.org" },
     { "name": "server" }
   ],

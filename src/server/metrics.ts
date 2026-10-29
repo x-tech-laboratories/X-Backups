@@ -1,6 +1,6 @@
 // The repositories' state in Prometheus' text format, for a scraper holding a read-only API token.
 
-import type { Watched } from "./poller.ts";
+import { host_name, type Watched } from "./poller.ts";
 
 const status_values: Record<string, number> = { online: 0, info: 0, warning: 1, unavailable: 2, failed: 3 };
 
@@ -60,7 +60,7 @@ export function metrics_text(repositories: Watched[], now = Math.floor(Date.now(
     for (const watched of repositories) {
       const value = metric.value(watched, now);
       if (value === null || value === undefined) continue;
-      lines.push(`${metric.name}{repository="${label(watched.repository.id)}",host="${label(watched.config.host ?? "local")}"} ${value}`);
+      lines.push(`${metric.name}{repository="${label(watched.repository.id)}",host="${label(host_name(watched))}"} ${value}`);
     }
   }
   return `${lines.join("\n")}\n`;

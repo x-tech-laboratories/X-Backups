@@ -45,10 +45,10 @@ export function redact(command: string): string {
 // ── Passphrase ───────────────────────────────────────────────────────────────
 
 // Reads the passphrase from stdin before a command whose borg calls need it, so it never shows in a process list.
-export function with_passphrase(command: string, options: { detached?: boolean } = {}): string {
+export function with_passphrase(command: string, options: { exported?: boolean } = {}): string {
   if (!command.includes(PASSPHRASE_VAR)) return command;
-  // A detached job runs in a new shell, which sees the passphrase only when it is exported.
-  const handoff = options.detached ? `export ${PASSPHRASE_VAR}; ` : "";
+  // A long run's command runs in a shell under its wrappers, which sees the passphrase only when it is exported.
+  const handoff = options.exported ? `export ${PASSPHRASE_VAR}; ` : "";
   return `IFS= read -r ${PASSPHRASE_VAR}; ${handoff}${command}`;
 }
 
@@ -66,14 +66,14 @@ export function failure_hint(stderr: string): string | null {
   const text = (stderr || "").toLowerCase();
   if (text.includes("permission denied (publickey)") || text.includes("publickey")) {
     return "Hint: borg could not authenticate to the repo server — set `ssh_key` to a private key on that host " +
-      "which the borg server authorizes (borg makes its own SSH connection, so X-Backups's own login key does not apply).";
+      "which the borg server authorizes.";
   }
   if (text.includes("command not found")) {
     return "Hint: the borg binary is not on PATH for that user — under sudo it must be on root's PATH too " +
       "(set `borg_bin` to an absolute path).";
   }
   if (text.includes("a password is required") || text.includes("sudo: a terminal is required")) {
-    return "Hint: sudo needs a password — grant the SSH user passwordless sudo for borg (NOPASSWD).";
+    return "Hint: sudo needs a password — grant the agent's user passwordless sudo for borg (NOPASSWD).";
   }
   if (text.includes("not allowed to set the following environment variables")) {
     return "Hint: sudoers forbids setting borg's environment — the rule needs the SETENV tag to pass it through sudo.";
@@ -82,7 +82,7 @@ export function failure_hint(stderr: string): string | null {
     return "Hint: the repo is encrypted and the passphrase was missing or wrong — check `passphrase_file` / `passphrase_command`.";
   }
   if (text.includes("permission denied")) {
-    return "Hint: the SSH user cannot read the repo — add it to the repo's group or set `require_sudo: true`.";
+    return "Hint: the agent's user cannot read the repo — add it to the repo's group or set `require_sudo: true`.";
   }
   if (text.includes("does not exist") || text.includes("no such file")) {
     return "Hint: the `repo` path does not exist on that host.";
@@ -156,6 +156,11 @@ export function skip_reason(stdout: string): string | null {
 }
 
 // ── Job chaining and wrapping ────────────────────────────────────────────────
+
+// Runs the rest of its arguments under systemd-inhibit where the host has it, and plainly where it does not; its $0 is
+// the reason the inhibitor shows.
+export const INHIBIT_SCRIPT = 'if command -v systemd-inhibit >/dev/null 2>&1; then ' +
+  'exec systemd-inhibit --who=X-Backups --what=sleep:shutdown "--why=$0" "$@"; else exec "$@"; fi';
 
 // Runs each step while everything so far ended in success or a borg warning, exiting with the worst status.
 export function then_steps(first: string, steps: [label: string, command: string][]): string {

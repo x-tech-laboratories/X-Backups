@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { AgentHub } from "../src/server/agents/hub.ts";
+import { AgentTokens } from "../src/server/agents/tokens.ts";
 import { build_app } from "../src/server/app.ts";
 import { hash_password, verify_password } from "../src/server/auth.ts";
 import { Poller } from "../src/server/poller.ts";
@@ -9,7 +11,7 @@ const password_hash = hash_password("correct horse");
 // An app watching no repositories, so only its login is exercised.
 function make_app() {
   const store = new Store(":memory:");
-  return build_app({ serve_web: false, logger: false, password_hash, poller: new Poller({ repositories: [] }, store), store });
+  return build_app({ serve_web: false, logger: false, password_hash, poller: new Poller({ repositories: [] }, store, new AgentHub(new AgentTokens(store))), store });
 }
 
 async function login(app: Awaited<ReturnType<typeof build_app>>, password: string) {

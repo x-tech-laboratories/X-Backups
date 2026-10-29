@@ -49,6 +49,11 @@ export class AgentTokens {
     return String(row.host);
   }
 
+  // Notes that the host's agent was in touch now, as when it hangs up.
+  seen(host: string): void {
+    this.store.run("UPDATE agent_tokens SET last_seen_epoch = ? WHERE host = ?", now_seconds(), host);
+  }
+
   enrolments(): AgentEnrolment[] {
     return this.store.all("SELECT host, created_epoch, last_seen_epoch FROM agent_tokens ORDER BY host").map((row) => ({
       host: String(row.host),

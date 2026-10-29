@@ -62,6 +62,9 @@ const any_viewer_routes = new Set(["/api/logout", "/api/me"]);
 // Reading what is inside an archive shows backed-up data, so it needs an operator like restoring does.
 const archive_contents = /^\/api\/repositories\/[^/]+\/(browse|diff|download)$/;
 
+// Issuing or revoking a host's agent token decides which machine may run commands, so it needs an admin.
+const agent_token_route = /^\/api\/hosts\/[^/]+\/token$/;
+
 // ── Route access ─────────────────────────────────────────────────────────────
 
 // What a request needs: nothing, any login, or a role.
@@ -71,6 +74,7 @@ export function needed(method: string, path: string): "open" | "any" | Role {
   if (any_viewer_routes.has(path) || path.startsWith("/api/account/")) return "any";
   if (path.startsWith("/api/users") || path.startsWith("/api/tokens")) return "admin";
   if (method === "POST" && path === "/api/repositories") return "admin";
+  if (agent_token_route.test(path)) return "admin";
   if (method === "PUT" || method === "DELETE") return "admin";
   if (method === "POST") return "operator";
   if (archive_contents.test(path)) return "operator";

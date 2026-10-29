@@ -5,12 +5,11 @@
 
 import { EventEmitter } from "node:events";
 
-import { parse_agent_message, protocol_version, type LongRun, type LongRunPoll } from "../../shared/agent_protocol.ts";
+import { parse_agent_message, protocol_version, type HealthSample, type LongRun, type LongRunPoll } from "../../shared/agent_protocol.ts";
 import { cmd_result, type CmdResult } from "../borg/types.ts";
-import type { HostSample } from "../host_health.ts";
 import { AgentError, ended_stream, type Agent, type AgentRunOptions, type AgentStreamOptions, type CommandStream } from "./agent.ts";
 import { AgentConnection, type ConnectionOptions, type ServerSocket } from "./connection.ts";
-import type { AgentTokens } from "./tokens.ts";
+import type { AgentEnrolment, AgentTokens } from "./tokens.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
@@ -57,7 +56,7 @@ const default_connection: ConnectionOptions = {
 
 export class AgentHub extends EventEmitter<HubEvents> {
   private readonly tokens: AgentTokens;
-  private readonly local: { host: string; agent: Agent } | null;
+  private readonly local: { host: string; readonly agent: Agent } | null;
   private readonly hello_timeout: number;
   private readonly connection_options: ConnectionOptions;
   private readonly connections = new Map<string, AgentConnection>();
@@ -65,9 +64,14 @@ export class AgentHub extends EventEmitter<HubEvents> {
   constructor(tokens: AgentTokens, options: HubOptions = {}) {
     super();
     this.tokens = tokens;
-    this.local = options.local ?? null;
+    this.local = options.local === undefined ? null : { ...options.local };
     this.hello_timeout = options.hello_timeout_in_milliseconds ?? 10_000;
     this.connection_options = { ...default_connection, ...options.connection };
+  }
+
+  // The host the built-in agent answers for, which follows the config as it names this server's own host.
+  set_local_host(host: string): void {
+    if (this.local !== null) this.local.host = host;
   }
 
   // ── Enrolment ────────────────────────────────────────────────────────────
@@ -82,6 +86,11 @@ export class AgentHub extends EventEmitter<HubEvents> {
   revoke(host: string): void {
     this.tokens.revoke(host);
     this.disconnect(host, close_codes.revoked, "The host's token was revoked.");
+  }
+
+  // Each host issued a token, with when its agent was last in touch.
+  enrolments(): AgentEnrolment[] {
+    return this.tokens.enrolments();
   }
 
   // The host an Authorization header's bearer token belongs to.
@@ -120,6 +129,7 @@ export class AgentHub extends EventEmitter<HubEvents> {
       clearTimeout(hello_timer);
       if (connection === null) return;
       connection.closed(`The agent on ${host} disconnected.`);
+      this.tokens.seen(host);
       if (this.connections.get(host) !== connection) return;
       this.connections.delete(host);
       this.emit("disconnect", host);
@@ -158,7 +168,7 @@ export class AgentHub extends EventEmitter<HubEvents> {
 
   // ── Commands ─────────────────────────────────────────────────────────────
 
-  // Like the runner, a run on a host with no agent answers with exit code -1 rather than rejecting.
+  // A run on a host with no agent answers with exit code -1 rather than rejecting, as a command that failed does.
   run(host: string, command: string, options: AgentRunOptions): Promise<CmdResult> {
     const agent = this.agent(host);
     return agent === null ? Promise.resolve(cmd_result(-1, "", not_connected(host))) : agent.run(command, options);
@@ -192,7 +202,7 @@ export class AgentHub extends EventEmitter<HubEvents> {
     return this.require(host).then((agent) => agent.runs());
   }
 
-  health(host: string): Promise<HostSample> {
+  health(host: string): Promise<HealthSample> {
     return this.require(host).then((agent) => agent.health());
   }
 

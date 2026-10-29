@@ -20,15 +20,14 @@ export type EntityKind = "hosts" | "repositories" | "sources" | "jobs";
 
 export const entity_kinds: EntityKind[] = ["hosts", "repositories", "sources", "jobs"];
 
-// A managed host runs X-Backups' commands; a storage-only host only holds repositories reached through borg serve.
+// A managed host runs the X-Backups agent; a storage-only host only holds repositories reached through borg serve.
 export type HostKind = "managed" | "storage-only";
 
 export interface HostEntity {
   name: string;
   kind: HostKind;
-  // Where commands reach the host; none is this machine.
+  // The host's network name, shown on the page; a managed host with none is this server, run by its built-in agent.
   address: string | null;
-  ssh_user: string | null;
   borg: BorgConfig;
   source: ConfigSource;
   // The flat entry this entity was expanded from, or null for one written as an entity.
@@ -88,9 +87,8 @@ export interface TargetEntities {
 // One target: a job's sources on one host to one repository, a repository only watched, or a flat entry.
 export interface RepositoryConfig {
   name: string;
-  // Where the commands run; no host means this machine.
+  // The host a flat entry names, or a job's host's address; no host means this machine. Commands run on target_key's host.
   host: string | null;
-  ssh_user: string | null;
   interval_in_seconds: number;
   borg: BorgConfig;
   source: ConfigSource;
@@ -232,14 +230,22 @@ const entity_borg_fields: Record<EntityKind, readonly (keyof BorgConfig)[]> = {
 
 // The fields of each entity that are X-Backups' own rather than borg's.
 const entity_own_fields: Record<EntityKind, Record<string, FieldKind>> = {
-  hosts: { name: "string", kind: "string", address: "string", ssh_user: "string" },
+  hosts: { name: "string", kind: "string", address: "string" },
   repositories: { name: "string", host: "string", id: "string", poll_via: "string", repo_by_host: "strings", interval: "duration" },
   sources: { name: "string", host: "string" },
   jobs: { name: "string", sources: "list", repositories: "list" },
 };
 
 // The own fields of a flat entry, which holds every borg field as well.
-const own_fields: Record<string, FieldKind> = { name: "string", host: "string", ssh_user: "string", interval: "duration" };
+const own_fields: Record<string, FieldKind> = { name: "string", host: "string", interval: "duration" };
+
+// A flat entry's host and ssh_user once named where X-Backups logged in over SSH; ssh_user is still accepted there, and unused.
+const flat_only_fields: Record<string, FieldKind> = { ssh_user: "string" };
+
+// Fields X-Backups no longer reads, with why, so a config still setting them is told rather than silently changed.
+const removed_fields: Record<string, string> = {
+  ssh_user: "ssh_user is no longer used: X-Backups reaches each managed host through the agent it runs, which replaces SSH.",
+};
 
 const entity_labels: Record<EntityKind, string> = { hosts: "Host", repositories: "Repository", sources: "Source", jobs: "Job" };
 
@@ -410,6 +416,7 @@ function entity_borg(entry: Record<string, unknown>, kind: EntityKind, fail: Fai
   const homed = entity_borg_fields[kind] as readonly string[];
   const borg: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(entry)) {
+    if (Object.hasOwn(removed_fields, field)) fail(removed_fields[field], field);
     const field_kind = Object.hasOwn(own, field) ? own[field] : homed.includes(field) ? borg_fields[field as keyof BorgConfig] : null;
     if (field_kind === null) fail(`unknown field '${field}'.`, field);
     if (!is_field_kind(value, field_kind!)) fail(`${field} must be ${describe_kind(field_kind!)}, not ${JSON.stringify(value)}.`, field);
@@ -424,9 +431,7 @@ function parse_host(tagged: TaggedEntry): HostEntity {
   const kind = (entry.kind ?? "managed") as HostKind;
   if (!host_kinds.includes(kind)) fail(`kind must be ${host_kinds.map((item) => `"${item}"`).join(" or ")}, not ${JSON.stringify(entry.kind)}.`, "kind");
   const address = optional_string(entry, "address", fail);
-  const ssh_user = optional_string(entry, "ssh_user", fail);
-  if (ssh_user !== null && address === null) fail("ssh_user is set without an address.", "ssh_user");
-  return { name, kind, address, ssh_user, borg, source: tagged.source, expanded_from: null };
+  return { name, kind, address, borg, source: tagged.source, expanded_from: null };
 }
 
 function parse_repository(tagged: TaggedEntry, defaults: Record<string, unknown>): { repository: RepositoryEntity; poll_via: string | null } {
@@ -494,13 +499,12 @@ export function parse_flat_entry(entry: unknown, index: number, defaults: Record
   };
 
   const host = optional_string(entry, "host", fail);
-  const ssh_user = optional_string(entry, "ssh_user", fail);
-  if (ssh_user !== null && host === null) fail("ssh_user is set without a host.", "ssh_user");
+  optional_string(entry, "ssh_user", fail);
   const interval_in_seconds = interval_of(entry, defaults, fail);
 
   const borg: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(entry)) {
-    if (Object.hasOwn(own_fields, field)) continue;
+    if (Object.hasOwn(own_fields, field) || Object.hasOwn(flat_only_fields, field)) continue;
     if (!Object.hasOwn(borg_fields, field)) fail(`unknown field '${field}'.`, field);
 
     const kind = borg_fields[field as keyof BorgConfig];
@@ -511,19 +515,21 @@ export function parse_flat_entry(entry: unknown, index: number, defaults: Record
   fill_defaults(borg, defaults);
   check_buildable(name, borg, fail);
 
-  return { name, host, ssh_user, interval_in_seconds, borg: borg as BorgConfig, source };
+  return { name, host, interval_in_seconds, borg: borg as BorgConfig, source };
 }
 
 // Adds the host it runs on and the one its repo URL reaches, a repository, a source when it has paths, and a job, all
 // named after the entry; its target keeps the entry's own fields, since two entries on one host may set them apart.
 function expand_flat_entry(target: RepositoryConfig, maps: EntityMaps): void {
   const { name, borg, source } = target;
-  const runs_on = target.host ?? own_host_name;
+  // An entry with no host runs on this server, which a written host with no address names.
+  const written_own = [...maps.hosts.values()].find((host) => host.expanded_from === null && is_own_host(host));
+  const runs_on = target.host ?? written_own?.name ?? own_host_name;
   ensure_host(maps.hosts, {
-    name: runs_on, kind: "managed", address: target.host, ssh_user: target.ssh_user, borg: pick(borg, host_borg_fields), source, expanded_from: name,
+    name: runs_on, kind: "managed", address: target.host, borg: pick(borg, host_borg_fields), source, expanded_from: name,
   });
   const stored = repo_location(borg.repo!).host;
-  if (stored !== null) ensure_host(maps.hosts, { name: stored, kind: "storage-only", address: stored, ssh_user: null, borg: {}, source, expanded_from: name });
+  if (stored !== null) ensure_host(maps.hosts, { name: stored, kind: "storage-only", address: stored, borg: {}, source, expanded_from: name });
 
   add_entity(maps.repositories, {
     name, host: stored ?? runs_on, id: borg.id ?? name, poll_via: runs_on, repo_by_host: {}, interval_in_seconds: target.interval_in_seconds,
@@ -554,6 +560,15 @@ function check_references(maps: EntityMaps, written_poll_via: Map<string, string
     if (host === undefined) throw new ConfigError(`${owner}: no host named '${name}'.`, field);
     return host;
   };
+
+  const own_hosts = [...maps.hosts.values()].filter(is_own_host);
+  if (own_hosts.length > 1) {
+    const [first, second] = own_hosts;
+    throw new ConfigError(
+      `Hosts '${first.name}' and '${second.name}' both leave out address, but only this server's own host may; give the other its address.`,
+      "address",
+    );
+  }
 
   for (const source of maps.sources.values()) {
     const host = host_named(source.host, `Source '${source.name}'`, "host");
@@ -634,6 +649,16 @@ function build_targets(maps: EntityMaps, flat_targets: Map<string, RepositoryCon
   return targets;
 }
 
+// The managed host with no address, which is this server and is run by the agent built into it.
+export function is_own_host(host: HostEntity): boolean {
+  return host.kind === "managed" && host.address === null;
+}
+
+// The name of this server's own host, whose commands its built-in agent runs.
+export function own_host(entities: Entities | null | undefined): string {
+  return entities?.hosts.find(is_own_host)?.name ?? own_host_name;
+}
+
 export function target_id(target: RepositoryConfig): string {
   return target.borg.id ?? target.name;
 }
@@ -667,7 +692,7 @@ function job_target(job: JobEntity, host: HostEntity, sources: SourceEntity[], r
     throw new ConfigError(`Job '${job.name}' from '${host.name}' to '${repository.name}': ${problem}`);
   });
   return {
-    name: id, host: host.address, ssh_user: host.ssh_user, interval_in_seconds: repository.interval_in_seconds, borg: borg as BorgConfig,
+    name: id, host: host.address, interval_in_seconds: repository.interval_in_seconds, borg: borg as BorgConfig,
     source: job.source, target: { job: job.name, host: host.name, repository: repository.name, sources: sources.map((source) => source.name) },
     scope: { list_match: borg.prune_match as string },
   };
@@ -681,7 +706,7 @@ function watch_target(repository: RepositoryEntity, host: HostEntity, defaults: 
     throw new ConfigError(`Repository '${repository.name}': ${problem}`);
   });
   return {
-    name: repository.name, host: host.address, ssh_user: host.ssh_user, interval_in_seconds: repository.interval_in_seconds, borg: borg as BorgConfig,
+    name: repository.name, host: host.address, interval_in_seconds: repository.interval_in_seconds, borg: borg as BorgConfig,
     source: repository.source, target: { job: null, host: host.name, repository: repository.name, sources: [] },
   };
 }

@@ -1,14 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { children_filter, diff_line, parse_diff, parse_listing } from "../../src/server/borg/parsing.ts";
-import { BorgRepository, progress_from_lines, topmost_excluded, type BorgConfig } from "../../src/server/borg/repository.ts";
-import { piped, preflight_script, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_preflight, wrap_job } from "../../src/server/borg/shell.ts";
+import { BorgRepository, WAITING_FOR_AGENT, progress_from_lines, topmost_excluded, type BorgConfig } from "../../src/server/borg/repository.ts";
+import {
+  INHIBIT_SCRIPT, piped, preflight_script, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_preflight, wrap_job,
+} from "../../src/server/borg/shell.ts";
 import { Harness } from "./testing.ts";
-import { ActionPlan, CollectResult, cmd_result, type ActionStart, type CmdResult, type DownloadPlan } from "../../src/server/borg/types.ts";
+import { ActionPlan, CollectResult, LongRunPlan, cmd_result, type ActionStart, type CmdResult, type DownloadPlan } from "../../src/server/borg/types.ts";
+import type { LongRunPoll } from "../../src/shared/agent_protocol.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -140,13 +143,10 @@ function checks_out(options: { ok?: number; end?: number; start?: number; errs?:
   return cmd_result(0, lines.join("\n"), "");
 }
 
-// The raw stdout one job poll gives on the host.
-function job_poll(size: number, exit_code: number | null, alive: boolean, out: string): CmdResult {
-  return cmd_result(0,
-    `===XBACKUPS_SIZE===\n${size}\n` +
-    `===XBACKUPS_EXIT===\n${exit_code ?? ""}\n` +
-    `===XBACKUPS_ALIVE===\n${alive ? 1 : 0}\n` +
-    `===XBACKUPS_OUT===\n${out}`, "");
+// What the agent answers one poll of a run with, its output read up to its whole size.
+function job_poll(size: number, exit_code: number | null, alive: boolean, out: string): LongRunPoll {
+  const state = alive ? "running" : exit_code === null ? "lost" : "exited";
+  return { state, exit_code, alive, size, new_output: out, next_offset: size };
 }
 
 interface ActionParams {
@@ -183,24 +183,31 @@ function start(harness: Harness, action_id: string, params: ActionParams = {}): 
   return starts[action_id]();
 }
 
-// Starts an action and answers its launch with a pid, the way a runner records a detached job.
-function launch(harness: Harness, action_id = "run_backup", pid = 4242, params: ActionParams = {}): CollectResult {
+// Answers a long run the way the poller does: its preflight's result first, then the agent starting it.
+function settle_long_run(plan: LongRunPlan, preflight: CmdResult): CollectResult {
+  return plan.read_preflight(preflight) ?? plan.read_start(plan.record(), null);
+}
+
+// Starts an action, and has its agent start it when it is a long run.
+function launch(harness: Harness, action_id = "run_backup", params: ActionParams = {}): CollectResult {
   const plan = start(harness, action_id, params);
-  const outcome = plan instanceof CollectResult ? plan : plan.read([cmd_result(0, `${pid}\n`, "")]);
+  const outcome = plan instanceof CollectResult ? plan
+    : plan instanceof LongRunPlan ? settle_long_run(plan, cmd_result(0, "", "")) : plan.read([cmd_result(0, "", "")]);
   harness.apply(outcome);
   return outcome;
 }
 
-// One cycle while a job runs: one poll command, and the job advanced from its output.
-function poll_once(harness: Harness, poll_result: CmdResult): CollectResult {
-  expect(harness.repository.commands()).toHaveLength(1);
-  const result = harness.repository.parse([poll_result]);
+// One poll of the running job on its agent, and the job advanced from its output.
+function poll_once(harness: Harness, poll: LongRunPoll): CollectResult {
+  const run = harness.repository.active_run();
+  expect(run).not.toBeNull();
+  const result = harness.repository.read_run_poll(run!, poll);
   harness.apply(result);
   return result;
 }
 
 function finish_job(harness: Harness, action_id: string, exit_code: number, params: ActionParams = {}): void {
-  launch(harness, action_id, 91, params);
+  launch(harness, action_id, params);
   poll_once(harness, job_poll(5, exit_code, false, ""));
 }
 
@@ -210,20 +217,36 @@ function plan_of(harness: Harness, action_id: string, params: ActionParams = {})
   return plan as ActionPlan;
 }
 
+function long_run_of(harness: Harness, action_id: string, params: ActionParams = {}): LongRunPlan {
+  const plan = start(harness, action_id, params);
+  expect(plan).toBeInstanceOf(LongRunPlan);
+  return plan as LongRunPlan;
+}
+
+// The shell an action sends: a plan's first command, or a long run's preflight and then its command.
+function command_of(harness: Harness, action_id: string, params: ActionParams = {}): string {
+  const plan = start(harness, action_id, params);
+  if (plan instanceof LongRunPlan) return [plan.preflight, plan.command].filter((part) => part !== null).join("; ");
+  expect(plan).toBeInstanceOf(ActionPlan);
+  return (plan as ActionPlan).commands[0];
+}
+
 function refusal_of(harness: Harness, action_id: string, params: ActionParams = {}): CollectResult {
   const plan = start(harness, action_id, params);
   expect(plan).toBeInstanceOf(CollectResult);
   return plan as CollectResult;
 }
 
-// Starts an action and reads the given results as its answer.
+// Starts an action and reads the given results as its answer, the first as a long run's preflight.
 function outcome_of(harness: Harness, action_id: string, results: CmdResult[], params: ActionParams = {}): CollectResult {
+  const plan = start(harness, action_id, params);
+  if (plan instanceof LongRunPlan) return settle_long_run(plan, results[0]);
   return plan_of(harness, action_id, params).read(results);
 }
 
-// The launched command with its nested quoting removed, so arguments read as typed.
-function unquoted(plan: ActionPlan): string {
-  return plan.commands[0].replace(/["'\\]/g, "");
+// The command an action sends with its nested quoting removed, so arguments read as typed.
+function unquoted(command: string): string {
+  return command.replace(/["'\\]/g, "");
 }
 
 function action_ids(harness: Harness): string[] {
@@ -761,12 +784,13 @@ describe("backup command", () => {
 describe("backup launch", () => {
   it("records the running job", () => {
     const harness = make(BACKUP_CFG);
-    const outcome = launch(harness, "run_backup", 1234) as CollectResult;
+    const outcome = launch(harness, "run_backup") as CollectResult;
     expect(outcome.success).toBe(true);
     const job = harness.runs.running()!;
     expect(job.kind).toBe("backup");
-    expect(job.pid).toBe(1234);
+    expect(job.agent_run).toBe("run-1");
     expect(job.state).toBe("running");
+    expect(outcome.content).toBe("Backup started (run #1)");
   });
 
   it("records a dry run under its own kind", () => {
@@ -775,12 +799,21 @@ describe("backup launch", () => {
     expect(harness.runs.running()!.kind).toBe("dry-run");
   });
 
-  it("records no job when the launch fails", () => {
+  it("records no job when the preflight cannot run", () => {
     const harness = make(BACKUP_CFG);
-    const outcome = outcome_of(harness, "run_backup", [cmd_result(1, "", "boom")]);
+    const outcome = outcome_of(harness, "run_backup", [cmd_result(-1, "", "No agent is connected for odin.")]);
     harness.apply(outcome);
     expect(outcome.success).toBe(false);
+    expect(harness.runs.recent()).toEqual([]);
+  });
+
+  it("ends the job's record when the agent cannot start it", () => {
+    const harness = make(BACKUP_CFG);
+    const plan = long_run_of(harness, "run_backup");
+    const outcome = plan.read_start(plan.record(), "No agent is connected for odin.");
+    expect(outcome.success).toBe(false);
     expect(harness.runs.running()).toBeNull();
+    expect(harness.runs.recent()[0]).toMatchObject({ state: "failed", error: "Could not start: No agent is connected for odin." });
   });
 
   it("stores the launched command with the passphrase hidden", () => {
@@ -792,10 +825,11 @@ describe("backup launch", () => {
     expect(stored).toContain("BORG_PASSPHRASE_FD=0");
   });
 
-  it("hands the passphrase to the detached job through its environment", () => {
-    const plan = plan_of(make({ ...BACKUP_CFG, passphrase: "s3cret" }), "run_backup");
-    expect(plan.commands[0]).toMatch(/^IFS= read -r __x_backups_passphrase; export __x_backups_passphrase; /);
-    expect(plan.commands[0]).not.toContain("s3cret");
+  it("hands the passphrase to the long run through its environment", () => {
+    const plan = long_run_of(make({ ...BACKUP_CFG, passphrase: "s3cret" }), "run_backup");
+    expect(plan.command).toMatch(/^IFS= read -r __x_backups_passphrase; export __x_backups_passphrase; /);
+    expect(plan.command).not.toContain("s3cret");
+    expect(plan.preflight).not.toContain("__x_backups_passphrase");
     expect(plan.stdin).toBe("s3cret\n");
   });
 
@@ -816,12 +850,42 @@ describe("backup polling", () => {
     expect(harness.runs.running()).not.toBeNull();
   });
 
-  it("leaves the job running when the poll goes unanswered", () => {
+  it("leaves the job running, waiting for its agent, when the poll goes unanswered", () => {
     const harness = make(BACKUP_CFG);
     launch(harness);
-    const result = poll_once(harness, cmd_result(-1, "", "Agent 'x' is not connected"));
-    expect(harness.runs.running()).not.toBeNull();
+    const result = harness.repository.read_run_unreachable(harness.runs.running()!, "No agent is connected for odin.");
+    expect(harness.runs.running()!.progress).toBe(WAITING_FOR_AGENT);
     expect(messages(result)).toContain("Could not poll");
+    expect(result.status).toBeNull();
+    poll_once(harness, job_poll(0, null, true, ""));
+    expect(harness.runs.running()!.progress).toBeNull();
+  });
+
+  it("marks a job its agent no longer knows as lost", () => {
+    const harness = make(BACKUP_CFG);
+    launch(harness);
+    const result = harness.repository.read_run_lost(harness.runs.running()!, "odin");
+    expect(harness.runs.running()).toBeNull();
+    expect(harness.runs.recent()[0].error).toContain("Lost: the agent on odin no longer knows this run");
+    expect(result.status).toBe("failed");
+  });
+
+  it("keeps reading a job that has ended until all its output is read", () => {
+    const harness = make(BACKUP_CFG);
+    launch(harness);
+    poll_once(harness, { state: "exited", exit_code: 0, alive: false, size: 20, new_output: "first\n", next_offset: 6 });
+    expect(harness.runs.running()!.output_seq).toBe(6);
+    poll_once(harness, { state: "exited", exit_code: 0, alive: false, size: 20, new_output: "the rest of it", next_offset: 20 });
+    expect(harness.runs.output(1)).toEqual(["first", "the rest of it"]);
+    expect(harness.runs.recent()[0].state).toBe("succeeded");
+  });
+
+  it("records a stopped job as cancelled", () => {
+    const harness = make(BACKUP_CFG);
+    launch(harness);
+    const result = poll_once(harness, { state: "stopped", exit_code: 143, alive: false, size: 0, new_output: "", next_offset: 0 });
+    expect(harness.runs.recent()[0].state).toBe("cancelled");
+    expect(result.content).toBe("Backup cancelled");
   });
 
   it("never judges a job started mid-cycle by the listing's output", () => {
@@ -1166,7 +1230,7 @@ describe("prune preview", () => {
   });
 
   it("is a dry run with the configured policy", () => {
-    const command = plan_of(make({ ...BASE_CFG, keep_daily: 7, keep_within: "6H", archive_prefix: "odin" }), "prune_preview").commands[0];
+    const command = command_of(make({ ...BASE_CFG, keep_daily: 7, keep_within: "6H", archive_prefix: "odin" }), "prune_preview");
     expect(command).toContain("prune --dry-run --list");
     expect(command).toContain("--keep-daily 7");
     expect(command).toContain("--keep-within 6H");
@@ -1201,13 +1265,13 @@ function run_filter(member: string, lines: string): string {
 
 describe("browse", () => {
   it("lists the path through the children filter", () => {
-    const command = plan_of(make(), "browse_archive", { archive: "a1", path: "/Storage/System/" }).commands[0];
+    const command = command_of(make(), "browse_archive", { archive: "a1", path: "/Storage/System/" });
     expect(command.replaceAll("'", "")).toContain("::a1 Storage/System");
     expect(command).toContain("awk -v p=Storage/System/");
   });
 
   it("lists the whole archive at the top level", () => {
-    const command = plan_of(make(), "browse_archive", { archive: "a1", path: "" }).commands[0];
+    const command = command_of(make(), "browse_archive", { archive: "a1", path: "" });
     expect(command).not.toContain("::a1 --format");
     expect(command).toContain("awk -v p=''");
   });
@@ -1261,7 +1325,7 @@ describe("browse", () => {
 
   it("caps the output", () => {
     const harness = make({ ...BASE_CFG, browse_limit: 2 });
-    expect(plan_of(harness, "browse_archive", { archive: "a1", path: "" }).commands[0]).toContain("awk 'NR <= 3'");
+    expect(command_of(harness, "browse_archive", { archive: "a1", path: "" })).toContain("awk 'NR <= 3'");
     const lines = ["a", "b", "c"].map((name) => `-\t1\t\t${name}`).join("\n");
     const content = outcome_of(harness, "browse_archive", [cmd_result(0, lines, "")], { archive: "a1", path: "" }).content;
     expect(content).toContain("first 2 entries");
@@ -1283,7 +1347,7 @@ describe("browse", () => {
 
 describe("restore", () => {
   it("extracts into a new folder under restore_dir", () => {
-    const command = plan_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "/Storage/System/x" }).commands[0];
+    const command = command_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "/Storage/System/x" });
     expect(command).toContain("sudo -n mkdir -p /var/tmp/r/a1-");
     expect(command).toContain("extract");
     expect(command.replaceAll("'", "")).toContain("::a1 Storage/System/x");
@@ -1303,18 +1367,18 @@ describe("restore", () => {
 
   it("is refused while a job runs", () => {
     const harness = make(RESTORE_CFG);
-    launch(harness, "restore_archive", 77, { archive: "a1", path: "etc" });
+    launch(harness, "restore_archive", { archive: "a1", path: "etc" });
     expect(refusal_of(harness, "restore_archive", { archive: "a1", path: "etc" }).success).toBe(false);
   });
 
   it("restores into a new dated folder inside a chosen folder", () => {
-    const command = plan_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "etc", target: "/srv/restored/" }).commands[0];
+    const command = command_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", path: "etc", target: "/srv/restored/" });
     expect(command).toContain("sudo -n mkdir -p /srv/restored/a1-");
   });
 
   it("restores into a chosen folder itself only while it is empty", () => {
     const folder = join(scratch_dir(), "chosen folder");
-    const command = plan_of(make({ ...BASE_CFG, restore_dir: "/unused" }), "restore_archive", { archive: "a1", path: "etc", target: folder, fresh: false }).commands[0];
+    const command = command_of(make({ ...BASE_CFG, restore_dir: "/unused" }), "restore_archive", { archive: "a1", path: "etc", target: folder, fresh: false });
     expect(command).toContain("-mindepth 1 -maxdepth 1");
     // The check before borg, run for real: a missing or empty folder passes, one holding anything stops the restore.
     const check = when_folder_empty(folder, "", "echo restored");
@@ -1334,7 +1398,7 @@ describe("restore", () => {
   });
 
   it("restores several ticked paths at once", () => {
-    const command = plan_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", paths: ["/etc/x", "home/y"] }).commands[0];
+    const command = command_of(make(RESTORE_CFG), "restore_archive", { archive: "a1", paths: ["/etc/x", "home/y"] });
     expect(command.replaceAll("'", "")).toContain("::a1 etc/x home/y");
   });
 
@@ -1370,22 +1434,22 @@ describe("maintenance", () => {
     ["prune_repo", "prune", "prune --list --stats --glob-archives"],
   ])("runs %s as a detached %s job", (action_id, kind, args) => {
     const harness = make(DELETE_CFG);
-    const plan = plan_of(harness, action_id);
-    expect(plan.commands[0]).toContain(args);
-    expect(plan.commands[0]).toContain("--log-json");
-    harness.apply(plan.read([cmd_result(0, "91\n", "")]));
+    const command = command_of(harness, action_id);
+    expect(command).toContain(args);
+    expect(command).toContain("--log-json");
+    launch(harness, action_id);
     expect(harness.runs.running()!.kind).toBe(kind);
   });
 
   it("prunes by the retention policy for real", () => {
-    const command = plan_of(make(DELETE_CFG), "prune_repo").commands[0];
+    const command = command_of(make(DELETE_CFG), "prune_repo");
     expect(command).toContain("--keep-daily 7");
     expect(command).not.toContain("--dry-run");
   });
 
   it("verifies data only when asked", () => {
-    expect(plan_of(make(), "check_repo").commands[0]).not.toContain("--verify-data");
-    expect(plan_of(make({ ...BASE_CFG, check_verify_data: true }), "check_repo").commands[0]).toContain("--verify-data");
+    expect(command_of(make(), "check_repo")).not.toContain("--verify-data");
+    expect(command_of(make({ ...BASE_CFG, check_verify_data: true }), "check_repo")).toContain("--verify-data");
   });
 
   it.each(["prune_repo", "delete_archive", "break_lock"])("keeps %s off by default", (action_id) => {
@@ -1396,14 +1460,14 @@ describe("maintenance", () => {
 
   it("runs one job at a time", () => {
     const harness = make(DELETE_CFG);
-    launch(harness, "check_repo", 91);
+    launch(harness, "check_repo");
     expect(refusal_of(harness, "compact_repo").success).toBe(false);
     expect(refusal_of(harness, "break_lock").success).toBe(false);
   });
 
   it("breaks the lock directly", () => {
     const harness = make(DELETE_CFG);
-    expect(plan_of(harness, "break_lock").commands[0]).toContain("break-lock");
+    expect(command_of(harness, "break_lock")).toContain("break-lock");
     expect(outcome_of(harness, "break_lock", [cmd_result(0, "", "")]).success).toBe(true);
   });
 
@@ -1418,12 +1482,12 @@ describe("maintenance", () => {
 describe("purge", () => {
   it.each([["purge_preview", "purge-preview"], ["purge_excluded", "purge"]])("runs %s as a detached %s job", (action_id, kind) => {
     const harness = make(PURGE_CFG);
-    launch(harness, action_id, 91);
+    launch(harness, action_id);
     expect(harness.runs.running()!.kind).toBe(kind);
   });
 
   it("rewrites with the backup's exclusions, then compacts", () => {
-    const command = unquoted(plan_of(make(PURGE_CFG), "purge_excluded"));
+    const command = unquoted(command_of(make(PURGE_CFG), "purge_excluded"));
     expect(command).toContain("recreate --info --stats");
     expect(command).not.toContain("--dry-run");
     expect(command).toContain("--exclude fm:*/.cache");
@@ -1433,15 +1497,15 @@ describe("purge", () => {
   });
 
   it("covers every archive unless purge_match is set", () => {
-    const everything = unquoted(plan_of(make(PURGE_CFG), "purge_excluded"));
+    const everything = unquoted(command_of(make(PURGE_CFG), "purge_excluded"));
     expect(everything).toContain("--glob-archives *.recreate");
     expect(everything).not.toContain("--glob-archives Odin-*");
-    const scoped = unquoted(plan_of(make({ ...PURGE_CFG, purge_match: "Odin-*" }), "purge_excluded"));
+    const scoped = unquoted(command_of(make({ ...PURGE_CFG, purge_match: "Odin-*" }), "purge_excluded"));
     expect(scoped).toContain("recreate --info --stats --progress --glob-archives Odin-*");
   });
 
   it("previews with a dry run listing only excluded items", () => {
-    const command = plan_of(make(PURGE_CFG), "purge_preview").commands[0];
+    const command = command_of(make(PURGE_CFG), "purge_preview");
     expect(command).toContain("recreate --dry-run --list --filter=x");
     expect(command).not.toContain("compact");
   });
@@ -1467,10 +1531,10 @@ describe("delete", () => {
   it("deletes a listed archive", () => {
     const harness = make(DELETE_CFG);
     listed(harness, "b2", "b1");
-    const plan = plan_of(harness, "delete_archive", { archive: "b1" });
-    expect(plan.commands[0]).toContain("delete --stats");
-    expect(plan.commands[0]).toContain("::b1");
-    expect(plan.read([cmd_result(0, "5\n", "")]).content).toContain("for b1");
+    const command = command_of(harness, "delete_archive", { archive: "b1" });
+    expect(command).toContain("delete --stats");
+    expect(command).toContain("::b1");
+    expect(launch(harness, "delete_archive", { archive: "b1" }).content).toContain("for b1");
   });
 
   it("refuses an archive it has not listed", () => {
@@ -1578,7 +1642,7 @@ describe("capped output", () => {
   it("caps Diff's listing to browse_limit", () => {
     const harness = make({ ...BASE_CFG, browse_limit: 2 });
     listed(harness, "b2", "b1");
-    expect(plan_of(harness, "diff_archive", { archive: "b2" }).commands[0]).toContain("awk 'NR <= 3'");
+    expect(command_of(harness, "diff_archive", { archive: "b2" })).toContain("awk 'NR <= 3'");
   });
 });
 
@@ -1588,7 +1652,7 @@ describe("diff", () => {
   it("compares with the previous archive", () => {
     const harness = make();
     listed(harness, "b3", "b2", "b1");
-    const command = plan_of(harness, "diff_archive", { archive: "b2" }).commands[0].replaceAll("'", "");
+    const command = command_of(harness, "diff_archive", { archive: "b2" }).replaceAll("'", "");
     expect(command).toContain("diff");
     expect(command).toContain("::b1 b2");
   });
@@ -1662,21 +1726,22 @@ describe("parse_diff", () => {
 
 describe("job preflight", () => {
   it("probes an ssh repo's server banner first", () => {
-    const command = plan_of(make(BACKUP_CFG), "run_backup").commands[0];
+    const command = command_of(make(BACKUP_CFG), "run_backup");
     expect(command).toContain("/dev/tcp/host/22");
-    expect(command.indexOf("/dev/tcp/host/22")).toBeLessThan(command.indexOf("setsid"));
+    expect(long_run_of(make(BACKUP_CFG), "run_backup").preflight).toContain("/dev/tcp/host/22");
+    expect(long_run_of(make(BACKUP_CFG), "run_backup").command).not.toContain("/dev/tcp");
   });
 
   it("uses the URL's port", () => {
-    expect(plan_of(make({ ...BACKUP_CFG, repo: "ssh://borg@far.example:2222/srv/repo" }), "run_backup").commands[0]).toContain("/dev/tcp/far.example/2222");
+    expect(command_of(make({ ...BACKUP_CFG, repo: "ssh://borg@far.example:2222/srv/repo" }), "run_backup")).toContain("/dev/tcp/far.example/2222");
   });
 
   it.each([[{ repo: "/srv/local" }], [{ skip_when_unreachable: false }]])("launches directly with %o", (config) => {
-    expect(plan_of(make({ ...BACKUP_CFG, ...config }), "run_backup").commands[0]).not.toContain("/dev/tcp");
+    expect(command_of(make({ ...BACKUP_CFG, ...config }), "run_backup")).not.toContain("/dev/tcp");
   });
 
   it("tests for a running unit", () => {
-    const command = plan_of(make({ ...BACKUP_CFG, skip_while_active: ["borg-check.service"] }), "check_repo").commands[0];
+    const command = command_of(make({ ...BACKUP_CFG, skip_while_active: ["borg-check.service"] }), "check_repo");
     expect(command).toContain("systemctl is-active --quiet borg-check.service");
   });
 
@@ -1708,20 +1773,20 @@ describe("job preflight", () => {
 
 describe("backup chain", () => {
   it("backs up alone by default", () => {
-    const command = plan_of(make({ ...BACKUP_CFG, keep_daily: 7 }), "run_backup").commands[0];
+    const command = command_of(make({ ...BACKUP_CFG, keep_daily: 7 }), "run_backup");
     expect(command).not.toContain(" prune ");
     expect(command).not.toContain(" compact ");
   });
 
   it("prunes, then compacts, after the create", () => {
-    const command = unquoted(plan_of(make(CHAIN_CFG), "run_backup"));
+    const command = unquoted(command_of(make(CHAIN_CFG), "run_backup"));
     expect(command.indexOf("create")).toBeLessThan(command.indexOf("prune --list --stats"));
     expect(command.indexOf("prune --list --stats")).toBeLessThan(command.indexOf("compact --progress"));
     expect(command).toContain("--keep-daily 7");
   });
 
   it("never prunes on a dry run", () => {
-    const command = plan_of(make(CHAIN_CFG), "dry_run_backup").commands[0];
+    const command = command_of(make(CHAIN_CFG), "dry_run_backup");
     expect(command).not.toContain(" prune ");
     expect(command).not.toContain(" compact ");
   });
@@ -1751,14 +1816,14 @@ describe("backup chain", () => {
 
 describe("job wrappers", () => {
   it("adds no wrappers by default", () => {
-    const command = plan_of(make(BACKUP_CFG), "run_backup").commands[0];
+    const command = command_of(make(BACKUP_CFG), "run_backup");
     for (const wrapper of ["nice", "flock", "systemd-inhibit"]) expect(command).not.toContain(wrapper);
   });
 
   it("wraps the whole job in the lock, then the inhibitor, then the priority", () => {
     const config = { ...CHAIN_CFG, job_lock: "/run/lock/x-monitor-borg", inhibit_sleep: true, job_nice: 19, job_io_idle: true };
-    const command = unquoted(plan_of(make(config), "run_backup"));
-    const order = ["flock /run/lock/x-monitor-borg systemd-inhibit", "--what=sleep:shutdown", "nice -n 19 ionice -c 3 sh -c", "create", "compact --progress"];
+    const command = unquoted(command_of(make(config), "run_backup"));
+    const order = ["flock /run/lock/x-monitor-borg sh -c", "systemd-inhibit", "--what=sleep:shutdown", "nice -n 19 ionice -c 3 sh -c", "create", "compact --progress"];
     const positions = order.map((part) => command.indexOf(part));
     expect(positions.every((position) => position > -1)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
@@ -1769,6 +1834,14 @@ describe("job wrappers", () => {
     const command = repository.commands().map((call) => call.text).join("\n");
     expect(command).not.toContain("nice");
     expect(command).not.toContain("flock");
+  });
+
+  it("runs the job without the inhibitor on a host that has none", () => {
+    const bin = scratch_dir();
+    symlinkSync(sh("command -v sh").stdout.trim(), join(bin, "sh"));
+    const result = sh(wrap_job("echo ran; (exit 3)", ["sh", "-c", INHIBIT_SCRIPT, "why"], null), { PATH: bin });
+    expect(result.stdout.trim()).toBe("ran");
+    expect(result.returncode).toBe(3);
   });
 
   it("keeps the wrapped job's exit status", () => {
@@ -1789,16 +1862,15 @@ describe("check kinds", () => {
     ["data", "--verify-data", "check-data"],
   ])("runs a %s check with %s as %s", (kind, option, job) => {
     const harness = make();
-    const plan = plan_of(harness, "check_repo", { kind });
-    expect(plan.commands[0]).toContain(option);
-    harness.apply(plan.read([cmd_result(0, "91\n", "")]));
+    expect(command_of(harness, "check_repo", { kind })).toContain(option);
+    launch(harness, "check_repo", { kind });
     expect(harness.runs.running()!.kind).toBe(job);
   });
 
   it("dry runs the newest archive for an extract check", () => {
     const harness = make();
     listed(harness, "b2", "b1");
-    const command = unquoted(plan_of(harness, "check_repo", { kind: "extract" }));
+    const command = unquoted(command_of(harness, "check_repo", { kind: "extract" }));
     expect(command).toContain("extract --dry-run");
     expect(command).toContain("::b2");
   });
@@ -1906,9 +1978,9 @@ describe("borg 2", () => {
 
   it("prunes every matching archive as one group, with --keep for keep_within", () => {
     const harness = make(BORG2_CFG);
-    const preview = plan_of(harness, "prune_preview").commands[0];
+    const preview = command_of(harness, "prune_preview");
     expect(preview).toContain("--group-by none -a 'sh:test-borg-*' --keep 6H --keep-daily 7 -r");
-    expect(unquoted(plan_of(harness, "prune_repo"))).toContain("prune --list --group-by none -a sh:test-borg-* --keep 6H");
+    expect(unquoted(command_of(harness, "prune_repo"))).toContain("prune --list --group-by none -a sh:test-borg-* --keep 6H");
     expect(plan_of(harness, "prune_preview").read([cmd_result(0, PRUNE_OUTPUT, "")]).content).toContain("Policy: --keep 6H --keep-daily 7");
   });
 
@@ -1924,10 +1996,10 @@ describe("borg 2", () => {
   it("deletes, diffs and checks by archive name after -r", () => {
     const harness = make(BORG2_CFG);
     listed(harness, "b2", "b1");
-    expect(unquoted(plan_of(harness, "delete_archive", { archive: "b1" }))).toContain("delete --list -r ssh://borg@host//srv/repo b1");
-    expect(plan_of(harness, "diff_archive", { archive: "b2" }).commands[0]).toContain("-r ssh://borg@host//srv/repo b1 b2");
-    expect(unquoted(plan_of(harness, "check_repo", { kind: "extract" }))).toContain("extract --dry-run --progress -r ssh://borg@host//srv/repo b2");
-    expect(unquoted(plan_of(harness, "compact_repo"))).toContain("compact --progress -r ssh://borg@host//srv/repo");
+    expect(unquoted(command_of(harness, "delete_archive", { archive: "b1" }))).toContain("delete --list -r ssh://borg@host//srv/repo b1");
+    expect(command_of(harness, "diff_archive", { archive: "b2" })).toContain("-r ssh://borg@host//srv/repo b1 b2");
+    expect(unquoted(command_of(harness, "check_repo", { kind: "extract" }))).toContain("extract --dry-run --progress -r ssh://borg@host//srv/repo b2");
+    expect(unquoted(command_of(harness, "compact_repo"))).toContain("compact --progress -r ssh://borg@host//srv/repo");
   });
 
   it("downloads from an archive named after -r", () => {
@@ -1939,10 +2011,10 @@ describe("borg 2", () => {
 
   it("purges with borg 2's match patterns and previews its - flag", () => {
     const harness = make({ ...BORG2_CFG, purge_match: "Odin-*" });
-    const purge = unquoted(plan_of(harness, "purge_excluded"));
+    const purge = unquoted(command_of(harness, "purge_excluded"));
     expect(purge).toContain("delete -a sh:*.recreate -r");
     expect(purge).toContain("recreate --info --stats --progress -a sh:Odin-*");
-    const preview = plan_of(harness, "purge_preview").commands[0];
+    const preview = command_of(harness, "purge_preview");
     expect(preview).toContain("--filter=-");
     expect(preview).toContain("awk -v flag=");
   });

@@ -5,7 +5,7 @@ import type { ArchiveEntry, RepositoryInfo } from "./parsing.ts";
 
 // ── Commands and their results ───────────────────────────────────────────────
 
-// One call, which the runner stops once it has run for timeout seconds.
+// One call, which its agent stops once it has run for timeout seconds.
 export interface Command {
   text: string;
   timeout: number | null;
@@ -46,8 +46,35 @@ export class ActionPlan {
   }
 }
 
-// What an action asks for: commands to run, or its answer straight away, such as a refusal.
-export type ActionStart = ActionPlan | CollectResult;
+// A run the host's agent keeps going on its own, such as a backup, so it outlives the connection and the server.
+export class LongRunPlan {
+  kind: string;
+  // Shell run first that prints why the run should be skipped, or null when nothing can skip it.
+  preflight: string | null;
+  command: string;
+  // Fed to the command, carrying the passphrase when its borg calls need one.
+  stdin: string | null;
+  // Says why the run is skipped from its preflight's result, or null when it goes ahead.
+  read_preflight: (result: CmdResult) => CollectResult | null;
+  // Records the run before the agent starts it, answering its id in the run store.
+  record: () => number;
+  // What the action reports once the agent has started the run, or why it could not.
+  read_start: (run_id: number, failure: string | null) => CollectResult;
+
+  // A class only so an action's answer can be told apart; its fields are given whole.
+  constructor(fields: LongRunPlan) {
+    this.kind = fields.kind;
+    this.preflight = fields.preflight;
+    this.command = fields.command;
+    this.stdin = fields.stdin;
+    this.read_preflight = fields.read_preflight;
+    this.record = fields.record;
+    this.read_start = fields.read_start;
+  }
+}
+
+// What an action asks for: commands to run, a long run to start, or its answer straight away, such as a refusal.
+export type ActionStart = ActionPlan | LongRunPlan | CollectResult;
 
 // A borg call whose stdout is the file a download saves, and the name and type it is saved with.
 export interface DownloadPlan {
@@ -92,7 +119,7 @@ export interface RepositoryState {
   stats: RepositoryStats | null;
   canary: CanaryRecord | null;
   checks: ChecksRecord | null;
-  // The filesystem holding a repository on a local path; null for one reached over SSH, whose host borg serve guards.
+  // The filesystem holding a repository on a local path; null for one reached over ssh://, whose host borg serve guards.
   storage?: StorageRecord | null;
   last_poll_epoch: number | null;
 }
@@ -162,8 +189,8 @@ export interface RunRecord {
   id: number;
   kind: string;
   command: string;
-  workdir: string | null;
-  pid: number | null;
+  // The id the host's agent knows the run by.
+  agent_run: string | null;
   state: RunState;
   progress: string | null;
   output_seq: number;
@@ -174,9 +201,8 @@ export interface RunRecord {
 export interface RunStore {
   running(): RunRecord | null;
   action_run(action_id: string): RunRecord | null;
-  create(kind: string, command: string, workdir: string | null): number;
-  set_pid(run_id: number, pid: number): void;
-  set_progress(run_id: number, summary: string): void;
+  create(kind: string, command: string): number;
+  set_progress(run_id: number, summary: string | null): void;
   append_output(run_id: number, lines: string[]): void;
   bump_output_seq(run_id: number, new_seq: number): void;
   finish(run_id: number, state: RunState, details: { exit_code?: number | null; error?: string | null }): void;

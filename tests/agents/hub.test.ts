@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start_agent, type RunningAgent } from "../../src/agent/agent.ts";
 import { encode_message, protocol_version } from "../../src/shared/agent_protocol.ts";
 import { AgentHub, close_codes } from "../../src/server/agents/hub.ts";
+import { LocalAgent } from "../../src/server/agents/local.ts";
 import { register_agent_route } from "../../src/server/agents/route.ts";
 import { AgentTokens } from "../../src/server/agents/tokens.ts";
 import { Store } from "../../src/server/store.ts";
@@ -248,5 +249,30 @@ describe("agent hub", () => {
     expect(await hub.run("nobody", "true", { timeout_in_seconds: 1 })).toMatchObject({ exit_code: -1, stderr: "No agent is connected for nobody." });
     expect((await hub.stream("nobody", "true").done).exit_code).toBe(-1);
     await expect(hub.health("nobody")).rejects.toThrow(/No agent/);
+  });
+
+  it("notes when an enrolled agent was last in touch, as it hangs up", async () => {
+    start_test_agent();
+    await connected();
+    const enrolment = () => hub.enrolments().find((item) => item.host === "odin")!;
+    expect(enrolment().last_seen_epoch).not.toBeNull();
+
+    const gone = new Promise((resolve) => hub.once("disconnect", resolve));
+    await agent!.stop();
+    agent = null;
+    await gone;
+
+    expect(hub.is_connected("odin")).toBe(false);
+    expect(enrolment().last_seen_epoch).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) - 1);
+  });
+
+  it("moves its built-in agent to the host the config names as the server's own", async () => {
+    const local = new AgentHub(new AgentTokens(new Store(":memory:")), { local: { host: "local", agent: new LocalAgent(state_directory) } });
+
+    local.set_local_host("heimdall");
+
+    expect(local.is_connected("heimdall")).toBe(true);
+    expect(local.is_connected("local")).toBe(false);
+    expect(local.status("heimdall")).toMatchObject({ host: "heimdall", built_in: true });
   });
 });

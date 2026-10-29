@@ -1,20 +1,24 @@
-// Polls each target at startup, then on its interval, or every ten seconds while one of its runs is going, and runs its actions.
+// Polls each target at startup, then on its interval, or every ten seconds while one of its runs is going, and runs its
+// actions, each on the agent of the target's host. A host's targets are polled again as soon as its agent connects, so
+// a run left going while the server or the agent was down is followed again from where its output was read to.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
+import type { LongRunPoll } from "../shared/agent_protocol.ts";
+import type { AgentRunOptions, AgentStreamOptions, CommandStream } from "./agents/agent.ts";
+import type { AgentHub, AgentStatus } from "./agents/hub.ts";
 import { BorgRepository } from "./borg/repository.ts";
-import { CollectResult, type ActionPlan, type CmdResult, type MonitorStatus } from "./borg/types.ts";
-import { target_id, target_key, type Config, type Entities, type RepositoryConfig } from "./config.ts";
-import { host_health_command, parse_host_health } from "./host_health.ts";
-import { run_command, stream_command, type CommandStream, type RunOptions, type RunTarget, type StreamOptions } from "./runner.ts";
+import { CollectResult, LongRunPlan, type ActionPlan, type CmdResult, type MonitorStatus, type RunRecord } from "./borg/types.ts";
+import { own_host, target_id, target_key, type Config, type Entities, type RepositoryConfig } from "./config.ts";
 import type { Store } from "./store.ts";
 import { parse_timers, timers_command } from "./timers.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
-export type Run = (target: RunTarget, command: string, options: RunOptions) => Promise<CmdResult>;
+// Runs a command on the named host's agent.
+export type Run = (host: string, command: string, options: AgentRunOptions) => Promise<CmdResult>;
 
-export type Stream = (target: RunTarget, command: string, options: StreamOptions) => CommandStream;
+export type Stream = (host: string, command: string, options: AgentStreamOptions) => CommandStream;
 
 // A download in progress, which holds the repository's lock for as long as it runs, so the page shows it and can stop it.
 export interface DownloadRecord {
@@ -40,6 +44,12 @@ const timer_read_interval_in_seconds = 300;
 // A plan with no timeout of its own, such as a diff, is still stopped after this long.
 const longest_action_in_seconds = 6 * 60 * 60;
 
+// A run's preflight only probes a port and asks systemd about units.
+const preflight_timeout_in_seconds = 60;
+
+// One poll of a run reads at most this many pieces of its output, so a run that writes fast still lets others poll.
+const most_run_reads_per_poll = 16;
+
 // ── Poller ───────────────────────────────────────────────────────────────────
 
 export class Poller {
@@ -47,6 +57,8 @@ export class Poller {
   // The hosts, repositories, sources and jobs the targets come from; none for a config built by hand.
   entities: Entities | null;
   private readonly store: Store;
+  // The agents every command runs through, by host name.
+  readonly agents: AgentHub;
   private readonly run: Run;
   private readonly stream_run: Stream;
   // Each repository's work runs one piece at a time, since a poll and an action both read and replace its state.
@@ -55,21 +67,25 @@ export class Poller {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly timers_read = new Map<string, number>();
   private readonly running_downloads = new Map<number, { record: DownloadRecord; stop: () => void }>();
+  private readonly on_connect = (status: AgentStatus) => this.poll_host(status.host);
   private next_download_id = 1;
   private stopped = true;
 
-  constructor(config: Config, store: Store, run: Run = run_command, stream_run: Stream = stream_command) {
+  constructor(config: Config, store: Store, agents: AgentHub, run?: Run, stream_run?: Stream) {
     this.store = store;
-    this.run = run;
-    this.stream_run = stream_run;
+    this.agents = agents;
+    this.run = run ?? ((host, command, options) => agents.run(host, command, options));
+    this.stream_run = stream_run ?? ((host, command, options) => agents.stream(host, command, options));
     this.entities = config.entities ?? null;
     this.adopt(config);
     for (const repository_config of config.repositories) this.watch(repository_config);
   }
 
-  // Tells the store the targets and hosts, so their rows carry the entity names and older rows gain them.
+  // Tells the store the targets and hosts, so their rows carry the entity names and older rows gain them, and tells
+  // the hub which host its built-in agent answers for.
   private adopt(config: Config): void {
     this.store.adopt_targets(config.repositories.map(target_key), config.entities?.hosts ?? []);
+    this.agents.set_local_host(own_host(config.entities));
   }
 
   private watch(repository_config: RepositoryConfig): Watched {
@@ -107,11 +123,13 @@ export class Poller {
   // Polls every repository now, which also picks up runs left going before a restart, then keeps polling.
   start(): void {
     this.stopped = false;
+    this.agents.on("connect", this.on_connect);
     for (const id of this.repositories.keys()) void this.poll(id);
   }
 
   stop(): void {
     this.stopped = true;
+    this.agents.off("connect", this.on_connect);
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
   }
@@ -136,16 +154,62 @@ export class Poller {
     return poll;
   }
 
-  // Runs an action's commands one after another and keeps what its reader reports.
-  run_action(id: string, plan: ActionPlan): Promise<CollectResult> {
+  // Polls every target whose commands run on the host, as when its agent has just connected.
+  private poll_host(host: string): void {
+    if (this.stopped) return;
+    for (const watched of this.repositories.values()) {
+      if (host_name(watched) === host) void this.poll(watched.repository.id);
+    }
+  }
+
+  // Runs an action's commands one after another and keeps what its reader reports, or starts its long run.
+  run_action(id: string, plan: ActionPlan | LongRunPlan): Promise<CollectResult> {
     return this.queued(id, async () => {
       const watched = this.watched(id);
-      const results: CmdResult[] = [];
-      for (const command of plan.commands) {
-        const options = { timeout_in_seconds: plan.timeout ?? longest_action_in_seconds, stdin: plan.stdin ?? undefined };
-        results.push(await this.run(watched.config, command, options));
+      const result = plan instanceof LongRunPlan ? await this.start_run(watched, plan) : await this.run_plan(watched, plan);
+      this.keep(watched, result, false);
+      return result;
+    }).finally(() => this.schedule(id));
+  }
+
+  private async run_plan(watched: Watched, plan: ActionPlan): Promise<CollectResult> {
+    const results: CmdResult[] = [];
+    for (const command of plan.commands) {
+      const options = { timeout_in_seconds: plan.timeout ?? longest_action_in_seconds, stdin: plan.stdin };
+      results.push(await this.run(host_name(watched), command, options));
+    }
+    return plan.read(results);
+  }
+
+  // Runs the plan's preflight, then records the run and has the host's agent start it under the record's agent run id.
+  private async start_run(watched: Watched, plan: LongRunPlan): Promise<CollectResult> {
+    const host = host_name(watched);
+    if (plan.preflight !== null) {
+      const skipped = plan.read_preflight(await this.run(host, plan.preflight, { timeout_in_seconds: preflight_timeout_in_seconds }));
+      if (skipped !== null) return skipped;
+    }
+    const run_id = plan.record();
+    const agent_run = this.store.run_row(run_id)!.agent_run!;
+    try {
+      await this.agents.start(host, agent_run, plan.command, { stdin: plan.stdin });
+    } catch (error) {
+      return plan.read_start(run_id, message_of(error));
+    }
+    return plan.read_start(run_id, null);
+  }
+
+  // Stops the target's run on its agent, then reads it to its end, which records it as cancelled.
+  cancel_run(id: string): Promise<CollectResult> {
+    return this.queued(id, async () => {
+      const watched = this.watched(id);
+      const run = watched.repository.active_run();
+      if (run === null) return BorgRepository.refused("Nothing is running for this repository");
+      try {
+        await this.agents.stop(host_name(watched), run.agent_run!);
+      } catch (error) {
+        return watched.repository.read_cancel_failed(run, message_of(error));
       }
-      const result = plan.read(results);
+      const result = await this.follow_run(watched, run);
       this.keep(watched, result, false);
       return result;
     }).finally(() => this.schedule(id));
@@ -154,7 +218,7 @@ export class Poller {
   // Streams a command outside the queue, since a download can run for hours and borg's lock wait already keeps it apart.
   // It is listed until it ends, with who started it, so whoever sees a backup waiting on it can stop it.
   stream(id: string, command: string, stdin: string | null, details: { who: string; what: string }): CommandStream {
-    const stream = this.stream_run(this.watched(id).config, command, { stdin: stdin ?? undefined });
+    const stream = this.stream_run(host_name(this.watched(id)), command, { stdin });
     const record = { id: this.next_download_id++, target_id: id, ...details, started_epoch: Math.floor(Date.now() / 1000) };
     this.running_downloads.set(record.id, { record, stop: stream.stop });
     this.store.changed({ kind: "repository", target_id: id });
@@ -177,42 +241,85 @@ export class Poller {
     return true;
   }
 
+  // Follows a run while one is going, otherwise lists the repository.
   private async poll_now(id: string): Promise<CollectResult> {
     const watched = this.watched(id);
+    const run = watched.repository.active_run();
     let result: CollectResult;
     try {
-      const results: CmdResult[] = [];
-      for (const command of watched.repository.commands()) {
-        const options = { timeout_in_seconds: command.timeout ?? longest_action_in_seconds, stdin: command.stdin ?? undefined };
-        results.push(await this.run(watched.config, command.text, options));
-      }
-      result = watched.repository.parse(results);
+      result = run === null ? await this.poll_repository(watched) : await this.follow_run(watched, run);
     } catch (error) {
       result = failed_result(error);
     }
     this.keep(watched, result, true);
-    await this.read_timers(watched);
+    await this.read_host(watched);
     return result;
   }
 
-  // Reads the backup timers on the repository's host, keeping the last good read when one fails.
-  private async read_timers(watched: Watched): Promise<void> {
+  private async poll_repository(watched: Watched): Promise<CollectResult> {
+    const results: CmdResult[] = [];
+    for (const command of watched.repository.commands()) {
+      const options = { timeout_in_seconds: command.timeout ?? longest_action_in_seconds, stdin: command.stdin };
+      results.push(await this.run(host_name(watched), command.text, options));
+    }
+    return watched.repository.parse(results);
+  }
+
+  // Reads what the run has written since the last read, until it has caught up, and forgets the run on its agent once
+  // it is recorded as ended. An agent that cannot be asked leaves it waiting, and one that no longer knows it loses it.
+  private async follow_run(watched: Watched, run: RunRecord): Promise<CollectResult> {
+    const host = host_name(watched);
+    const agent_run = run.agent_run!;
+    let current = run;
+    for (let read = 0; read < most_run_reads_per_poll; read++) {
+      let poll: LongRunPoll;
+      try {
+        poll = await this.agents.poll(host, agent_run, current.output_seq);
+      } catch (error) {
+        if (await this.agent_lost(host, agent_run)) return watched.repository.read_run_lost(current, host);
+        return watched.repository.read_run_unreachable(current, message_of(error));
+      }
+      const result = watched.repository.read_run_poll(current, poll);
+      const next = this.store.run_row(current.id)!;
+      if (next.state !== "running") {
+        await this.agents.forget(host, agent_run).catch(() => {});
+        return result;
+      }
+      // Caught up, or a partial line that needs more output before it can be read.
+      if (poll.next_offset >= poll.size || next.output_seq === current.output_seq) return result;
+      current = next;
+    }
+    return new CollectResult();
+  }
+
+  // Whether the host's agent is connected and lists no run of that id.
+  private async agent_lost(host: string, agent_run: string): Promise<boolean> {
+    if (!this.agents.is_connected(host)) return false;
+    try {
+      return !(await this.agents.runs(host)).some((listed) => listed.run_id === agent_run);
+    } catch {
+      return false;
+    }
+  }
+
+  // Reads the backup timers and the load of the target's host, keeping the last good read when one fails.
+  private async read_host(watched: Watched): Promise<void> {
     const host = host_name(watched);
     const now = Date.now() / 1000;
     if (now - (this.timers_read.get(host) ?? 0) < timer_read_interval_in_seconds) return;
-    this.timers_read.set(host, now);
     try {
-      const result = await this.run(watched.config, timers_command(), { timeout_in_seconds: 30 });
+      // A host without systemd answers with nothing, and so shows no timers; one whose agent is away is asked again next poll.
+      const result = await this.run(host, timers_command(), { timeout_in_seconds: 30 });
+      if (result.exit_code === -1) return;
+      this.timers_read.set(host, now);
       const timers = parse_timers(result.stdout);
       if (timers !== null) this.store.replace_timers(host, timers);
     } catch {
-      // A host without systemd simply shows no timers.
+      // A failed read keeps the timers last read.
     }
     // The host's load is sampled at the same pace, so its charts have a point per timer read.
     try {
-      const result = await this.run(watched.config, host_health_command(), { timeout_in_seconds: 30 });
-      const sample = parse_host_health(result.stdout);
-      if (sample !== null) this.store.add_host_sample(host, sample);
+      this.store.add_host_sample(host, await this.agents.health(host));
     } catch {
       // A host that cannot be read simply leaves a gap in its charts.
     }
@@ -250,12 +357,17 @@ export class Poller {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// The name of the host a target's commands run on, which keys its timers and readings.
+// The name of the host a target's commands run on, which keys its timers and readings: a job's source host, or the
+// host that polls a repository only watched.
 export function host_name(watched: Watched): string {
   return target_key(watched.config).host;
 }
 
+function message_of(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // Answers a failed run as the repository's own failure, so one broken host never stops the others.
 function failed_result(error: unknown): CollectResult {
-  return CollectResult.failed(`Poll failed: ${error instanceof Error ? error.message : String(error)}`);
+  return CollectResult.failed(`Poll failed: ${message_of(error)}`);
 }

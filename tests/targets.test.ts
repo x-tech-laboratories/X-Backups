@@ -4,7 +4,7 @@ import { BorgRepository } from "../src/server/borg/repository.ts";
 import { borg_fields, entity_field_list, entity_kinds, parse_config, type RepositoryConfig } from "../src/server/config.ts";
 
 const hosts = [
-  { name: "odin", address: "odin.technet", ssh_user: "backup", require_sudo: true },
+  { name: "odin", address: "odin.technet", require_sudo: true },
   { name: "thor", address: "thor.technet" },
   { name: "storage", kind: "storage-only", address: "storage.technet" },
 ];
@@ -38,7 +38,7 @@ describe("job targets", () => {
       "nightly:odin:offsite", "nightly:odin:disk", "nightly:thor:offsite", "nightly:thor:disk",
     ]);
     expect(config.repositories[0]).toMatchObject({
-      host: "odin.technet", ssh_user: "backup", interval_in_seconds: 3600,
+      host: "odin.technet", interval_in_seconds: 3600,
       target: { job: "nightly", host: "odin", repository: "offsite", sources: ["home", "etc"] },
     });
     expect(config.repositories[1].interval_in_seconds).toBe(600);
@@ -93,7 +93,7 @@ describe("job targets", () => {
     });
     const backup_command = (target: RepositoryConfig) => {
       const start = built(target).run_backup();
-      return "commands" in start ? start.commands.join("\n") : "";
+      return "command" in start ? start.command : "";
     };
 
     expect(backup_command(compacting.repositories[0])).toContain("compact --progress");

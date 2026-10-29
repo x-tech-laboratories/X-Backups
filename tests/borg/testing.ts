@@ -35,18 +35,14 @@ export class MemoryRunStore implements RunStore {
     return null;
   }
 
-  create(kind: string, command: string, workdir: string | null): number {
+  create(kind: string, command: string): number {
     const id = this.runs.length + 1;
-    this.runs.push({ id, kind, command, workdir, pid: null, state: "running", progress: null, output_seq: 0, exit_code: null, error: null });
+    this.runs.push({ id, kind, command, agent_run: `run-${id}`, state: "running", progress: null, output_seq: 0, exit_code: null, error: null });
     this.outputs.set(id, []);
     return id;
   }
 
-  set_pid(run_id: number, pid: number): void {
-    this.run(run_id).pid = pid;
-  }
-
-  set_progress(run_id: number, summary: string): void {
+  set_progress(run_id: number, summary: string | null): void {
     this.run(run_id).progress = summary;
   }
 

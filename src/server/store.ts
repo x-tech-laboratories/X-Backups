@@ -8,7 +8,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-import type { HostSample } from "./host_health.ts";
+import type { HealthSample } from "../shared/agent_protocol.ts";
 import type { Timer } from "./timers.ts";
 import { own_host_name } from "./config.ts";
 import type { CollectResult, LogLevel, MonitorStatus, RepositoryState, RunRecord, RunState, RunStore } from "./borg/types.ts";
@@ -82,10 +82,13 @@ export interface TimerRunRow {
   exit_status: number | null;
 }
 
-export interface HostSampleRow extends HostSample {
+export interface HostSampleRow extends HealthSample {
   host: string;
   epoch: number;
 }
+
+// Why a run left going over SSH, before agents, was ended when the database was opened.
+const ssh_run_lost = "Lost: it was started over SSH, which X-Backups no longer uses, so its outcome is unknown.";
 
 // A host's readings are kept for a week, the longest span its charts draw.
 const host_sample_retention_in_seconds = 7 * 86400;
@@ -202,8 +205,7 @@ const SCHEMA = `
     task TEXT,
     kind TEXT NOT NULL,
     command TEXT NOT NULL,
-    workdir TEXT,
-    pid INTEGER,
+    agent_run TEXT,
     state TEXT NOT NULL,
     progress TEXT,
     output_seq INTEGER NOT NULL DEFAULT 0,
@@ -332,8 +334,19 @@ export class Store {
       // A table not made yet is made whole by the schema.
       if (columns.size === 0) continue;
       if (columns.has("repository_id")) this.database.exec(`ALTER TABLE ${table} RENAME COLUMN repository_id TO target_id`);
-      for (const column of ["host", "job", "repository", ...(table === "runs" ? ["task"] : [])]) {
+      for (const column of ["host", "job", "repository", ...(table === "runs" ? ["task", "agent_run"] : [])]) {
         if (!columns.has(column)) this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+      }
+    }
+    // A run started over SSH has no agent to follow it, so one still going is ended as lost.
+    const run_columns = this.columns("runs");
+    if (run_columns.has("workdir")) {
+      this.run(
+        "UPDATE runs SET state = 'failed', exit_code = -1, error = ?, ended_epoch = ? WHERE state = 'running' AND agent_run IS NULL",
+        ssh_run_lost, now_seconds(),
+      );
+      for (const column of ["workdir", "pid"]) {
+        if (run_columns.has(column)) this.database.exec(`ALTER TABLE runs DROP COLUMN ${column}`);
       }
     }
   }
@@ -519,7 +532,7 @@ export class Store {
   // ── Hosts ────────────────────────────────────────────────────────────────
 
   // Keeps one reading of a host's load, memory and root disk, dropping its readings past retention.
-  add_host_sample(host: string, sample: HostSample, epoch = now_seconds()): void {
+  add_host_sample(host: string, sample: HealthSample, epoch = now_seconds()): void {
     this.transaction(() => {
       this.run("DELETE FROM host_samples WHERE host = ? AND epoch < ?", host, epoch - host_sample_retention_in_seconds);
       this.run(
@@ -531,17 +544,15 @@ export class Store {
   }
 
   // Every host's readings from `since` on, oldest first.
+  // Each host's newest reading.
+  latest_host_samples(): HostSampleRow[] {
+    return this.all(
+      "SELECT * FROM host_samples WHERE (host, epoch) IN (SELECT host, max(epoch) FROM host_samples GROUP BY host) ORDER BY host",
+    ).map(host_sample_row);
+  }
+
   host_samples(since: number): HostSampleRow[] {
-    return this.all("SELECT * FROM host_samples WHERE epoch >= ? ORDER BY host, epoch", since).map((row) => ({
-      host: String(row.host),
-      epoch: Number(row.epoch),
-      load1: Number(row.load1),
-      cpus: Number(row.cpus),
-      memory_total: Number(row.memory_total),
-      memory_available: Number(row.memory_available),
-      disk_size: Number(row.disk_size),
-      disk_available: Number(row.disk_available),
-    }));
+    return this.all("SELECT * FROM host_samples WHERE epoch >= ? ORDER BY host, epoch", since).map(host_sample_row);
   }
 
   // Every timer run from `since` on, oldest first, with the missed ones marked by a result of "missed".
@@ -656,22 +667,24 @@ class TargetRuns implements RunStore {
     return row ? run_row(row) : null;
   }
 
-  // Every run is an action started by hand until the scheduler starts tasks, so none has a task yet.
-  create(kind: string, command: string, workdir: string | null): number {
-    const run_id = this.store.run(
-      `INSERT INTO runs (target_id, host, job, repository, task, kind, command, workdir, state, started_epoch)
-       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'running', ?)`,
-      this.target_id, ...this.store.names(this.target_id), kind, command, workdir, now_seconds(),
-    );
+  // Every run is an action started by hand until the scheduler starts tasks, so none has a task yet. Its agent run id
+  // carries its start time as well as its id, so a database started over never reuses one an agent still holds.
+  create(kind: string, command: string): number {
+    const started_epoch = now_seconds();
+    let run_id = 0;
+    this.store.transaction(() => {
+      run_id = this.store.run(
+        `INSERT INTO runs (target_id, host, job, repository, task, kind, command, state, started_epoch)
+         VALUES (?, ?, ?, ?, NULL, ?, ?, 'running', ?)`,
+        this.target_id, ...this.store.names(this.target_id), kind, command, started_epoch,
+      );
+      this.store.run("UPDATE runs SET agent_run = ? WHERE id = ?", `run-${run_id}-${started_epoch}`, run_id);
+    });
     this.changed(run_id);
     return run_id;
   }
 
-  set_pid(run_id: number, pid: number): void {
-    this.store.run("UPDATE runs SET pid = ? WHERE id = ?", pid, run_id);
-  }
-
-  set_progress(run_id: number, summary: string): void {
+  set_progress(run_id: number, summary: string | null): void {
     this.store.run("UPDATE runs SET progress = ? WHERE id = ?", summary, run_id);
     this.changed(run_id);
   }
@@ -713,8 +726,7 @@ function run_row(row: Record<string, unknown>): RunRow {
     task: string_or_null(row.task),
     kind: String(row.kind),
     command: String(row.command),
-    workdir: row.workdir === null ? null : String(row.workdir),
-    pid: number_or_null(row.pid),
+    agent_run: string_or_null(row.agent_run),
     state: row.state as RunState,
     progress: row.progress === null ? null : String(row.progress),
     output_seq: Number(row.output_seq),
@@ -722,6 +734,19 @@ function run_row(row: Record<string, unknown>): RunRow {
     error: row.error === null ? null : String(row.error),
     started_epoch: Number(row.started_epoch),
     ended_epoch: number_or_null(row.ended_epoch),
+  };
+}
+
+function host_sample_row(row: Record<string, unknown>): HostSampleRow {
+  return {
+    host: String(row.host),
+    epoch: Number(row.epoch),
+    load1: Number(row.load1),
+    cpus: Number(row.cpus),
+    memory_total: Number(row.memory_total),
+    memory_available: Number(row.memory_available),
+    disk_size: Number(row.disk_size),
+    disk_available: Number(row.disk_available),
   };
 }
 

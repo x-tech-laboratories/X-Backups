@@ -5,9 +5,8 @@
 import { Readable } from "node:stream";
 
 import type { CommandStream } from "../../agent/commands.ts";
-import type { LongRun, LongRunPoll } from "../../shared/agent_protocol.ts";
+import type { HealthSample, LongRun, LongRunPoll } from "../../shared/agent_protocol.ts";
 import type { CmdResult } from "../borg/types.ts";
-import type { HostSample } from "../host_health.ts";
 
 export type { CommandStream } from "../../agent/commands.ts";
 export type { LongRun, LongRunPoll, LongRunState } from "../../shared/agent_protocol.ts";
@@ -39,7 +38,7 @@ export function ended_stream(stderr: string): CommandStream {
 // ── Agent ────────────────────────────────────────────────────────────────────
 
 export interface Agent {
-  // Runs a command to its end; like the runner, it never rejects, answering a failure with exit code -1.
+  // Runs a command to its end; it never rejects, answering a failure with exit code -1.
   run(command: string, options: AgentRunOptions): Promise<CmdResult>;
   // Runs a command with no timeout, handing back its stdout as it comes.
   stream(command: string, options?: AgentStreamOptions): CommandStream;
@@ -54,5 +53,5 @@ export interface Agent {
   // Removes an ended long run's output from the host.
   forget(run_id: string): Promise<void>;
   runs(): Promise<LongRun[]>;
-  health(): Promise<HostSample>;
+  health(): Promise<HealthSample>;
 }

@@ -6,8 +6,8 @@
 import { run_command, stream_command } from "../../agent/commands.ts";
 import { read_health } from "../../agent/health.ts";
 import { LongRuns, type LongRunOptions } from "../../agent/long_runs.ts";
+import type { HealthSample } from "../../shared/agent_protocol.ts";
 import type { CmdResult } from "../borg/types.ts";
-import type { HostSample } from "../host_health.ts";
 import { ended_stream, type Agent, type AgentRunOptions, type AgentStreamOptions, type CommandStream, type LongRun, type LongRunPoll } from "./agent.ts";
 
 // ── Local agent ──────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ export class LocalAgent implements Agent {
     return this.long_runs.list();
   }
 
-  health(): Promise<HostSample> {
+  health(): Promise<HealthSample> {
     return read_health();
   }
 }

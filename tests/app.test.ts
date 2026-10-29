@@ -4,25 +4,25 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CommandStream } from "../src/server/agents/agent.ts";
+import { AgentHub } from "../src/server/agents/hub.ts";
+import { AgentTokens } from "../src/server/agents/tokens.ts";
 import { build_app } from "../src/server/app.ts";
 import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
-import type { Config } from "../src/server/config.ts";
+import { parse_config, type Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
-import type { CommandStream } from "../src/server/runner.ts";
 import { ConfigSources } from "../src/server/sources.ts";
 import { Store } from "../src/server/store.ts";
+import { FakeAgent, SAMPLE } from "./agents/fake_agent.ts";
 
 const password_hash = hash_password("correct horse");
 
 const LIST = JSON.stringify({ archives: [{ name: "a1", time: "2026-10-01T10:00:00" }, { name: "a0", time: "2026-09-30T10:00:00" }] });
 
-// A run poll's answer while the run is still going and has written nothing.
-const RUNNING = "===XBACKUPS_SIZE===\n0\n===XBACKUPS_EXIT===\n\n===XBACKUPS_ALIVE===\n1\n===XBACKUPS_OUT===\n";
-
 const CONFIG: Config = {
   repositories: [{
-    name: "odin", host: null, ssh_user: null, interval_in_seconds: 3600,
+    name: "odin", host: null, interval_in_seconds: 3600,
     borg: { repo: "/srv/repo", collect_stats: false, source_paths: ["/etc"] }, source: "declared",
   }],
 };
@@ -30,13 +30,15 @@ const CONFIG: Config = {
 let app: FastifyInstance;
 let store: Store;
 let poller: Poller;
+let hub: AgentHub;
+let agent: FakeAgent;
 let commands: string[];
 let cookie: string;
-let streamed: { command: string; stdin: string | undefined }[];
+let streamed: { command: string; stdin: string | null | undefined }[];
 let stream_answer: { chunks: string[]; exit_code: number; stderr: string; hold?: boolean };
 
 // Writes the chunks the test set, then ends with its exit code once they have all been read; a held stream runs until stopped.
-function fake_stream(_target: unknown, command: string, options: { stdin?: string }): CommandStream {
+function fake_stream(_host: string, command: string, options: { stdin?: string | null }): CommandStream {
   streamed.push({ command, stdin: options.stdin });
   const { chunks, exit_code, stderr, hold } = stream_answer;
   const stdout = new PassThrough();
@@ -57,10 +59,11 @@ beforeEach(async () => {
   streamed = [];
   stream_answer = { chunks: [], exit_code: 0, stderr: "" };
   store = new Store(":memory:");
-  poller = new Poller(CONFIG, store, async (_target, command) => {
+  agent = new FakeAgent();
+  hub = new AgentHub(new AgentTokens(store), { local: { host: "local", agent } });
+  poller = new Poller(CONFIG, store, hub, async (_host, command) => {
     commands.push(command);
-    if (command.includes("kill -0")) return cmd_result(0, RUNNING, "");
-    return command.includes("borg") && command.includes("list") ? cmd_result(0, LIST, "") : cmd_result(0, "4242\n", "");
+    return command.includes("borg") && command.includes("list") ? cmd_result(0, LIST, "") : cmd_result(0, "", "");
   }, fake_stream);
   app = await build_app({ serve_web: false, logger: false, password_hash, poller, store });
   const login = await app.inject({ method: "POST", url: "/api/login", payload: { password: "correct horse" } });
@@ -272,13 +275,14 @@ describe("actions and runs", () => {
     expect(started.success).toBe(true);
 
     const [run] = (await get("/api/runs?target=odin")).json();
-    expect(run).toMatchObject({ kind: "backup", state: "running", pid: 4242, target_id: "odin", host: "local", job: "odin", repository: "odin", task: null });
+    expect(run).toMatchObject({ kind: "backup", state: "running", target_id: "odin", host: "local", job: "odin", repository: "odin", task: null });
+    expect(agent.started.map((started) => started.run_id)).toEqual([run.agent_run]);
     expect((await get(`/api/runs/${run.id}`)).json().output).toEqual([]);
 
     const cancelled = (await post(`/api/runs/${run.id}/cancel`)).json();
     expect(cancelled.success).toBe(true);
-    expect(commands.at(-1)).toBe("kill -TERM -- -4242");
     expect((await get(`/api/runs/${run.id}`)).json().state).toBe("cancelled");
+    expect(agent.forgotten).toEqual([run.agent_run]);
     expect((await post(`/api/runs/${run.id}/cancel`)).statusCode).toBe(409);
   });
 
@@ -316,6 +320,49 @@ describe("actions and runs", () => {
   });
 });
 
+// ── Hosts ────────────────────────────────────────────────────────────────────
+
+describe("hosts", () => {
+  it("lists each host with its agent's connection and newest health reading", async () => {
+    await post("/api/repositories/odin/poll");
+
+    const hosts = (await get("/api/hosts")).json();
+
+    expect(hosts).toEqual([{
+      name: "local", kind: "managed", address: null, connected: true, built_in: true, agent_version: "built in", reported_host: "local",
+      connected_epoch: null, enrolled: false, last_seen_epoch: null, health: { epoch: expect.any(Number), ...SAMPLE },
+    }]);
+  });
+
+  it("labels metrics with the host's name", async () => {
+    await post("/api/repositories/odin/poll");
+    expect((await get("/metrics")).body).toContain('x_backups_archives{repository="odin",host="local"}');
+  });
+
+  it("issues an agent token once and revokes it, but never for this server's own host", async () => {
+    const config = parse_config(JSON.stringify({
+      hosts: [{ name: "server" }, { name: "thor", address: "thor.technet" }, { name: "vault", kind: "storage-only", address: "vault.technet" }],
+      repositories: [{ name: "disk", host: "server", repo: "/srv/borg" }],
+    }), "test.json");
+    poller.apply_config(config);
+
+    const issued = await post("/api/hosts/thor/token");
+    expect(issued.statusCode).toBe(201);
+    expect(issued.json().token).toMatch(/^xba_/);
+    expect(hub.authenticate(`Bearer ${issued.json().token}`)).toBe("thor");
+    expect((await get("/api/hosts")).json().find((host: { name: string }) => host.name === "thor")).toMatchObject({ connected: false, enrolled: true });
+
+    expect((await post("/api/hosts/server/token")).statusCode).toBe(409);
+    expect((await post("/api/hosts/vault/token")).statusCode).toBe(409);
+    expect((await post("/api/hosts/nowhere/token")).statusCode).toBe(404);
+
+    const revoked = await app.inject({ method: "DELETE", url: "/api/hosts/thor/token", headers: { cookie } });
+    expect(revoked.statusCode).toBe(204);
+    expect(hub.authenticate(`Bearer ${issued.json().token}`)).toBeNull();
+    expect((await app.inject({ method: "DELETE", url: "/api/hosts/thor/token", headers: { cookie } })).statusCode).toBe(404);
+  });
+});
+
 // ── Config from the page ─────────────────────────────────────────────────────
 
 describe("config from the page", () => {
@@ -330,7 +377,8 @@ describe("config from the page", () => {
     writeFileSync(declared, JSON.stringify({ repositories: [{ name: "odin", repo: "/srv/repo", collect_stats: false }] }));
     const sources = new ConfigSources({ mode: "mixed", declared_path: declared, state_dir: directory });
     editable_store = new Store(":memory:");
-    editable_poller = new Poller(sources.config(), editable_store, async () => cmd_result(0, LIST, ""));
+    const editable_hub = new AgentHub(new AgentTokens(editable_store), { local: { host: "local", agent: new FakeAgent() } });
+    editable_poller = new Poller(sources.config(), editable_store, editable_hub, async () => cmd_result(0, LIST, ""));
     editable_app = await build_app({ serve_web: false, logger: false, password_hash, poller: editable_poller, store: editable_store, sources });
     const login = await editable_app.inject({ method: "POST", url: "/api/login", payload: { password: "correct horse" } });
     session = String(login.headers["set-cookie"]).split(";")[0];

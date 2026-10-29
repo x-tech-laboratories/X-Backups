@@ -289,6 +289,20 @@ export function diff_line(change: DiffChange): string {
   return [change.kind, sizes, details].filter(Boolean).concat(change.path).join(" ");
 }
 
+// ── Run output ───────────────────────────────────────────────────────────────
+
+// Whole lines of newly read run output and how many bytes they used, leaving a trailing partial line for the next poll.
+// Once the run has ended and all its output is read no more follows, so that last line is taken too rather than lost.
+export function split_run_output(new_output: string, ended = false): [lines: string[], consumed_bytes: number] {
+  if (!new_output) return [[], 0];
+  if (ended) return [new_output.replace(/\n$/, "").split("\n"), Buffer.byteLength(new_output, "utf8")];
+  const last_newline = new_output.lastIndexOf("\n");
+  if (last_newline === -1) return [[], 0];
+  // Counted in bytes, since the next poll resumes from a byte offset.
+  const consumed_bytes = Buffer.byteLength(new_output.slice(0, last_newline + 1), "utf8");
+  return [new_output.slice(0, last_newline).split("\n"), consumed_bytes];
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // Splits at most `limit` times, keeping the rest of the text whole in the last field.

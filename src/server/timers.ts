@@ -28,6 +28,7 @@ const calendar_iterations = 200;
 // ── Command ──────────────────────────────────────────────────────────────────
 
 // One command listing every timer as JSON, then the state of each backup service they start, then the coming elapses of each backup timer's OnCalendar.
+// A host without systemctl answers with nothing.
 export function timers_command(): string {
   const list = "systemctl list-timers --all --output=json --no-pager";
   const services = `${list} | grep -o '"activates": *"[^"]*borg[^"]*"' | sed 's/.*"\\([^"]*\\)"$/\\1/'`;
@@ -36,7 +37,7 @@ export function timers_command(): string {
   const calendar = `for timer in $(${timer_units}); do echo "${CALENDAR_UNIT_MARK}$timer"; ` +
     `systemctl show -P TimersCalendar -- "$timer" | sed -n 's/.*OnCalendar=\\(.*\\) ; next_elapse=.*/\\1/p' | ` +
     `while IFS= read -r spec; do systemd-analyze calendar --iterations=${calendar_iterations} -- "$spec" 2>/dev/null | grep ' UTC$'; done; done`;
-  return `${list}; echo ${SERVICES_MARK}; ` +
+  return `command -v systemctl >/dev/null 2>&1 || exit 0; ${list}; echo ${SERVICES_MARK}; ` +
     `units=$(${services}); [ -n "$units" ] && systemctl show --timestamp=unix -p Id -p Result -p ExecMainStatus -- $units; ` +
     `echo ${CALENDAR_MARK}; ${calendar}`;
 }

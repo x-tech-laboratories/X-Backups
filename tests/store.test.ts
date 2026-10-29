@@ -117,12 +117,11 @@ describe("timers", () => {
 describe("runs", () => {
   it("follows a run from start to finish, keeping its target's entities beside it", () => {
     const runs = store.runs_for({ target_id: "web:odin:vault", host: "odin", job: "web", repository: "vault" });
-    const run_id = runs.create("backup", "borg create", "/tmp/w");
-    runs.set_pid(run_id, 42);
+    const run_id = runs.create("backup", "borg create");
     runs.append_output(run_id, ["one", "two"]);
     runs.append_output(run_id, ["three"]);
 
-    expect(runs.running()!.pid).toBe(42);
+    expect(runs.running()!.agent_run).toMatch(new RegExp(`^run-${run_id}-\\d+$`));
     expect(store.runs_for(thor).running()).toBeNull();
     expect(store.run_output(run_id, 1)).toEqual(["two", "three"]);
 
@@ -137,10 +136,10 @@ describe("runs", () => {
 
   it("narrows the run list by target, entity, kind, state and start, a page at a time", () => {
     const runs = store.runs_for(odin);
-    const check = runs.create("check-data", "borg check", null);
+    const check = runs.create("check-data", "borg check");
     runs.finish(check, "failed", { exit_code: 2 });
-    runs.create("backup", "borg create", null);
-    store.runs_for({ ...thor, repository: "vault" }).create("check", "borg check", null);
+    runs.create("backup", "borg create");
+    store.runs_for({ ...thor, repository: "vault" }).create("check", "borg check");
 
     expect(store.runs({ kind: "check" }).map((run) => run.kind)).toEqual(["check", "check-data"]);
     expect(store.runs({ target_id: "odin", state: "failed" }).map((run) => run.id)).toEqual([check]);
@@ -150,8 +149,8 @@ describe("runs", () => {
   });
 
   it("matches a grant on a target's id or its repository's name", () => {
-    store.runs_for(odin).create("backup", "borg create", null);
-    store.runs_for({ target_id: "web:thor:vault", host: "thor", job: "web", repository: "vault" }).create("backup", "borg create", null);
+    store.runs_for(odin).create("backup", "borg create");
+    store.runs_for({ target_id: "web:thor:vault", host: "thor", job: "web", repository: "vault" }).create("backup", "borg create");
 
     expect(store.runs({ granted: ["vault"] }).map((run) => run.target_id)).toEqual(["web:thor:vault"]);
     expect(store.runs({ granted: ["odin"] }).map((run) => run.target_id)).toEqual(["odin"]);
@@ -161,7 +160,7 @@ describe("runs", () => {
   it("tells listeners what changed", () => {
     const changes: unknown[] = [];
     store.changes.on("change", (change) => changes.push(change));
-    const run_id = store.runs_for(odin).create("backup", "borg create", null);
+    const run_id = store.runs_for(odin).create("backup", "borg create");
     store.apply("odin", new CollectResult({ logs: [["Backup started", "INFO"]] }), { poll: false });
     store.replace_timers("odin.example.org", []);
 
@@ -174,7 +173,7 @@ describe("runs", () => {
 
   it("finds a detached action's run by its id", () => {
     const runs = store.runs_for(odin);
-    runs.create("diff_archive", "borg diff", null);
+    runs.create("diff_archive", "borg diff");
 
     expect(runs.action_run("diff_archive")).not.toBeNull();
     expect(runs.action_run("verify_restore")).toBeNull();
@@ -217,6 +216,7 @@ describe("migration", () => {
       INSERT INTO archives (repository_id, name, epoch) VALUES ('odin', 'odin-2026-10-01T03:00:00', 90);
       INSERT INTO events (repository_id, epoch, level, message) VALUES ('odin', 100, 'INFO', 'Backup started');
       INSERT INTO jobs (repository_id, kind, command, state, started_epoch) VALUES ('odin', 'backup', 'borg create', 'succeeded', 100);
+      INSERT INTO jobs (repository_id, kind, command, workdir, pid, state, started_epoch) VALUES ('odin', 'prune', 'borg prune', '/w', 7, 'running', 200);
       INSERT INTO job_output VALUES (1, 0, 'done');
       INSERT INTO timers VALUES ('odin.lan', 'borgmatic.timer', 'borgmatic.service', NULL, 50, 'success', 0, 60);
       INSERT INTO timers VALUES ('local', 'borgmatic.timer', 'borgmatic.service', NULL, 50, 'success', 0, 60);
@@ -238,7 +238,11 @@ describe("migration", () => {
       expect(reopened.polls("odin").map((poll) => poll.archive_count)).toEqual([3]);
       expect(reopened.archives("odin").map((archive) => archive.name)).toEqual(["odin-2026-10-01T03:00:00"]);
       expect(reopened.events({ repository: "odin" })).toMatchObject([{ target_id: "odin", host: "odin", job: "odin", message: "Backup started" }]);
-      expect(reopened.runs({ job: "odin" })).toMatchObject([{ id: 1, target_id: "odin", repository: "odin", task: null, kind: "backup" }]);
+      expect(reopened.runs({ job: "odin" })).toMatchObject([
+        { id: 2, kind: "prune", state: "failed", agent_run: null, error: expect.stringMatching(/^Lost: it was started over SSH/) },
+        { id: 1, target_id: "odin", repository: "odin", task: null, kind: "backup", state: "succeeded" },
+      ]);
+      expect(reopened.runs({ job: "odin" })[0]).not.toHaveProperty("pid");
       expect(reopened.run_output(1)).toEqual(["done"]);
       expect(reopened.timers().map((timer) => timer.host)).toEqual(["odin", "server"]);
       reopened.close();

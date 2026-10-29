@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   decode_chunk, encode_chunk, encode_message, is_run_id, parse_agent_message, parse_server_message, protocol_version,
-  type AgentMessage, type HealthSample, type ServerMessage,
+  type AgentMessage, type ServerMessage,
 } from "../../src/shared/agent_protocol.ts";
 import { check_url } from "../../src/agent/agent.ts";
 import { needed } from "../../src/server/auth.ts";
-import type { HostSample } from "../../src/server/host_health.ts";
 
 const server_messages: ServerMessage[] = [
   { type: "run", id: "r1", command: "echo hi", stdin: null, timeout_in_seconds: 5 },
@@ -67,11 +66,6 @@ describe("agent protocol", () => {
     for (const bad of ["", ".", "..", "../etc", "a/b", "a b", "x".repeat(129)]) expect(is_run_id(bad)).toBe(false);
   });
 
-  it("samples health in the shape the server keeps", () => {
-    const sample: HealthSample = { load1: 0.5, cpus: 4, memory_total: 8, memory_available: 4, disk_size: 100, disk_available: 50 };
-    const kept: HostSample = sample;
-    expect(kept).toBe(sample);
-  });
 });
 
 describe("agent URL", () => {

@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { AgentHub } from "../src/server/agents/hub.ts";
+import { AgentTokens } from "../src/server/agents/tokens.ts";
 import { build_app } from "../src/server/app.ts";
 import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
@@ -8,15 +10,21 @@ import { parse_config, type Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
 import { Store } from "../src/server/store.ts";
 import { code_at } from "../src/server/totp.ts";
+import { FakeAgent } from "./agents/fake_agent.ts";
 
 const LIST = JSON.stringify({ archives: [{ name: "a1", time: "2026-10-01T10:00:00" }] });
 
 const CONFIG: Config = {
   repositories: ["odin", "thor"].map((name) => ({
-    name, host: null, ssh_user: null, interval_in_seconds: 3600, borg: { repo: `/srv/${name}`, collect_stats: false, source_paths: ["/etc"] },
+    name, host: null, interval_in_seconds: 3600, borg: { repo: `/srv/${name}`, collect_stats: false, source_paths: ["/etc"] },
     source: "declared" as const,
   })),
 };
+
+// The agents of a store, with a fake built into the server for its own host.
+function agent_hub(store: Store): AgentHub {
+  return new AgentHub(new AgentTokens(store), { local: { host: "local", agent: new FakeAgent() } });
+}
 
 let app: FastifyInstance;
 let store: Store;
@@ -24,7 +32,7 @@ let poller: Poller;
 
 beforeEach(async () => {
   store = new Store(":memory:");
-  poller = new Poller(CONFIG, store, async (_target, command) => cmd_result(0, command.includes("list") ? LIST : "4242\n", ""));
+  poller = new Poller(CONFIG, store, agent_hub(store), async (_host, command) => cmd_result(0, command.includes("list") ? LIST : "", ""));
   app = await build_app({
     serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store,
     proxy: { header: "x-remote-user", trusted: new Set(["127.0.0.1"]) },
@@ -73,6 +81,9 @@ describe("roles", () => {
 
     expect((await call("POST", "/api/repositories/odin/actions/run_backup", operator)).json().success).toBe(true);
     expect((await call("GET", "/api/users", operator)).statusCode).toBe(403);
+    expect((await call("GET", "/api/hosts", operator)).statusCode).toBe(200);
+    expect((await call("POST", "/api/hosts/local/token", operator)).statusCode).toBe(403);
+    expect((await call("DELETE", "/api/hosts/local/token", operator)).statusCode).toBe(403);
     const events = (await call("GET", "/api/events?repository=odin", operator)).json();
     expect(events.some((event: { message: string }) => event.message === "otto asked for run backup")).toBe(true);
   });
@@ -117,7 +128,7 @@ describe("repository access", () => {
       sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "media", host: "thor", source_paths: ["/srv/media"] }],
       jobs: [{ name: "nightly", sources: ["home", "media"], repositories: ["vault"] }],
     }), "test.json");
-    poller = new Poller(config, store, async (_target, command) => cmd_result(0, command.includes("list") ? LIST : "4242\n", ""));
+    poller = new Poller(config, store, agent_hub(store), async (_host, command) => cmd_result(0, command.includes("list") ? LIST : "", ""));
     app = await build_app({ serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store });
     const admin = await login("admin", "declared admin pass");
     await call("POST", "/api/repositories/nightly:thor:vault/actions/run_backup", admin);

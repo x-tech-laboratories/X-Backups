@@ -18,7 +18,7 @@ import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
 import { host_name, type Poller, type Watched } from "./poller.ts";
-import { ConfigError, default_settings, field_list, target_key, type Config } from "./config.ts";
+import { ConfigError, default_settings, field_list, is_own_host, target_key, type Config, type HostKind } from "./config.ts";
 import { mask, type ConfigSources } from "./sources.ts";
 import type { Change, RunRow, Store } from "./store.ts";
 
@@ -38,7 +38,7 @@ export interface app_options {
   sources?: ConfigSources;
   // What the map calls this machine, where repositories without a host are; the system's hostname unless set.
   server_name?: string;
-  // The agents commands run through, reached on /api/agent.
+  // The agents commands run through, reached on /api/agent; the poller's own unless given.
   agents?: AgentHub;
 }
 
@@ -114,6 +114,7 @@ export function retry_action(kind: string): [action_id: string, body: ActionBody
 export async function build_app(options: app_options): Promise<FastifyInstance> {
   const app = fastify({ logger: options.logger });
   const { poller, store, sources } = options;
+  const agents = options.agents ?? poller.agents;
 
   const accounts = new Accounts(store, { name: options.admin_name ?? "admin", password_hash: options.password_hash });
   // A grant names a target by its id or by its repository's name, so a grant on a repository covers every target writing there.
@@ -125,7 +126,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     visible(request, repository === null ? grant_names(target_id) : [target_id, repository]);
 
   register_auth(app, { accounts, oidc: options.oidc, proxy: options.proxy, grant_names });
-  if (options.agents) await register_agent_route(app, options.agents);
+  await register_agent_route(app, agents);
 
   // The repositories this viewer sees.
   const watched_by = (request: FastifyRequest): Watched[] =>
@@ -150,7 +151,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return watched;
   };
 
-  // Runs what an action asked for, or hands back its answer when it needs no command.
+  // Runs what an action asked for, or starts its long run, or hands back its answer when it needs no command.
   const settle = async (id: string, start: ActionStart): Promise<CollectResult> =>
     start instanceof CollectResult ? start : poller.run_action(id, start);
 
@@ -313,10 +314,10 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Params: { id: string } }>("/api/repositories/:id/config", async (request, reply) => {
     const watched = find(request.params.id, reply);
     if (watched === null) return reply;
-    const { name, host, ssh_user, interval_in_seconds, borg, source } = watched.config;
+    const { name, host, interval_in_seconds, borg, source } = watched.config;
     // A job's target has no entry of its own, so it shows its built fields and is changed through its entities.
     const written = sources?.entry(name) ?? null;
-    const fields = written ?? mask({ name, host, ssh_user, interval: interval_in_seconds, ...borg });
+    const fields = written ?? mask({ name, host, interval: interval_in_seconds, ...borg });
     const may_edit = Boolean(sources?.editable) && has_role(request.viewer!.role, "admin");
     return { source, editable: may_edit && source === "page" && written !== null, config_mode: sources?.mode ?? "declarative", fields };
   });
@@ -430,7 +431,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     if (!run || !watched) return reply.code(404).send({ error: "No such run." });
     if (watched.repository.runs?.running()?.id !== run.id) return reply.code(409).send({ error: "That run is not going." });
     note_actor(request, run.target_id, `cancelled ${run.kind} #${run.id}`);
-    return outcome(run.target_id, await settle(run.target_id, watched.repository.cancel_run()));
+    return outcome(run.target_id, await poller.cancel_run(run.target_id));
   });
 
   // Runs a finished run's action again, as if its button had been pressed.
@@ -450,6 +451,62 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get("/api/timers", async (request) => {
     const hosts = new Set(watched_by(request).map(host_name));
     return store.timers().filter((timer) => hosts.has(timer.host));
+  });
+
+  // ── Hosts ────────────────────────────────────────────────────────────────
+
+  // The hosts a viewer sees: every one for a viewer of every target, else those its targets run on or are stored on.
+  const visible_hosts = (request: FastifyRequest): Set<string> | null => {
+    if (granted(request) === undefined) return null;
+    const names = new Set<string>();
+    for (const watched of watched_by(request)) {
+      names.add(host_name(watched));
+      const repository = poller.entities?.repositories.find((item) => item.name === target_key(watched.config).repository);
+      if (repository !== undefined) names.add(repository.host);
+    }
+    return names;
+  };
+
+  // Each configured host with its agent's connection, its enrolment and its newest health reading.
+  app.get("/api/hosts", async (request) => {
+    const shown = visible_hosts(request);
+    const enrolments = new Map(agents.enrolments().map((enrolment) => [enrolment.host, enrolment]));
+    const samples = new Map(store.latest_host_samples().map(({ host, ...sample }) => [host, sample]));
+    return configured_hosts(poller).filter((host) => shown === null || shown.has(host.name)).map((host) => {
+      const status = agents.status(host.name);
+      const enrolment = enrolments.get(host.name);
+      const remote = status !== null && !status.built_in;
+      return {
+        name: host.name,
+        kind: host.kind,
+        address: host.address,
+        connected: status !== null,
+        built_in: status?.built_in ?? false,
+        agent_version: status?.agent_version ?? null,
+        reported_host: status?.reported_host ?? null,
+        connected_epoch: remote ? status.connected_epoch : null,
+        enrolled: enrolment !== undefined,
+        last_seen_epoch: remote ? Math.floor(Date.now() / 1000) : enrolment?.last_seen_epoch ?? null,
+        health: samples.get(host.name) ?? null,
+      };
+    });
+  });
+
+  // Issues the host's agent a new token, shown this once; an agent still using the old one is hung up on.
+  app.post<{ Params: { name: string } }>("/api/hosts/:name/token", async (request, reply) => {
+    const host = configured_hosts(poller).find((item) => item.name === request.params.name);
+    if (host === undefined) return reply.code(404).send({ error: `No host '${request.params.name}'.` });
+    if (host.kind !== "managed") return reply.code(409).send({ error: `Host '${host.name}' is storage-only, so it runs no agent.` });
+    if (host.own) return reply.code(409).send({ error: `Host '${host.name}' is this server, whose agent is built in.` });
+    return reply.code(201).send({ host: host.name, token: agents.issue_token(host.name) });
+  });
+
+  app.delete<{ Params: { name: string } }>("/api/hosts/:name/token", async (request, reply) => {
+    if (!agents.enrolments().some((enrolment) => enrolment.host === request.params.name)) {
+      return reply.code(404).send({ error: `Host '${request.params.name}' has no token.` });
+    }
+    agents.revoke(request.params.name);
+    return reply.code(204).send();
   });
 
   app.get<{ Querystring: { since?: string } }>("/api/hosts/samples", async (request) => {
@@ -521,6 +578,15 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// The hosts the config names, or for a config built by hand the hosts its targets run on; own is this server's.
+function configured_hosts(poller: Poller): { name: string; kind: HostKind; address: string | null; own: boolean }[] {
+  if (poller.entities !== null) {
+    return poller.entities.hosts.map((host) => ({ name: host.name, kind: host.kind, address: host.address, own: is_own_host(host) }));
+  }
+  const names = [...new Set([...poller.repositories.values()].map(host_name))];
+  return names.map((name) => ({ name, kind: "managed" as const, address: null, own: poller.agents.status(name)?.built_in ?? false }));
+}
 
 // A run as the page shows it, with whether it can be run again.
 function with_retry(run: RunRow) {

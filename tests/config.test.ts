@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
-import { load_config, parse_config } from "../src/server/config.ts";
+import { load_config, own_host, parse_config } from "../src/server/config.ts";
 
 const example_file = fileURLToPath(new URL("../config.example.json", import.meta.url));
 
@@ -13,8 +13,8 @@ describe("config loading", () => {
     const config = load_config(example_file);
 
     expect(config.repositories.map((repository) => repository.name)).toEqual(["local", "nightly:fileserver:offsite"]);
-    expect(config.repositories[0]).toMatchObject({ host: null, ssh_user: null, borg: { max_age: "2d" } });
-    expect(config.repositories[1]).toMatchObject({ host: "fileserver.example.org", ssh_user: "backup", interval_in_seconds: 3600 });
+    expect(config.repositories[0]).toMatchObject({ host: null, borg: { max_age: "2d" } });
+    expect(config.repositories[1]).toMatchObject({ host: "fileserver.example.org", interval_in_seconds: 3600 });
   });
 
   it("keeps borg settings apart from its own", () => {
@@ -38,9 +38,31 @@ describe("config loading", () => {
     expect(() => parse_repositories([{ name: "nas", repo: "/b", max_age: "soon" }])).toThrow("Repository 'nas': max_age must be a duration");
     expect(() => parse_repositories([{ name: "nas", repo: "/b", alow_delete: true }])).toThrow("Repository 'nas': unknown field 'alow_delete'");
     expect(() => parse_repositories([{ name: "nas", repo: "/b", require_sudo: "yes" }])).toThrow("require_sudo must be true or false");
-    expect(() => parse_repositories([{ name: "nas", repo: "/b", ssh_user: "backup" }])).toThrow("ssh_user is set without a host");
     expect(() => parse_repositories([{ name: "nas", repo: "/b", interval: 0 }])).toThrow("interval must be longer than zero");
     expect(() => parse_repositories([{ name: "nas" }])).toThrow("Repository 'nas': repo is required");
+  });
+
+  it("accepts ssh_user in a flat entry, where it named the SSH login, and uses it for nothing", () => {
+    const [repository] = parse_repositories([{ name: "nas", host: "nas.lan", ssh_user: "backup", repo: "/b" }]).repositories;
+
+    expect(repository).not.toHaveProperty("ssh_user");
+    expect(repository.borg).not.toHaveProperty("ssh_user");
+  });
+
+  it("tells a host still setting ssh_user that the agent replaces SSH", () => {
+    const document = { hosts: [{ name: "nas", address: "nas.lan", ssh_user: "backup" }], repositories: [] };
+
+    expect(() => parse_config(JSON.stringify(document), "test.json")).toThrow(
+      "Host 'nas': ssh_user is no longer used: X-Backups reaches each managed host through the agent it runs, which replaces SSH.",
+    );
+  });
+
+  it("lets only one managed host leave out address, since that one is this server", () => {
+    const document = { hosts: [{ name: "server" }, { name: "nas" }, { name: "vault", kind: "storage-only" }], repositories: [] };
+
+    expect(() => parse_config(JSON.stringify(document), "test.json")).toThrow("Hosts 'server' and 'nas' both leave out address");
+    expect(own_host(parse_config(JSON.stringify({ hosts: [{ name: "server" }], repositories: [] }), "test.json").entities)).toBe("server");
+    expect(own_host(parse_repositories([{ name: "nas", repo: "/b" }]).entities)).toBe("local");
   });
 
   it("names the position when the name itself is bad", () => {

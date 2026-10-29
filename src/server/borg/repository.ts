@@ -1,10 +1,11 @@
-// One borg repository watched and driven over a shell on its host, with borg 1 or borg 2 as borg_version says.
+// One borg repository watched and driven over a shell on its host's agent, with borg 1 or borg 2 as borg_version says.
 //
 // Each poll lists the archives as JSON, plus `borg info --json` when collect_stats is on, each as its own command; they run
 // one after another so the calls never fight over borg's cache lock. A borg error, an empty repo, or a newest archive older than max_age is
 // failed; an unreachable host, a missing borg, an unreadable repo, a lock borg gave up on, or unparseable output is
 // unavailable. Optional extras are a restore canary, check freshness read from systemd units or tracked per kind, and
-// actions that back up, browse, restore, download, diff, check, compact, prune, delete and purge, the last ones as detached runs.
+// actions that back up, browse, restore, download, diff, check, compact, prune, delete and purge, the last ones as long runs
+// the agent keeps going on its own.
 
 import { readFileSync } from "node:fs";
 
@@ -12,18 +13,18 @@ import {
   CHECK_KINDS, TRACKED_CHECKS, canary_verdict, check_run_kind, check_unit_script, covered_by_check_run,
   merge_unit, observed_unit, parse_check_units, type CheckState,
 } from "./checks.ts";
-import { cancel_command, launch_command, parse_launch, parse_poll, poll_command, split_job_output, workdir_for } from "./detached.ts";
 import { format_age, format_duration, parse_duration } from "./durations.ts";
 import {
   LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, diff_line, format_size, is_object, parse_diff,
-  parse_listing, parse_size, type ArchiveEntry, type DiffChange, type ListingEntry,
+  parse_listing, parse_size, split_run_output, type ArchiveEntry, type DiffChange, type ListingEntry,
 } from "./parsing.ts";
 import {
-  BASE_DIR_VAR, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
+  BASE_DIR_VAR, INHIBIT_SCRIPT, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
   redact, shell_quote, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_passphrase, with_preflight, wrap_job,
 } from "./shell.ts";
+import type { LongRunPoll } from "../../shared/agent_protocol.ts";
 import {
-  ActionPlan, CollectResult, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
+  ActionPlan, CollectResult, LongRunPlan, empty_state, type ActionStart, type CanaryRecord, type ChecksRecord, type CmdResult, type Command,
   type DownloadPlan, type RunRecord, type RunStore, type LogEntry, type MonitorStatus, type RepositoryState, type RepositoryStats,
   type StorageRecord,
 } from "./types.ts";
@@ -109,6 +110,9 @@ const LISTING_CACHE = 256;
 
 // How many archives' diffs are kept for the archive page before forgetting the least recently used.
 const DIFF_CACHE = 16;
+
+// What a run shows while its host's agent is away; the run keeps going on the host and is followed again on reconnect.
+export const WAITING_FOR_AGENT = "Waiting for its host's agent to connect";
 
 // ── Action shapes ────────────────────────────────────────────────────────────
 
@@ -212,7 +216,6 @@ export class BorgRepository {
   repository_actions_on: string | null;
 
   poll_calls: string[] = [];
-  private polling_run: RunRecord | null = null;
   // Archives never change once written, so a folder listed once stays true until the archive is deleted.
   private listings = new Map<string, CachedListing>();
   // Each diffed pair's changes, keyed by both names since a prune can change the archive before one.
@@ -439,13 +442,9 @@ export class BorgRepository {
 
   // ── Polling ────────────────────────────────────────────────────────────────
 
+  // A poll's borg calls; while a run is going, its owner follows the run on its agent instead.
   commands(): Command[] {
-    // While a run is going, the cycle polls it instead of listing the repo.
-    const run = this.active_run();
-    // parse() must read results the way they were asked for, even if a run starts or ends mid-cycle.
-    this.polling_run = run;
     const timeout = this.timeout || null;
-    if (run !== null) return [{ text: poll_command(run.workdir!, run.pid!, run.output_seq), timeout, stdin: null }];
     if (!this.repo) return [];
     const plan = this.poll_plan();
     this.poll_calls = plan.map(([name]) => name);
@@ -453,16 +452,13 @@ export class BorgRepository {
     return plan.map(([name, text]) => name === "space" ? { text, timeout, stdin: null } : { text: with_passphrase(text), timeout, stdin: this.stdin_for([text]) });
   }
 
-  private active_run(): RunRecord | null {
+  // The run going now that its agent knows of, which a poll follows in place of listing the repository.
+  active_run(): RunRecord | null {
     const run = this.runs ? this.runs.running() : null;
-    return run && run.pid && run.workdir ? run : null;
+    return run && run.agent_run ? run : null;
   }
 
   parse(results: CmdResult[]): CollectResult {
-    const run = this.polling_run;
-    this.polling_run = null;
-    if (run !== null) return this.parse_run_poll(run, results[0]);
-
     if (!this.repo) return CollectResult.failed("No 'repo' configured for borg monitor");
 
     const names = this.poll_calls.length > 0 ? this.poll_calls : (this.collect_stats ? ["list", "info"] : ["list"]);
@@ -757,22 +753,24 @@ export class BorgRepository {
     return kinds.includes(run.kind) ? "accent" : "disabled";
   }
 
-  // Records a launched run from the pid its launch printed, or says why it was skipped or never started.
-  private read_launch(kind: string, redacted: string, workdir: string, started: string, result: CmdResult): CollectResult {
-    const skipped = result.exit_code === 0 ? skip_reason(result.stdout) : null;
-    if (skipped !== null) {
-      const message = `${capitalize(kind)} skipped: ${skipped}`;
-      return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
-    }
-
-    const pid = result.exit_code === 0 ? parse_launch(result.stdout) : null;
-    if (pid === null) {
+  // Says why a run was skipped from its preflight's output, or that the preflight could not run, or null to go ahead.
+  private read_preflight(kind: string, result: CmdResult): CollectResult | null {
+    if (result.exit_code !== 0) {
       return CollectResult.failed(`Failed to launch ${kind}: ${(result.stderr || result.stdout).trim().slice(0, 200)}`);
     }
+    const skipped = skip_reason(result.stdout);
+    if (skipped === null) return null;
+    const message = `${capitalize(kind)} skipped: ${skipped}`;
+    return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
+  }
 
-    const run_id = this.runs!.create(kind, redacted, workdir);
-    this.runs!.set_pid(run_id, pid);
-    const message = `${capitalize(kind)} started (pid ${pid})${started}`;
+  // Reports a run its agent started, or ends the run's record with why the agent could not start it.
+  private read_start(kind: string, started: string, run_id: number, failure: string | null): CollectResult {
+    if (failure !== null) {
+      this.runs!.finish(run_id, "failed", { exit_code: -1, error: `Could not start: ${failure}` });
+      return CollectResult.failed(`Failed to launch ${kind}: ${failure.slice(0, 200)}`);
+    }
+    const message = `${capitalize(kind)} started (run #${run_id})${started}`;
     return new CollectResult({ logs: [[message, "INFO"]], content: message, success: true });
   }
 
@@ -783,7 +781,7 @@ export class BorgRepository {
   }
 
   // An action outcome that reports a problem without touching the monitor's status.
-  private static refused(message: string): CollectResult {
+  static refused(message: string): CollectResult {
     return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: false });
   }
 
@@ -800,25 +798,27 @@ export class BorgRepository {
     return new ActionPlan(commands, read, { stdin: this.stdin_for(calls), detached: true });
   }
 
-  // Launches the command as a detached run, whose reader records the pid it prints.
-  private launch(kind: string, command: string, started = ""): ActionPlan {
-    const workdir = workdir_for(`${this.id}-${now_seconds()}`);
+  // Launches the command as a long run on the host's agent, after any preflight that may skip it.
+  private launch(kind: string, command: string, started = ""): LongRunPlan {
     const wrapped = wrap_job(command, this.run_wrappers(kind), this.job_lock);
-    const redacted = redact(wrapped);
-    return new ActionPlan(
-      [with_passphrase(with_preflight(this.preflight(), launch_command(wrapped, workdir)), { detached: true })],
-      ([result]) => this.read_launch(kind, redacted, workdir, started, result),
-      { stdin: this.stdin_for([command]) },
-    );
+    const preflight = this.preflight();
+    return new LongRunPlan({
+      kind,
+      preflight: preflight === null ? null : with_preflight(preflight, "true"),
+      command: with_passphrase(wrapped, { exported: true }),
+      stdin: this.stdin_for([command]),
+      read_preflight: (result) => this.read_preflight(kind, result),
+      record: () => this.runs!.create(kind, redact(wrapped)),
+      read_start: (run_id, failure) => this.read_start(kind, started, run_id, failure),
+    });
   }
 
-  // The argv every run goes under: the shared job lock, the sleep inhibitor, then the lowered priority.
+  // The argv every run goes under: the shared job lock, the sleep inhibitor where the host has one, then the lowered
+  // priority.
   private run_wrappers(kind: string): string[] {
     const argv: string[] = [];
     if (this.job_lock) argv.push("flock", this.job_lock);
-    if (this.inhibit_sleep) {
-      argv.push("systemd-inhibit", "--who=X-Backups", "--what=sleep:shutdown", `--why=X-Backups borg ${kind} for ${this.name}`);
-    }
+    if (this.inhibit_sleep) argv.push("sh", "-c", INHIBIT_SCRIPT, `X-Backups borg ${kind} for ${this.name}`);
     if (this.job_nice !== null) argv.push("nice", "-n", String(this.job_nice));
     if (this.job_io_idle) argv.push("ionice", "-c", "3");
     return argv;
@@ -1230,47 +1230,29 @@ export class BorgRepository {
     return this.diffs.get(diff_key(this.previous_archive(archive), archive)) ?? null;
   }
 
-  // ── Cancel ───────────────────────────────────────────────────────────────
-
-  cancel_run(): ActionStart {
-    const run = this.active_run();
-    if (run === null) return BorgRepository.refused("Nothing is running for this repository");
-    return this.run_one(cancel_command(run.pid!), (result) => this.read_cancel(run, result));
-  }
-
-  read_cancel(run: RunRecord, call: CmdResult): CollectResult {
-    if (call.exit_code !== 0) {
-      return BorgRepository.refused(`Could not cancel the ${run.kind}: ${(call.stderr || call.stdout).trim().slice(0, 200)}`);
-    }
-    this.runs!.finish(run.id, "cancelled", { error: "Cancelled" });
-    const message = `${capitalize(run.kind)} cancelled`;
-    return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
-  }
-
   // ── Following a run ────────────────────────────────────────────────────────
 
-  // Advances a run from one poll's output, finishing it once it has ended.
-  private parse_run_poll(run: RunRecord, result: CmdResult): CollectResult {
+  // Advances a run from what its agent reports, finishing it once it has ended and all its output is read.
+  read_run_poll(run: RunRecord, poll: LongRunPoll): CollectResult {
     const runs = this.runs!;
-    // A poll that never reached the host says nothing about the run; only a real answer may finish it.
-    if (result.exit_code !== 0 && !result.stdout.trim()) {
-      const reason = (result.stderr || "").trim().slice(0, 200) || `exit ${result.exit_code}`;
-      return new CollectResult({ logs: [[`Could not poll the running ${run.kind}: ${reason}`, "WARNING"]] });
-    }
-    const poll = parse_poll(result.stdout);
-
-    const [lines, consumed] = split_job_output(poll.new_output, poll.exit_code !== null || !poll.alive);
+    const ended = !poll.alive && poll.next_offset >= poll.size;
+    const [lines, consumed] = split_run_output(poll.new_output, ended);
     if (lines.length > 0) {
       runs.append_output(run.id, lines);
       runs.bump_output_seq(run.id, run.output_seq + consumed);
-      const summary = progress_from_lines(lines);
-      if (summary) runs.set_progress(run.id, summary);
     }
+    const summary = progress_from_lines(lines);
+    if (summary) runs.set_progress(run.id, summary);
+    else if (run.progress === WAITING_FOR_AGENT) runs.set_progress(run.id, null);
+    if (!ended) return new CollectResult();
 
-    if (poll.exit_code === null && poll.alive) return new CollectResult();
-
-    // The process vanished without an exit file, such as when the host rebooted mid-run.
     const kind = run.kind;
+    if (poll.state === "stopped") {
+      runs.finish(run.id, "cancelled", { exit_code: poll.exit_code, error: "Cancelled" });
+      const message = `${capitalize(kind)} cancelled`;
+      return new CollectResult({ logs: [[message, "WARNING"]], content: message, success: true });
+    }
+    // The process vanished without an exit code, such as when the host rebooted mid-run.
     if (poll.exit_code === null) {
       runs.finish(run.id, "failed", { exit_code: -1, error: "Process ended without writing an exit code" });
       return CollectResult.failed(`${capitalize(kind)} ended unexpectedly`);
@@ -1291,6 +1273,25 @@ export class BorgRepository {
     }
     this.record_check_run(kind, succeeded, exit_code, outcome);
     return outcome;
+  }
+
+  // A run whose agent could not be asked keeps going on its host, so it waits for the agent rather than failing, noted
+  // once as it starts waiting.
+  read_run_unreachable(run: RunRecord, reason: string): CollectResult {
+    if (run.progress === WAITING_FOR_AGENT) return new CollectResult();
+    this.runs!.set_progress(run.id, WAITING_FOR_AGENT);
+    return new CollectResult({ logs: [[`Could not poll the running ${run.kind}: ${reason.slice(0, 200)}`, "WARNING"]] });
+  }
+
+  // A run its agent no longer knows, as when the host's state folder was wiped, whose outcome nobody can tell.
+  read_run_lost(run: RunRecord, host: string): CollectResult {
+    this.runs!.finish(run.id, "failed", { exit_code: -1, error: `Lost: the agent on ${host} no longer knows this run, so its outcome is unknown.` });
+    return CollectResult.failed(`${capitalize(run.kind)} lost: the agent on ${host} no longer knows it`);
+  }
+
+  // A cancel the agent could not carry out, which leaves the run going.
+  read_cancel_failed(run: RunRecord, reason: string): CollectResult {
+    return BorgRepository.refused(`Could not cancel the ${run.kind}: ${reason.slice(0, 200)}`);
   }
 
   // Stores a finished Check's outcome against every tracked check it covers, so check_kinds can judge their age.
