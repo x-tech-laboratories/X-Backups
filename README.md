@@ -6,6 +6,9 @@ A web platform for managing borg backups, part of X-Tech Laboratories.
 
 - `src/server/` — the Fastify API, written in TypeScript and run directly by Node 24.
 - `src/server/borg/` — one borg repository: the shell commands it runs, how their output is read, and its actions.
+- `src/server/agents/` — the hub agents connect to, and the agent built in for the server's own machine.
+- `src/agent/` — the agent each managed host runs.
+- `src/shared/` — the messages the server and its agents exchange.
 - `src/web/` — the browser page, built by Vite into `dist/`.
 
 ## Development
@@ -117,6 +120,32 @@ services.x-backups = {
 Each repository takes the fields of a flat entry (see Config). Host keys come from
 `programs.ssh.knownHosts`. After changing `package-lock.json`, update `npmDepsHash` in
 `nix/package.nix` to the hash `nix build` reports.
+
+## Agents
+
+Each managed host runs the X-Backups agent, which dials out to the server's `/api/agent`
+WebSocket, so a host needs no open port and a laptop that sleeps reconnects when it wakes. It runs
+the commands the server sends, keeps long runs such as backups going across a dropped connection
+or its own restart, and samples the host's load, memory and disk. The server's own machine has an
+agent built in.
+
+To enrol a host, issue it a token on the server; the token is shown once and only its hash is
+kept. Put it in a file on the host and enable the flake's `nixosModules.agent`:
+
+```nix
+services.x-backups-agent = {
+  enable = true;
+  url = "wss://backups.example.org/api/agent";
+  tokenFile = "/run/secrets/x-backups-agent-token";
+};
+```
+
+The URL must be `wss://`, since the token and repository passphrases travel over it; the agent
+accepts `ws://` only to the machine it runs on. The agent runs as root unless `user` says
+otherwise, since borg must read every source, and has borg and borg 2 on its path. Outside NixOS,
+run `packages.agent` with `X_BACKUPS_AGENT_URL`, `X_BACKUPS_AGENT_TOKEN_FILE` and
+`X_BACKUPS_AGENT_STATE_DIR` set, and have the service manager stop only the agent's own process,
+so its long runs outlive it.
 
 ## Borg 2
 

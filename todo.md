@@ -637,6 +637,9 @@ and 56.
     health. The server enrols a host by issuing its token, built into the server for its own
     machine. Remove `src/server/runner.ts`'s SSH, `src/server/borg/detached.ts`'s `setsid` jobs and
     `sshKeyFile`.
+    Built: the agent, its protocol, the hub on `/api/agent` with token enrolment, the built-in
+    agent, `packages.agent` and `nixosModules.agent`. Left: wiring the hub into the poller and
+    actions in place of the runner, then removing SSH, `detached.ts` and `sshKeyFile`.
 66. [ ] **Scheduler.** Each task has a frequency (a duration or a calendar expression) with presets
     and a readable description, enable and disable, and Run now. X-Backups starts each due task on
     its agent, runs a missed one when the agent reconnects, and queues tasks that share a repository
