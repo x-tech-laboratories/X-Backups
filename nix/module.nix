@@ -44,6 +44,14 @@ let
   );
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "x-backups" "sshKeyFile" ] ''
+      X-Backups no longer logs in to hosts over SSH: each managed host runs the X-Backups agent
+      (nixosModules.agent), which dials the server with its own token. A key borg itself uses for
+      an ssh:// repository is the repository's ssh_key or rsh.
+    '')
+  ];
+
   options.services.x-backups = {
     enable = mkEnableOption "X-Backups, a web platform for managing borg backups";
 
@@ -146,16 +154,6 @@ in
       };
     };
 
-    sshKeyFile = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "/run/secrets/x-backups-ssh-key";
-      description = ''
-        Private key X-Backups logs in to repository hosts with. Host keys come from the system's
-        known hosts, so list each host in `programs.ssh.knownHosts`.
-      '';
-    };
-
     configMode = mkOption {
       type = types.enum [
         "declarative"
@@ -171,7 +169,8 @@ in
         replaces a page one of the same name.
 
         Anyone who can log in to a page that edits the config can make X-Backups run commands
-        (`rsh`, `borg_bin`, `passphrase_command`) as its service user on this machine and over SSH.
+        (`rsh`, `borg_bin`, `passphrase_command`) as its service user on this machine and on each
+        host through its agent.
       '';
     };
 
@@ -192,7 +191,6 @@ in
         {
           fileserver = {
             host = "fileserver.example.org";
-            ssh_user = "backup";
             repo = "ssh://borg@storage.example.org/./fileserver";
             passphraseFile = "/run/secrets/borg-fileserver";
             max_age = "1d";
@@ -237,6 +235,7 @@ in
       after = [ "network-online.target" ];
       restartTriggers = [ config_file ];
 
+      # Borg on this machine reaches an ssh:// repository through ssh.
       path = [
         pkgs.openssh
         pkgs.borgbackup
@@ -263,9 +262,6 @@ in
       // lib.optionalAttrs (cfg.proxyLogin.header != null) {
         X_BACKUPS_PROXY_USER_HEADER = cfg.proxyLogin.header;
         X_BACKUPS_TRUSTED_PROXIES = lib.concatStringsSep "," cfg.proxyLogin.trustedProxies;
-      }
-      // lib.optionalAttrs (cfg.sshKeyFile != null) {
-        X_BACKUPS_SSH_KEY_FILE = "${credentials_directory}/ssh-key";
       };
 
       serviceConfig = {
@@ -276,11 +272,13 @@ in
         LoadCredential = [
           "password-hash:${cfg.passwordHashFile}"
         ]
-        ++ lib.optional (cfg.sshKeyFile != null) "ssh-key:${cfg.sshKeyFile}"
         ++ lib.optional (cfg.oidc.issuer != null) "oidc-client-secret:${cfg.oidc.clientSecretFile}"
         ++ passphrase_credentials;
         Restart = "on-failure";
         RestartSec = "5s";
+        # A restart stops only the server, so the long runs its built-in agent started, such as a backup, carry on and
+        # are followed again from their output under the state directory.
+        KillMode = "process";
 
         CapabilityBoundingSet = "";
         LockPersonality = true;
