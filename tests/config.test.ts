@@ -12,9 +12,9 @@ describe("config loading", () => {
   it("loads the example file", () => {
     const config = load_config(example_file);
 
-    expect(config.repositories.map((repository) => repository.name)).toEqual(["fileserver", "local"]);
-    expect(config.repositories[0]).toMatchObject({ host: "fileserver.example.org", ssh_user: "backup", interval_in_seconds: 3600 });
-    expect(config.repositories[1]).toMatchObject({ host: null, ssh_user: null });
+    expect(config.repositories.map((repository) => repository.name)).toEqual(["local", "nightly:fileserver:offsite"]);
+    expect(config.repositories[0]).toMatchObject({ host: null, ssh_user: null, borg: { max_age: "2d" } });
+    expect(config.repositories[1]).toMatchObject({ host: "fileserver.example.org", ssh_user: "backup", interval_in_seconds: 3600 });
   });
 
   it("keeps borg settings apart from its own", () => {

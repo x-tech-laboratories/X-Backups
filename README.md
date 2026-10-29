@@ -42,6 +42,32 @@ State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `st
 `warning` or `critical`, the worst of the repositories', each listed with its reasons; it answers
 503 when critical, so a plain HTTP check alerts on that without reading the body.
 
+## Config
+
+`X_BACKUPS_CONFIG` names a JSON file of `hosts`, `repositories`, `sources` and `jobs`, as
+`config.example.json` shows:
+
+- A **host** is `managed` (X-Backups runs commands on it, at `address` with `ssh_user`, or on this
+  machine with no address) or `storage-only` (it only holds repositories reached by `borg serve`).
+  It holds `ssh_key`, `rsh`, `require_sudo`, `borg_bin`, `cache_dir` and the `job_*` and `skip_*`
+  settings.
+- A **repository** sits on a host, with its `repo` URL, passphrase, `quota`, `borg_version`, checks
+  and safety switches. `repo_by_host` gives a client host its own URL, and `poll_via` names the
+  managed host that polls a repository no job writes to.
+- A **source** is `source_paths` and its excludes on one managed host.
+- A **job** backs up `sources` to `repositories`, with retention, `compression`, `archive_prefix`
+  (the job's name by default), freshness ages and the restore canary.
+
+Each job builds one target per source host and repository, named `job:host:repository`. Sources on
+one host go into one archive named `{prefix}-{host}-{time}`, and prune and freshness read only the
+archives of that name, so targets sharing a repository stay apart. Compact and the repository check
+act on the whole repository, so only the target polling from `poll_via` offers them. A repository no
+job writes to is still watched, with its own `max_age`.
+
+A flat entry in `repositories`, holding every field at once with `host` as an SSH address, still
+loads: it expands into a host, a repository, a source and a job of its name, and keeps its name as
+its target and its archives' prefix.
+
 ## Users and access
 
 The password hash file logs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds
@@ -88,7 +114,7 @@ services.x-backups = {
 };
 ```
 
-Each repository takes the fields of a `config.example.json` entry. Host keys come from
+Each repository takes the fields of a flat entry (see Config). Host keys come from
 `programs.ssh.knownHosts`. After changing `package-lock.json`, update `npmDepsHash` in
 `nix/package.nix` to the hash `nix build` reports.
 
@@ -117,8 +143,8 @@ cannot open a borg 1 repository, so each repository keeps the version it was mad
 - `page`: the same, with `X_BACKUPS_CONFIG` optional.
 
 The page keeps its part in `config.json` under `X_BACKUPS_STATE_DIR`, and a passphrase typed there in
-`passphrases/<name>`, both readable only by X-Backups. A declared repository replaces a page one of
-the same name. A file's top-level `defaults` (the module's `defaults`) sets `interval`, `max_age`,
+`passphrases/<name>`, both readable only by X-Backups. A declared host, repository, source or job
+replaces a page one of the same kind and name, and one another entity names cannot be removed. A file's top-level `defaults` (the module's `defaults`) sets `interval`, `max_age`,
 `warn_age`, `check_max_age`, `check_warn_age`, `canary_max_age`, `canary_warn_age` and
 `browse_limit` for every repository that does not set its own.
 

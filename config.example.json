@@ -1,21 +1,33 @@
 {
+  "defaults": {
+    "interval": "1h",
+    "max_age": "1d"
+  },
+  "hosts": [
+    { "name": "fileserver", "address": "fileserver.example.org", "ssh_user": "backup", "require_sudo": true },
+    { "name": "storage", "kind": "storage-only", "address": "storage.example.org" },
+    { "name": "server" }
+  ],
   "repositories": [
     {
-      "name": "fileserver",
-      "host": "fileserver.example.org",
-      "ssh_user": "backup",
-      "interval": "1h",
+      "name": "offsite",
+      "host": "storage",
       "repo": "ssh://borg@storage.example.org/./fileserver",
-      "passphrase_file": "/run/secrets/borg-fileserver",
-      "max_age": "1d",
-      "require_sudo": true,
+      "passphrase_file": "/run/secrets/borg-offsite",
       "check_units": ["borgmatic-check.service"]
     },
     {
       "name": "local",
+      "host": "server",
       "repo": "/srv/backups/local",
       "passphrase_file": "/run/secrets/borg-local",
       "max_age": "2d"
     }
+  ],
+  "sources": [
+    { "name": "fileserver-data", "host": "fileserver", "source_paths": ["/srv/data", "/etc"], "exclude": ["*.tmp"] }
+  ],
+  "jobs": [
+    { "name": "nightly", "sources": ["fileserver-data"], "repositories": ["offsite"], "keep_daily": 7, "keep_weekly": 4 }
   ]
 }

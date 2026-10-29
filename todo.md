@@ -618,12 +618,16 @@ Decided on 2026-10-29: the entity model above, with agents in place of SSH and X
 every backup itself. Take these in order; each lands on its own branch. They replace tasks 4, 49
 and 56.
 
-63. [ ] **Entity config.** `hosts`, `repositories`, `sources` and `jobs` sections in the config file
+63. [x] **Entity config.** `hosts`, `repositories`, `sources` and `jobs` sections in the config file
     and the page's `config.json`, each checked and cross-referenced, with the declared-shadows-page
     rule per entity. A flat entry of today's shape still loads, expanded into one of each. Every
     `BorgConfig` field moves to the entity it describes. Each job expands into targets, and each
     target builds the `BorgRepository` the poller and actions already use. Archive names become
     `{job}-{host}-{time}` so prune and freshness can tell targets apart.
+    Built in `src/server/config.ts`, which compiles the entities into targets named
+    `job:host:repository`, each listing and pruning only `{job}-{host}-????-??-??T*`; a flat entry keeps
+    its name as its target and its archive prefix. `ConfigSources` saves and deletes each kind with
+    `save_entity` and `delete_entity`, and the map places targets by the configured hosts.
 64. [ ] **Store and runs.** Key state, polls, archives and events by target, with host, job and
     repository ids beside. Rename the `jobs` table, `/api/jobs` and the Jobs page to runs, each run
     with its task and target. Old rows move to the targets their flat entries expand into.
