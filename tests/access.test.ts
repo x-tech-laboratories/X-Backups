@@ -99,6 +99,7 @@ describe("repository access", () => {
     const limited = await add_user(admin, "lena", "operator", ["odin"]);
 
     expect((await call("GET", "/api/repositories", limited)).json().map((repository: { id: string }) => repository.id)).toEqual(["odin"]);
+    expect((await call("GET", "/api/map", limited)).json().repositories.map((repository: { id: string }) => repository.id)).toEqual(["odin"]);
     expect((await call("GET", "/api/repositories/thor", limited)).statusCode).toBe(404);
     expect((await call("POST", "/api/repositories/thor/actions/run_backup", limited)).statusCode).toBe(404);
     expect((await call("GET", "/api/jobs", limited)).json()).toEqual([]);

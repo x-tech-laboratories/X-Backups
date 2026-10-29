@@ -2,12 +2,14 @@
 
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
+import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import { register_auth, visible, type ProxyLogin } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
+import { backup_map } from "./map.ts";
 import { metrics_text } from "./metrics.ts";
 import type { OidcClient } from "./oidc.ts";
 import { browser_rows } from "./borg/parsing.ts";
@@ -32,6 +34,8 @@ export interface app_options {
   store: Store;
   // Where the config comes from; without it the config is the poller's own and read-only.
   sources?: ConfigSources;
+  // What the map calls this machine, where repositories without a host are; the system's hostname unless set.
+  server_name?: string;
 }
 
 interface ActionBody {
@@ -275,6 +279,18 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     if (cached !== null) return { success: true, content: null, ...cached };
     const result = await settle(watched.repository.id, watched.repository.diff_archive(archive || null));
     return { success: result.success, content: result.content, ...(watched.repository.diff(archive) ?? { changes: [], more: false }) };
+  });
+
+  // Which host's folders each repository backs up and where it is stored, with each repository's health.
+  app.get("/api/map", async (request) => {
+    const shown = watched_by(request);
+    const map = backup_map(shown.map(({ repository, config }) => ({
+      id: repository.id, name: repository.name, host: config.host, repo: repository.repo, source_paths: repository.source_paths,
+    })), options.server_name ?? hostname());
+    return {
+      ...map,
+      repositories: map.repositories.map((placed, index) => ({ ...summary(shown[index]), ...placed, retention: shown[index].repository.retention })),
+    };
   });
 
   // The repository's settings as declared, with secrets shown only as set.

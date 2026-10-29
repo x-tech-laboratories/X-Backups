@@ -666,6 +666,40 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
 .chart a .lane-label { fill: var(--accent); }
 .meter-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background-color: var(--text-tertiary); }
 
+/* ── Map: hosts as boxes, a line per folder a repository backs up ─────────── */
+
+.flow-map-frame { padding: 0; overflow: hidden; }
+.flow-map-frame svg.flow-map { max-height: 75vh; cursor: grab; touch-action: none; user-select: none; }
+.flow-map.panning { cursor: grabbing; }
+.map-tone-ok { --tone: var(--text-tertiary); }
+.map-tone-warning { --tone: var(--status-warning); }
+.map-tone-critical { --tone: var(--status-danger); }
+.map-tone-running { --tone: var(--accent); }
+.map-host { fill: var(--surface-secondary); stroke: var(--border-default); }
+.map-host-name { fill: var(--text-heading); font-size: var(--text-prose); font-weight: 600; }
+.map-group { fill: var(--text-tertiary); font-size: var(--text-label); letter-spacing: var(--letter-spacing-caps); text-transform: uppercase; }
+.map-node rect { fill: var(--surface-default); stroke: var(--border-hover); }
+.map-node:focus { outline: none; }
+.map-node:focus-visible rect { stroke: var(--border-focus); stroke-width: 2; }
+.map-repository rect { stroke: var(--tone); }
+.map-repository:hover rect { stroke-width: 2; }
+.map-dot { fill: var(--tone); }
+.map-tone-ok .map-dot { fill: var(--status-success); }
+.map-name { fill: var(--accent); font-size: var(--text-control); font-weight: 600; }
+.map-path { fill: var(--text-body); font-family: var(--font-family-monospace); font-size: var(--text-caption); }
+.map-detail { fill: var(--text-secondary); font-size: var(--text-label); }
+.flow { fill: none; stroke: var(--tone); stroke-width: 1.75; opacity: .75; transition: opacity var(--duration-fast); }
+.flow.map-tone-running { stroke-dasharray: 6 4; animation: map-flow 1s linear infinite; }
+@keyframes map-flow { to { stroke-dashoffset: -10; } }
+.flow-map.focused .flow:not(.lit) { opacity: .12; }
+.flow-map.focused .map-node:not(.lit) { opacity: .45; }
+.flow.lit { stroke-width: 2.5; opacity: 1; }
+.flow-map-legend { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); margin-top: var(--space-4); }
+.map-swatch-ok { --swatch: var(--text-tertiary); }
+.map-swatch-warning { --swatch: var(--status-warning); }
+.map-swatch-critical { --swatch: var(--status-danger); }
+.map-swatch-running { --swatch: var(--accent); }
+
 /* ── States ───────────────────────────────────────────────────────────────── */
 
 .skeleton { display: grid; gap: var(--space-4); padding: var(--space-2) 0; }

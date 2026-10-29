@@ -142,6 +142,16 @@ describe("repositories", () => {
     expect(odin).toMatchObject({ id: "odin", archive_count: 2, running_job: null });
   });
 
+  it("maps a repository without a host onto this server, from its sources", async () => {
+    await poller.poll("odin");
+
+    const map = (await get("/api/map")).json();
+
+    const [server] = map.hosts;
+    expect(map.sources).toEqual([{ id: `${server.id}:/etc`, host: server.id, path: "/etc" }]);
+    expect(map.repositories).toMatchObject([{ id: "odin", stored_on: server.id, path: "/srv/repo", sources: [`${server.id}:/etc`], archive_count: 2, level: "critical" }]);
+  });
+
   it("shows one repository with its archives and actions", async () => {
     await poller.poll("odin");
 

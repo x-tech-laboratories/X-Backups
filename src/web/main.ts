@@ -8,6 +8,7 @@ import { can, forget_me, load_me } from "./session.ts";
 import { apply, next_theme, theme_choice, type Theme } from "./theme.ts";
 import { archive_view } from "./views/archive.ts";
 import { job_view, jobs_view } from "./views/jobs.ts";
+import { map_view } from "./views/map.ts";
 import { new_repository_view } from "./views/new_repository.ts";
 import { overview_view } from "./views/overview.ts";
 import { events_view, schedules_view, settings_view } from "./views/pages.ts";
@@ -34,6 +35,7 @@ function view_for(parts: string[]): View {
   if (section === "repositories" && id && tab === "archives" && archive) return archive_view(id, archive);
   if (section === "repositories" && id) return repository_view(id, tab ?? "overview");
   if (section === "repositories") return repositories_view();
+  if (section === "map") return map_view();
   if (section === "jobs" && id) return job_view(Number(id));
   if (section === "jobs") return jobs_view();
   if (section === "schedules") return schedules_view();

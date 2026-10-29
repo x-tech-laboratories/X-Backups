@@ -82,6 +82,22 @@ export interface RepositoryDetail extends RepositorySummary {
   actions: Action[];
 }
 
+// Which host's folders each repository backs up and which host stores it, as the repositories' config says.
+export interface BackupMap {
+  hosts: { id: string; name: string }[];
+  sources: { id: string; host: string; path: string }[];
+  repositories: MapRepository[];
+}
+
+export interface MapRepository extends RepositorySummary {
+  // The host whose disk holds the repository, and its folder there.
+  stored_on: string;
+  path: string;
+  // The source ids it backs up; none for a repository that is only watched.
+  sources: string[];
+  retention: Record<string, number | string>;
+}
+
 // A download in progress, which holds the repository's lock while it runs.
 export interface DownloadRecord {
   id: number;
