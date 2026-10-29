@@ -485,7 +485,19 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 
   // In production the server also hands out the built web page.
   if (options.serve_web && existsSync(web_build_directory)) {
-    await app.register(fastify_static, { root: web_build_directory });
+    // The Nix store dates every file to 1970, and a rebuilt index.html keeps its size, so the default
+    // size-and-mtime ETag never changes and a browser keeps the old page naming bundles now gone.
+    // The page is fetched whole each time; the bundles carry a content hash, so they never change.
+    await app.register(fastify_static, {
+      root: web_build_directory,
+      etag: false,
+      lastModified: false,
+      cacheControl: false,
+      setHeaders: (reply, path) => {
+        const immutable = path.includes("/assets/");
+        void reply.header("cache-control", immutable ? "public, max-age=31536000, immutable" : "no-cache, no-store");
+      },
+    });
   }
 
   return app;
