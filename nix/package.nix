@@ -23,7 +23,7 @@ buildNpmPackage {
   };
 
   nodejs = nodejs_24;
-  npmDepsHash = "sha256-P98HEglsnmZ+z+DPOueLt7JSJjhYt9j0IIr9M4hYwWM=";
+  npmDepsHash = "sha256-wBcSASIbMmAgBFpfCjImzEoogBOq5/djay/MpbAiy/U=";
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -35,7 +35,7 @@ buildNpmPackage {
 
     mkdir -p $out/lib/x-backups/src
     cp -r package.json dist node_modules $out/lib/x-backups/
-    cp -r src/server $out/lib/x-backups/src/
+    cp -r src/server src/agent src/shared $out/lib/x-backups/src/
 
     makeWrapper ${lib.getExe nodejs_24} $out/bin/x-backups \
       --add-flags $out/lib/x-backups/src/server/main.ts \

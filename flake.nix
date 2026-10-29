@@ -13,10 +13,12 @@
       in
       {
         packages.default = pkgs.callPackage ./nix/package.nix { };
+        packages.agent = pkgs.callPackage ./nix/agent-package.nix { };
         packages.borg2 = pkgs.callPackage ./nix/borg2.nix { };
         devShells.default = import ./shell.nix { inherit pkgs; };
       }
     ) // {
       nixosModules.default = import ./nix/module.nix self;
+      nixosModules.agent = import ./nix/agent-module.nix self;
     };
 }
