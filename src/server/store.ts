@@ -222,6 +222,12 @@ const SCHEMA = `
     created_epoch INTEGER NOT NULL,
     last_used_epoch INTEGER
   );
+  CREATE TABLE IF NOT EXISTS agent_tokens (
+    host TEXT PRIMARY KEY,
+    hash TEXT NOT NULL UNIQUE,
+    created_epoch INTEGER NOT NULL,
+    last_seen_epoch INTEGER
+  );
 `;
 
 // ── Store ────────────────────────────────────────────────────────────────────

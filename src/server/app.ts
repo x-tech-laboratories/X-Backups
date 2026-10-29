@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
+import type { AgentHub } from "./agents/hub.ts";
+import { register_agent_route } from "./agents/route.ts";
 import { register_auth, visible, type ProxyLogin } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
 import { backup_map, map_entry } from "./map.ts";
@@ -36,6 +38,8 @@ export interface app_options {
   sources?: ConfigSources;
   // What the map calls this machine, where repositories without a host are; the system's hostname unless set.
   server_name?: string;
+  // The agents commands run through, reached on /api/agent.
+  agents?: AgentHub;
 }
 
 interface ActionBody {
@@ -109,6 +113,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 
   const accounts = new Accounts(store, { name: options.admin_name ?? "admin", password_hash: options.password_hash });
   register_auth(app, { accounts, oidc: options.oidc, proxy: options.proxy });
+  if (options.agents) await register_agent_route(app, options.agents);
 
   // The repositories this viewer sees.
   const watched_by = (request: FastifyRequest): Watched[] =>

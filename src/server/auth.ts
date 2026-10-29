@@ -53,7 +53,8 @@ const session_lifetime_ms = 12 * 60 * 60 * 1000;
 const failures_allowed = 5;
 const lockout_ms = 5 * 60 * 1000;
 
-const open_routes = new Set(["/api/health", "/api/login", "/api/auth/info", "/api/auth/oidc/start", "/api/auth/oidc/callback"]);
+// Reached without a login; an agent proves itself with its own token instead.
+const open_routes = new Set(["/api/health", "/api/agent", "/api/login", "/api/auth/info", "/api/auth/oidc/start", "/api/auth/oidc/callback"]);
 const any_viewer_routes = new Set(["/api/logout", "/api/me"]);
 
 // Reading what is inside an archive shows backed-up data, so it needs an operator like restoring does.

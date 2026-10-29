@@ -283,7 +283,7 @@ function user_row(row: Record<string, unknown>): User {
   };
 }
 
-function digest(text: string): string {
+export function digest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
