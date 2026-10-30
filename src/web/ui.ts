@@ -1,6 +1,6 @@
 // The page's building blocks: badges, dialogs, toasts, tabs, tables, filters, and the loading, empty and error states.
 
-import { LoginNeeded, type RunState, type Level, type Status } from "./api.ts";
+import { LoginNeeded, type EventLevel, type Level, type Run, type RunState, type Status } from "./api.ts";
 import { h, nodes, type Child } from "./dom.ts";
 
 // ── Badges ───────────────────────────────────────────────────────────────────
@@ -30,9 +30,25 @@ export function run_badge(state: RunState): HTMLElement {
   return h("span", { class: `badge tone-${run_tones[state]}` }, state);
 }
 
-const level_tones: Record<Level, string> = { INFO: "none", WARNING: "warn", ERROR: "bad" };
+// A run's state, or what keeps it from going: waiting for its host's agent, or lost when the agent no longer knew it.
+export function run_state_badge(run: Pick<Run, "state" | "condition">): HTMLElement {
+  if (run.condition === "waiting_for_agent") return h("span", { class: "badge tone-warn", title: "Its host's agent is away; the run carries on there and is followed again when it connects" }, "waiting for agent");
+  if (run.condition === "lost") return h("span", { class: "badge tone-bad", title: "The agent no longer knew this run, so its outcome is unknown" }, "lost");
+  return run_badge(run.state);
+}
 
-export function level_badge(level: Level): HTMLElement {
+const health_labels: Record<Level, [text: string, tone: string]> = { ok: ["OK", "good"], warning: ["Warning", "warn"], critical: ["Failing", "bad"] };
+
+// How healthy a job or a target is, as the server judges it.
+export function health_badge(level: Level | null): HTMLElement {
+  if (level === null) return h("span", { class: "badge tone-none" }, "No targets");
+  const [text, tone] = health_labels[level];
+  return h("span", { class: `badge tone-${tone}` }, text);
+}
+
+const level_tones: Record<EventLevel, string> = { INFO: "none", WARNING: "warn", ERROR: "bad" };
+
+export function level_badge(level: EventLevel): HTMLElement {
   return h("span", { class: `badge tone-${level_tones[level]}` }, level.toLowerCase());
 }
 

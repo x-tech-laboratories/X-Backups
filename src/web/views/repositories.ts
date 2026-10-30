@@ -1,4 +1,5 @@
-// Every repository as cards or a table, searched, filtered and sorted, with the choices kept in the URL.
+// Every target, a job's backups from one host to one repository or a repository only watched, as cards or a table,
+// searched, filtered and sorted, with the choices kept in the URL.
 
 import { failing, overdue, repository_reasons } from "../attention.ts";
 import { api, type ConfigInfo, type RepositorySummary } from "../api.ts";
@@ -49,7 +50,7 @@ export function repositories_view(): View {
     if (repositories.length === 0) {
       body.replaceChildren(empty("No repositories yet.", adding
         ? h("a", { class: "button accent solid", href: link(["new-repository"]) }, "Add the first one")
-        : "Repositories are declared in the Nix configuration under services.x-backups.repositories."));
+        : "Hosts, repositories, sources and jobs are declared in the Nix configuration under services.x-backups, or added in Settings when the config mode allows it."));
       return;
     }
     if (shown.length === 0) {
@@ -101,7 +102,7 @@ export function repositories_view(): View {
     root: h("div", { class: "page" },
       h("div", { class: "page-title spread" }, h("h1", {}, "Repositories"), add_button),
       toolbar(
-        search_box("Search by name or host", text, (value) => { text = value; replace_query({ q: value }); render(); }),
+        search_box("Search by repository, job or host", text, (value) => { text = value; replace_query({ q: value }); render(); }),
         select("Status", status_filters, status, (value) => { status = value; replace_query({ status: value }); render(); }),
         host_filter,
         select("Sort", sorts, sorting.key, (value) => {
@@ -121,7 +122,7 @@ export function repositories_view(): View {
 
 function matches(repository: RepositorySummary, text: string, status: string, host: string): boolean {
   const needle = text.trim().toLowerCase();
-  if (needle && !repository.name.toLowerCase().includes(needle) && !repository.host.toLowerCase().includes(needle)) return false;
+  if (needle && ![repository.name, repository.host, repository.repository, repository.job ?? ""].some((field) => field.toLowerCase().includes(needle))) return false;
   if (host && repository.host !== host) return false;
   if (status === "failing") return failing(repository);
   if (status === "attention") return repository_reasons(repository).length > 0;

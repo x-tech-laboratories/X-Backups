@@ -28,6 +28,8 @@ export interface Run extends TargetColumns {
   ended_epoch: number | null;
   // Whether the run's action can be run again from its row.
   retry: boolean;
+  // A running run waiting for its host's agent to come back, or a run whose agent no longer knew it.
+  condition: "waiting_for_agent" | "lost" | null;
   output?: string[];
 }
 
@@ -93,6 +95,124 @@ export interface RepositoryDetail extends RepositorySummary {
   restore_dir: string;
   downloads: DownloadRecord[];
   actions: Action[];
+  // The jobs writing to its repository, the repository's other targets, and the repository's own tasks.
+  writers: string[];
+  repository_targets: RepositorySummary[];
+  tasks: TaskView[];
+}
+
+export type Level = "ok" | "warning" | "critical";
+
+// ── Entities ─────────────────────────────────────────────────────────────────
+
+export type ConfigSource = "declared" | "page";
+
+export interface HostRow {
+  name: string;
+  kind: "managed" | "storage-only";
+  address: string | null;
+  // This server's own host, run by the agent built into it.
+  own: boolean;
+  sources: string[];
+  repositories: string[];
+  connected: boolean;
+  built_in: boolean;
+  agent_version: string | null;
+  reported_host: string | null;
+  connected_epoch: number | null;
+  enrolled: boolean;
+  last_seen_epoch: number | null;
+  health: Omit<HostSample, "host"> | null;
+}
+
+export interface SourceRow {
+  name: string;
+  host: string;
+  source: ConfigSource;
+  // The flat entry it was expanded from, or null for one written as a source.
+  expanded_from: string | null;
+  paths: string[];
+  exclude: string[];
+  settings: Record<string, unknown>;
+  jobs: string[];
+}
+
+export interface JobRow {
+  name: string;
+  source: ConfigSource;
+  expanded_from: string | null;
+  sources: string[];
+  repositories: string[];
+  settings: Record<string, unknown>;
+  // The worst of its targets, or null when it has none the viewer sees.
+  level: Level | null;
+  targets: RepositorySummary[];
+  tasks: TaskView[];
+}
+
+export interface LastRun {
+  id: number;
+  state: RunState;
+  started_epoch: number;
+  ended_epoch: number | null;
+}
+
+export interface TaskTarget {
+  target_id: string;
+  host: string;
+  repository: string;
+  job: string | null;
+  next_due: number | null;
+  last_run: LastRun | null;
+  running: boolean;
+  waiting: string | null;
+}
+
+export interface TaskView {
+  id: string;
+  owner_kind: "job" | "repository";
+  owner: string;
+  kind: string;
+  schedule: string | number | null;
+  after: "backup" | null;
+  check: string | null;
+  description: string;
+  origin: "written" | "translated" | "default" | "manual";
+  enabled: boolean;
+  enabled_by_config: boolean;
+  override: { enabled: boolean; changed_by: string; changed_epoch: number } | null;
+  next_due: number | null;
+  last_run: LastRun | null;
+  running: boolean;
+  waiting: string | null;
+  targets: TaskTarget[];
+}
+
+export type EntityKind = "hosts" | "repositories" | "sources" | "jobs";
+
+export interface EntityEntry {
+  name: string;
+  source: ConfigSource;
+  // A page entry a declared one of the same name hides.
+  shadowed: boolean;
+  // A repository entry of the older shape, edited on its target's Config tab.
+  flat: boolean;
+  fields: Record<string, unknown>;
+}
+
+export interface EntityConfig {
+  kind: EntityKind;
+  mode: "declarative" | "mixed" | "page";
+  editable: boolean;
+  fields: FieldSpec[];
+  tasks: { kinds: string[]; check_kinds: string[] };
+  entries: EntityEntry[];
+}
+
+export interface SchedulePreview {
+  description: string;
+  time_zone: string;
+  next: number[];
 }
 
 // Which host's folders each repository backs up and which host stores it, as the repositories' config says.
@@ -100,6 +220,8 @@ export interface BackupMap {
   hosts: { id: string; name: string }[];
   sources: { id: string; host: string; path: string }[];
   repositories: MapRepository[];
+  // The configured host and source each map host and folder stands for.
+  links: { hosts: Record<string, string>; sources: Record<string, string> };
 }
 
 export interface MapRepository extends RepositorySummary {
@@ -157,12 +279,12 @@ export interface Diff {
   more: boolean;
 }
 
-export type Level = "INFO" | "WARNING" | "ERROR";
+export type EventLevel = "INFO" | "WARNING" | "ERROR";
 
 export interface EventRow extends TargetColumns {
   id: number;
   epoch: number;
-  level: Level;
+  level: EventLevel;
   message: string;
 }
 
@@ -231,7 +353,7 @@ export interface RepositoryConfig {
   fields: Record<string, unknown>;
 }
 
-export type FieldKind = "string" | "number" | "boolean" | "duration" | "number_or_string" | "list" | "durations";
+export type FieldKind = "string" | "number" | "boolean" | "duration" | "number_or_string" | "list" | "durations" | "strings";
 
 export interface FieldSpec {
   name: string;
@@ -262,7 +384,7 @@ export interface SearchResults {
 
 // What the server's stream says changed; null stands for "anything may have changed".
 export interface Change {
-  kind: "repository" | "run" | "timers" | "hosts" | "config";
+  kind: "repository" | "run" | "timers" | "hosts" | "config" | "tasks";
   target_id: string | null;
   run_id?: number;
 }

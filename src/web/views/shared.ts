@@ -6,7 +6,7 @@ import { api, type Change, type EventRow, type Run, type Outcome, type Repositor
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { link } from "../router.ts";
 import { can } from "../session.ts";
-import { chip, confirm_dialog, data_table, empty, run_badge, level_badge, status_badge, toast, verdict, type Sorting } from "../ui.ts";
+import { chip, confirm_dialog, data_table, empty, level_badge, run_state_badge, status_badge, toast, verdict, type Sorting } from "../ui.ts";
 
 // ── Views ────────────────────────────────────────────────────────────────────
 
@@ -26,11 +26,16 @@ export function touches(changes: Change[] | null, target_id: string | null, kind
 
 // ── Repositories ─────────────────────────────────────────────────────────────
 
+// A target in words: its job's sources on one host to one repository, or a repository only watched from a host.
+export function target_label(target: Pick<RepositorySummary, "job" | "repository" | "host">): string {
+  return target.job === null ? `${target.repository}, watched from ${target.host}` : `${target.job} from ${target.host} to ${target.repository}`;
+}
+
 export function repository_card(repository: RepositorySummary): HTMLElement {
   const late = repository.last_poll_epoch !== null && overdue(repository);
   return h("a", { class: `card tone-edge-${level_tone[repository.level]}`, href: link(["repositories", repository.id]) },
-    h("div", { class: "card-head" }, h("strong", {}, repository.name), status_badge(repository.status)),
-    h("div", { class: "muted card-host" }, repository.host),
+    h("div", { class: "card-head" }, h("strong", {}, repository.repository), status_badge(repository.status)),
+    h("div", { class: "muted card-host" }, repository.job === null ? `watched from ${repository.host}` : `${repository.job} from ${repository.host}`),
     h("dl", {},
       h("dt", {}, "Last backup"),
       h("dd", { class: late ? "tone-bad" : "" }, age(repository.last_backup_epoch), late ? " · overdue" : ""),
@@ -48,9 +53,10 @@ export function repository_card(repository: RepositorySummary): HTMLElement {
 
 export function repositories_table(repositories: RepositorySummary[], sorting: Sorting, on_sort: (sorting: Sorting) => void): HTMLElement {
   return data_table<RepositorySummary>([
-    { label: "Name", cell: (row) => h("a", { href: link(["repositories", row.id]) }, row.name), sort: (row) => row.name.toLowerCase() },
+    { label: "Name", cell: (row) => h("a", { href: link(["repositories", row.id]) }, row.repository), sort: (row) => row.name.toLowerCase() },
     { label: "Status", cell: (row) => status_badge(row.status), sort: (row) => status_rank(row) },
-    { label: "Host", cell: (row) => row.host, sort: (row) => row.host },
+    { label: "Job", cell: (row) => row.job === null ? h("span", { class: "muted" }, "watched only") : h("a", { href: link(["jobs", row.job]) }, row.job), sort: (row) => row.job ?? "" },
+    { label: "Host", cell: (row) => h("a", { href: link(["hosts", row.host]) }, row.host), sort: (row) => row.host },
     {
       label: "Last backup", sort: (row) => row.last_backup_epoch ?? 0,
       cell: (row) => h("span", { class: row.last_poll_epoch !== null && overdue(row) ? "tone-bad" : "", title: row.last_backup_epoch ? stamp(row.last_backup_epoch) : null }, age(row.last_backup_epoch)),
@@ -99,12 +105,16 @@ function duration_bar(run: Run, median: number | undefined): HTMLElement {
 }
 
 export function runs_table(runs: Run[], options: { with_repository: boolean; refresh: () => void; usual?: Map<string, number> }): HTMLElement {
-  if (runs.length === 0) return empty("No runs here.", "Runs appear when an action runs, such as a backup, check or prune.");
+  if (runs.length === 0) return empty("No runs here.", "Runs appear when a task or an action runs, such as a backup, check or prune.");
   const usual = options.usual ?? medians(runs);
   return data_table<Run>([
-    ...(options.with_repository ? [{ label: "Repository", cell: (run: Run) => h("a", { href: link(["repositories", run.target_id]) }, run.target_id) }] : []),
+    ...(options.with_repository ? [{ label: "Target", cell: (run: Run) => h("a", { href: link(["repositories", run.target_id]) }, run.target_id) }] : []),
     { label: "Run", cell: (run) => h("a", { href: link(["runs", String(run.id)]) }, `${run.kind} #${run.id}`) },
-    { label: "State", cell: (run) => [run_badge(run.state), run.progress && run.state === "running" ? h("span", { class: "muted" }, ` ${run.progress}`) : null] },
+    { label: "Task", cell: (run) => run.task === null ? h("span", { class: "muted" }, "by hand") : h("a", { href: link(["runs"], { task: run.task }) }, run.task) },
+    {
+      label: "State", cell: (run) => [run_state_badge(run),
+        run.progress && run.state === "running" && run.condition === null ? h("span", { class: "muted" }, ` ${run.progress}`) : null],
+    },
     { label: "Started", cell: (run) => h("span", { title: stamp(run.started_epoch) }, age(run.started_epoch)) },
     { label: "Took", cell: (run) => duration_bar(run, usual.get(run.kind)) },
     { label: "", class: "actions-cell", cell: (run) => run_buttons(run, options.refresh) },

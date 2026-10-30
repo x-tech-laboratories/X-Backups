@@ -1,10 +1,11 @@
-// One repository: its header and actions, then tabs for its overview, archives, runs, sources, schedule, events and config.
+// One target of a repository: its header and actions, then tabs for its overview (with the jobs writing to the repository,
+// its other targets and its own tasks), archives, runs, sources, schedule, events and config.
 
 import { action_descriptions, run_action, start_action, type ActionTarget } from "../actions.ts";
 import { overdue, repository_reasons } from "../attention.ts";
 import {
   api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type DownloadRecord, type EventRow, type History, type Run,
-  type RepositoryConfig, type RepositoryDetail, type TimerRow,
+  type RepositoryConfig, type RepositoryDetail, type TaskView, type TimerRow,
 } from "../api.ts";
 import { bar_chart, line_chart, strip } from "../charts.ts";
 import { age, duration, h, nodes, now_seconds, size, stamp, type Child } from "../dom.ts";
@@ -15,7 +16,8 @@ import {
 } from "../ui.ts";
 import { can } from "../session.ts";
 import { config_form, config_read_only, config_tools } from "./config_form.ts";
-import { events_list, runs_table, timers_table, touches, type View } from "./shared.ts";
+import { events_list, runs_table, target_label, timers_table, touches, type View } from "./shared.ts";
+import { tasks_table } from "./tasks.ts";
 
 const history_span_in_seconds = 90 * 86400;
 const page_size = 50;
@@ -94,7 +96,7 @@ export function repository_view(id: string, tab: string): View {
       body,
     ),
     update: async (changes) => {
-      if (touches(changes, id, ["repository", "run", "timers", "config"])) await update(true);
+      if (touches(changes, id, ["repository", "run", "timers", "config", "tasks"])) await update(true);
     },
   };
 }
@@ -123,7 +125,7 @@ function repository_header(repository: RepositoryDetail, target: ActionTarget): 
       repository.downloads.length > 0 && h("a", { class: "chip chip-info", href: link(["repositories", repository.id]) },
         repository.downloads.length === 1 ? "download running" : `${repository.downloads.length} downloads running`),
     ),
-    h("p", { class: "muted" }, repository.repo ?? "", ` on ${repository.host}`, ` · polled ${age(repository.last_poll_epoch)}`),
+    h("p", { class: "muted" }, target_label(repository), repository.repo ? ` · ${repository.repo}` : "", ` · polled ${age(repository.last_poll_epoch)}`),
     can("operator") && h("div", { class: "head-actions" },
       ...buttons.map((action, index) => action_button(action, target, index === 0 ? "accent solid" : "")),
       h("button", { onclick: () => void poll_now(target) }, "Poll now"),
@@ -161,15 +163,21 @@ function overview_tab(context: TabContext): (quiet: boolean) => Promise<void> {
   const charts = h("div", { class: "charts" }, skeleton(4));
   const maintenance = h("div", { class: "maintenance" });
   const downloads = h("div");
+  const shared = h("div");
+  const tasks = h("div");
   context.body.replaceChildren(...nodes([
     downloads,
     section("Summary", summary),
+    section(`The repository ${context.detail().repository}`, shared),
+    section("Repository tasks", tasks, h("span", { class: "muted small" }, "compact and check run once for the whole repository")),
     section("History", charts, h("span", { class: "muted small" }, "last 90 days")),
     can("operator") && section("Maintenance", maintenance),
   ]));
   return async (quiet) => {
     const repository = context.detail();
     summary.replaceChildren(repository_facts(repository));
+    shared.replaceChildren(repository_shared(repository));
+    tasks.replaceChildren(tasks_table(repository.tasks, { refresh: context.refresh, empty_hint: "Compact and check show here once the repository has them." }));
     downloads.replaceChildren(...nodes(downloads_panel(repository, context.refresh)));
     maintenance.replaceChildren(...maintenance_cards(repository, context.target()));
     const since = Math.floor(now_seconds() - history_span_in_seconds);
@@ -234,6 +242,21 @@ function repository_facts(repository: RepositoryDetail): HTMLElement {
       verdict(repository.canary?.ok, "restore canary"),
       repository.canary && h("span", { class: "muted small" }, `canary checked ${age(repository.canary.checked_epoch)}`),
     ),
+  );
+}
+
+// Who writes to the repository and its other targets, each with its own archives, newest backup and status.
+function repository_shared(repository: RepositoryDetail): HTMLElement {
+  const others = repository.repository_targets;
+  return h("div", { class: "stack" },
+    h("p", {}, repository.writers.length === 0 ? "No job writes here; it is only watched." : ["Written by ",
+      ...repository.writers.flatMap((job, index) => [index > 0 ? ", " : null, h("a", { href: link(["jobs", job]) }, job)]), "."]),
+    others.length > 0 && data_table([
+      { label: "Other target", cell: (other) => h("a", { href: link(["repositories", other.id]) }, target_label(other)) },
+      { label: "Status", cell: (other) => status_badge(other.status) },
+      { label: "Archives", class: "number", cell: (other) => other.archive_count ?? "—" },
+      { label: "Last backup", cell: (other) => h("span", { title: other.last_backup_epoch ? stamp(other.last_backup_epoch) : null }, age(other.last_backup_epoch)) },
+    ], others, { caption: "Other targets on this repository" }),
   );
 }
 
@@ -450,13 +473,25 @@ function sources_tab(context: TabContext): (quiet: boolean) => Promise<void> {
 // ── Schedule tab ─────────────────────────────────────────────────────────────
 
 function schedule_tab(context: TabContext): (quiet: boolean) => Promise<void> {
+  const tasks = h("div", {}, skeleton(3));
   const list = h("div", {}, skeleton(3));
-  context.body.replaceChildren(section(`Backup timers on ${context.detail().host}`, list, h("a", { href: link(["schedules"]) }, "All hosts")));
+  context.body.replaceChildren(
+    section("Tasks", tasks, h("a", { href: link(["schedules"]) }, "All schedules")),
+    section(`Host timers on ${context.detail().host}`, list),
+  );
   return async (quiet) => {
-    await load(list, async () => {
-      const timers = await api<TimerRow[]>("/api/timers");
-      return timers_table(timers.filter((timer) => timer.host === context.detail().host), false);
-    }, { quiet });
+    const detail = context.detail();
+    await Promise.all([
+      load(tasks, async () => {
+        const all = await api<TaskView[]>("/api/tasks");
+        const own = all.filter((task) => task.owner_kind === "job" ? task.owner === detail.job : task.owner === detail.repository);
+        return tasks_table(own, { refresh: context.refresh, with_owner: true });
+      }, { quiet }),
+      load(list, async () => {
+        const timers = await api<TimerRow[]>("/api/timers");
+        return timers_table(timers.filter((timer) => timer.host === detail.host), false);
+      }, { quiet }),
+    ]);
   };
 }
 
@@ -507,8 +542,10 @@ function config_tab(context: TabContext): (quiet: boolean) => Promise<void> {
 
 function config_locked(config: RepositoryConfig): Child[] {
   const why = config.source === "declared"
-    ? [h("strong", {}, "Declared in the Nix configuration."), " Change it under services.x-backups.repositories and switch the system to apply it."]
-    : [h("strong", {}, "Added from this page,"), " but the config is declarative now, so the page shows it read-only."];
+    ? [h("strong", {}, "Declared in the Nix configuration."), " Change it there, under services.x-backups.repositories or the job, sources and host it is built from, and switch the system to apply it."]
+    : config.config_mode !== "declarative"
+      ? [h("strong", {}, "Built from a job."), " This target is built from its job, sources, host and repository, so change those in ", h("a", { href: link(["settings"]) }, "Settings"), "."]
+      : [h("strong", {}, "Added from this page,"), " but the config is declarative now, so the page shows it read-only."];
   return [h("div", { class: "banner", role: "note" }, ...why), config_tools(config.fields), ...config_read_only(config.fields)];
 }
 
