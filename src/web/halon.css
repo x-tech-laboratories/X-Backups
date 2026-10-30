@@ -794,6 +794,7 @@ th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--text-headin
 .run-missed { border-color: var(--status-danger); border-style: dashed; color: var(--status-danger); }
 .run-upcoming { border-color: var(--accent); color: var(--accent); }
 .run-unknown { background-color: var(--border-default); color: var(--text-secondary); }
+.run-task { border-color: var(--accent); border-style: dotted; background-color: var(--surface-secondary); color: var(--accent); }
 .calendar-key .run { margin-right: var(--space-2); }
 .day-switch { display: none; flex-wrap: wrap; }
 

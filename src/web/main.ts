@@ -7,6 +7,9 @@ import { current_route, link } from "./router.ts";
 import { can, forget_me, load_me } from "./session.ts";
 import { apply, next_theme, theme_choice, type Theme } from "./theme.ts";
 import { archive_view } from "./views/archive.ts";
+import { entity_view } from "./views/entity_config.ts";
+import { host_view, hosts_view } from "./views/hosts.ts";
+import { job_view, jobs_view } from "./views/jobs.ts";
 import { run_view, runs_view } from "./views/runs.ts";
 import { map_view } from "./views/map.ts";
 import { new_repository_view } from "./views/new_repository.ts";
@@ -14,6 +17,7 @@ import { overview_view } from "./views/overview.ts";
 import { events_view, schedules_view, settings_view } from "./views/pages.ts";
 import { repositories_view } from "./views/repositories.ts";
 import { repository_view } from "./views/repository.ts";
+import { source_view, sources_view } from "./views/sources.ts";
 import { account_view, users_view } from "./views/users.ts";
 import type { View } from "./views/shared.ts";
 import "./halon-tokens.css";
@@ -35,11 +39,19 @@ function view_for(parts: string[]): View {
   if (section === "repositories" && id && tab === "archives" && archive) return archive_view(id, archive);
   if (section === "repositories" && id) return repository_view(id, tab ?? "overview");
   if (section === "repositories") return repositories_view();
+  if (section === "hosts" && id) return host_view(id);
+  if (section === "hosts") return hosts_view();
+  if (section === "sources" && id) return source_view(id);
+  if (section === "sources") return sources_view();
+  if (section === "jobs" && id) return job_view(id);
+  if (section === "jobs") return jobs_view();
   if (section === "map") return map_view();
   if (section === "runs" && id) return run_view(Number(id));
   if (section === "runs") return runs_view();
   if (section === "schedules") return schedules_view();
   if (section === "events") return events_view();
+  if (section === "settings" && id === "new" && tab) return entity_view(tab, null);
+  if (section === "settings" && id && tab) return entity_view(id, tab);
   if (section === "settings") return settings_view();
   if (section === "users") return users_view();
   if (section === "account") return account_view();
@@ -48,8 +60,9 @@ function view_for(parts: string[]): View {
 
 function show(): void {
   current?.dispose?.();
-  // A link to the old Jobs page opens the Runs page it became.
-  if (current_route().parts[0] === "jobs") history.replaceState(null, "", location.hash.replace(/^#\/?jobs/, "#/runs"));
+  // A link to a run on the old Jobs page opens it on the Runs page; Jobs now lists the job definitions.
+  const [first, second] = current_route().parts;
+  if (first === "jobs" && second !== undefined && /^\d+$/.test(second)) history.replaceState(null, "", location.hash.replace(/^#\/?jobs/, "#/runs"));
   const route = current_route();
   current = view_for(route.parts);
   main.replaceChildren(current.root);

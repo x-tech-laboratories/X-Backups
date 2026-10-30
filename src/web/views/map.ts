@@ -1,4 +1,5 @@
-// Every host as a box holding the folders it backs up and the repositories it stores, with a line from each folder to each repository that takes it.
+// Every host as a box holding the folders it backs up and the repositories it stores, with a line from each folder to each
+// repository that takes it; hosts, folders and repositories open their own pages.
 
 import { api, type BackupMap, type MapRepository } from "../api.ts";
 import { age, h } from "../dom.ts";
@@ -116,8 +117,11 @@ function draw(map: BackupMap, view_box: { current: Box | null }): { figure: HTML
   for (const host of placed.hosts) {
     boxes.append(
       svg("rect", { class: "map-host", x: host.box.x, y: host.box.y, width: host.box.width, height: host.box.height, rx: 10 }),
-      text("map-host-name", host.box.x + padding, host.box.y + 22, host.name),
     );
+    // A configured host's name opens its page.
+    const host_page = map.links?.hosts[host.id];
+    const name = text("map-host-name", host.box.x + padding, host.box.y + 22, host.name);
+    boxes.append(host_page ? svg("a", { href: link(["hosts", host_page]) }, name, svg("title", {}, `${host_page}: open its page`)) : name);
     const group_label = (y: number, label: string) => boxes.append(text("map-group", host.box.x + padding, y - 7, label));
     const first_source = [...placed.sources.values()].find((source) => placed.hosts[source.column] === host);
     if (first_source) group_label(first_source.box.y, "Backs up");
@@ -127,10 +131,12 @@ function draw(map: BackupMap, view_box: { current: Box | null }): { figure: HTML
 
   for (const [id, source] of placed.sources) {
     const { box } = source;
-    boxes.append(svg("g", { class: "map-node map-source", "data-source": id, tabindex: 0 },
+    // A folder of a configured source opens the source's page.
+    const source_page = map.links?.sources[id];
+    boxes.append(svg(source_page ? "a" : "g", { class: "map-node map-source", "data-source": id, ...(source_page ? { href: link(["sources", source_page]) } : { tabindex: 0 }) },
       svg("rect", { x: box.x, y: box.y, width: box.width, height: box.height, rx: 6 }),
       text("map-path", box.x + 10, box.y + 18, clip(source.path, box.width - 20, 7.4)),
-      svg("title", {}, source.path)));
+      svg("title", {}, source_page ? `${source.path}, in the source ${source_page}` : source.path)));
   }
 
   const lane = (flow: string) => passing.includes(flow) ? lane_top + passing.indexOf(flow) * lane_gap : null;

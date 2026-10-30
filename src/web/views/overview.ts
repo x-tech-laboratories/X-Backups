@@ -1,12 +1,15 @@
-// The fleet at a glance: tiles that open filtered views, what needs attention and why, backup ages and sizes, runs and archives over time, and what runs next.
+// The fleet at a glance: tiles that open filtered views, what needs attention and why (by target, agent and task), backup
+// ages and sizes, runs and archives over time, and what runs next.
 
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
-import { api, query, repository_path, type History, type HostSample, type Run, type RepositorySummary, type TimerRow } from "../api.ts";
-import { donut, line_chart, meters, sparkline, stacked_bar_chart, timeline, type Meter, type Stack } from "../charts.ts";
+import { api, query, repository_path, type History, type HostRow, type HostSample, type Run, type RepositorySummary, type TaskView, type TimerRow } from "../api.ts";
+import { donut, line_chart, meters, stacked_bar_chart, timeline, type Meter, type Stack } from "../charts.ts";
 import { age, duration, h, now_seconds, size, stamp, until } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { attempt, empty, run_badge, load, section, skeleton } from "../ui.ts";
-import { repository_card, status_rank, touches, type View } from "./shared.ts";
+import { agent_away, host_health } from "./hosts.ts";
+import { repository_card, status_rank, target_label, touches, type View } from "./shared.ts";
+import { task_label } from "./tasks.ts";
 
 const day_in_seconds = 86400;
 const stored_span_in_days = 90;
@@ -48,19 +51,21 @@ export function overview_view(): View {
       api<Run[]>(`/api/runs${query({ since: Math.floor(now_seconds() - 7 * day_in_seconds), limit: 2000 })}`),
       api<TimerRow[]>("/api/timers"),
       api<HostSample[]>(`/api/hosts/samples${query({ since: Math.floor(now_seconds() - day_in_seconds) })}`),
+      api<HostRow[]>("/api/hosts"),
+      api<TaskView[]>("/api/tasks").catch((): TaskView[] => []),
     ]), () => void update(false));
     if (answer === null) return;
-    const [listed, recent, timers, samples] = answer;
+    const [listed, recent, timers, samples, hosts, tasks] = answer;
     repositories = listed;
     runs = recent;
     await Promise.all([
-      load(tiles, async () => overview_tiles(listed, timers, recent), { quiet }),
-      load(attention, async () => attention_list(listed, timers), { quiet }),
+      load(tiles, async () => overview_tiles(listed, timers, recent, hosts, tasks), { quiet }),
+      load(attention, async () => attention_list(listed, timers, hosts, tasks), { quiet }),
       load(ages, async () => backup_ages(listed), { quiet }),
       load(storage, async () => storage_bars(listed), { quiet }),
       load(activity, async () => run_panels(recent, span), { quiet }),
       load(running, async () => running_list(recent), { quiet }),
-      load(upcoming, async () => upcoming_list(timers), { quiet }),
+      load(upcoming, async () => upcoming_list(timers, tasks), { quiet }),
       load(hosts_box, async () => host_health(samples), { quiet }),
       load(grid, async () => [...listed].sort((a, b) => status_rank(a) - status_rank(b) || a.name.localeCompare(b.name)).map(repository_card), { quiet }),
     ]);
@@ -94,20 +99,22 @@ export function overview_view(): View {
       h("div", { class: "columns" },
         h("div", { class: "stack" },
           section("Running now", running, h("a", { href: link(["runs"], { state: "running" }) }, "All running")),
-          section("Next timer runs", upcoming, h("a", { href: link(["schedules"]) }, "All schedules")),
+          section("Next up", upcoming, h("a", { href: link(["schedules"]) }, "All schedules")),
         ),
         section("Stored over time", stored, h("span", { class: "muted small" }, `last ${stored_span_in_days} days`)),
       ),
-      section("Repositories", grid, h("a", { href: link(["repositories"]) }, "Filter and sort")),
+      section("Targets", grid, h("a", { href: link(["repositories"]) }, "Filter and sort")),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "run", "timers", "hosts", "config"])) await update(true, touches(changes, null, ["repository", "config"]));
+      if (touches(changes, null, ["repository", "run", "timers", "hosts", "config", "tasks"])) await update(true, touches(changes, null, ["repository", "config"]));
     },
   };
 }
 
-function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], runs: Run[]): HTMLElement {
+function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], runs: Run[], hosts: HostRow[], tasks: TaskView[]): HTMLElement {
   const bad = repositories.filter(failing).length;
+  const away = hosts.filter(agent_away).length;
+  const waiting = tasks.filter((task) => task.waiting !== null).length;
   const late = repositories.filter((repository) => repository.last_poll_epoch !== null && overdue(repository)).length;
   const timer_trouble = timers.filter((timer) => timer_problem(timer) !== null).length;
   const running = runs.filter((run) => run.state === "running").length;
@@ -118,9 +125,11 @@ function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], r
     return href ? h("a", { class: `tile ${tone ? `tile-${tone}` : ""}`, href }, ...body) : h("div", { class: "tile" }, ...body);
   };
   return h("div", { class: "tiles" },
-    tile("repositories", repositories.length, link(["repositories"])),
+    tile("targets", repositories.length, link(["repositories"])),
     tile("failing", bad, link(["repositories"], { status: "failing" }), bad > 0 ? "bad" : ""),
     tile("overdue", late, link(["repositories"], { status: "overdue" }), late > 0 ? "bad" : ""),
+    tile("agents away", away, link(["hosts"], { state: "away" }), away > 0 ? "bad" : ""),
+    tile("tasks waiting", waiting, link(["schedules"], { state: "problem" }), waiting > 0 ? "info" : ""),
     tile("timer problems", timer_trouble, link(["schedules"], { state: "problem" }), timer_trouble > 0 ? "bad" : ""),
     tile("runs in progress", running, link(["runs"], { state: "running" }), running > 0 ? "info" : ""),
     tile("failed runs, 24 h", failed_today, link(["runs"], { state: "failed" }), failed_today > 0 ? "bad" : ""),
@@ -128,11 +137,18 @@ function overview_tiles(repositories: RepositorySummary[], timers: TimerRow[], r
   );
 }
 
-function attention_list(repositories: RepositorySummary[], timers: TimerRow[]): HTMLElement {
+function attention_list(repositories: RepositorySummary[], timers: TimerRow[], hosts: HostRow[], tasks: TaskView[]): HTMLElement {
   const items = [
     ...repositories.flatMap((repository) => repository_reasons(repository).map((reason) => ({
-      tone: reason.tone, href: link(["repositories", repository.id]), name: repository.name, text: reason.text,
+      tone: reason.tone, href: link(["repositories", repository.id]), name: target_label(repository), text: reason.text,
     }))),
+    ...hosts.filter(agent_away).map((host) => ({
+      tone: "bad" as const, href: link(["hosts", host.name]), name: host.name,
+      text: host.enrolled ? `agent offline${host.last_seen_epoch ? `, last seen ${age(host.last_seen_epoch)}` : ""}` : "agent never enrolled",
+    })),
+    ...tasks.filter((task) => task.waiting !== null).map((task) => ({
+      tone: "warn" as const, href: task.owner_kind === "job" ? link(["jobs", task.owner]) : link(["schedules"]), name: `${task_label(task)} of ${task.owner}`, text: task.waiting!,
+    })),
     ...timers.flatMap((timer) => {
       const problem = timer_problem(timer);
       return problem ? [{ tone: "warn" as const, href: link(["schedules"]), name: `${timer.unit} on ${timer.host}`, text: problem }] : [];
@@ -157,7 +173,7 @@ function backup_ages(repositories: RepositorySummary[]): HTMLElement {
     const color = since === null || since > repository.max_age ? "var(--status-danger)"
       : warns && since > repository.warn_age ? "var(--status-warning)" : "var(--accent)";
     return {
-      label: `${repository.name} · ${repository.host}`,
+      label: target_label(repository),
       href: link(["repositories", repository.id]),
       value_text: since === null ? "no archive yet" : age(repository.last_backup_epoch),
       percent: since === null ? 100 : Math.min(100, since / scale * 100),
@@ -211,30 +227,6 @@ function storage_bars(repositories: RepositorySummary[]): HTMLElement {
     };
   });
   return meters(rows, "No sizes yet; they appear after a poll reads each repository's stats.");
-}
-
-// A row per repository host: its load against its CPUs, its memory in use and how full its root disk is, each as a sparkline and the latest reading.
-function host_health(samples: HostSample[]): HTMLElement {
-  if (samples.length === 0) return empty("No host readings yet.", "Each host is read beside its timers, every five minutes.");
-  const by_host = new Map<string, HostSample[]>();
-  for (const sample of samples) by_host.set(sample.host, [...(by_host.get(sample.host) ?? []), sample]);
-  const tone = (percent: number) => percent >= storage_danger_percent ? "var(--status-danger)" : percent >= storage_warning_percent ? "var(--status-warning)" : "var(--series-1)";
-  const reading = (name: string, points: [number, number][], top: number, color: string, text: string) => h("div", { class: "host-reading" },
-    h("span", { class: "reading-label" }, name),
-    sparkline(`${name}: ${text}`, points, top, color),
-    h("span", { class: "meter-value" }, text));
-  return h("div", { class: "hosts" }, ...[...by_host].sort(([a], [b]) => a.localeCompare(b)).flatMap(([host, readings]) => {
-    const latest = readings.at(-1)!;
-    const load = readings.map((sample): [number, number] => [sample.epoch, sample.load1 / sample.cpus * 100]);
-    const memory = readings.map((sample): [number, number] => [sample.epoch, (1 - sample.memory_available / sample.memory_total) * 100]);
-    const disk = readings.map((sample): [number, number] => [sample.epoch, (1 - sample.disk_available / sample.disk_size) * 100]);
-    return [
-      h("strong", { title: `read ${age(latest.epoch)}` }, host),
-      reading("load", load, 100, tone(load.at(-1)![1]), `${latest.load1.toFixed(2)} / ${latest.cpus} CPUs`),
-      reading("memory", memory, 100, tone(memory.at(-1)![1]), `${Math.round(memory.at(-1)![1])}% used`),
-      reading("disk /", disk, 100, tone(disk.at(-1)![1]), `${size(latest.disk_available)} free`),
-    ];
-  }));
 }
 
 // The outcome donut beside the runs per period.
@@ -323,12 +315,19 @@ function running_list(runs: Run[]): HTMLElement {
   )));
 }
 
-function upcoming_list(timers: TimerRow[]): HTMLElement {
-  const next = timers.filter((timer) => timer.next_epoch !== null).sort((a, b) => a.next_epoch! - b.next_epoch!).slice(0, 8);
-  if (next.length === 0) return empty("No upcoming timer runs.", "Timers are read from each host's systemd.");
-  return h("ul", { class: "plain-list" }, ...next.map((timer) => h("li", {},
-    h("strong", { title: stamp(timer.next_epoch!) }, until(timer.next_epoch)), " ",
-    h("span", {}, timer.unit), h("span", { class: "muted" }, ` on ${timer.host}`),
+// The soonest task and timer runs together, a task marked as one.
+function upcoming_list(timers: TimerRow[], tasks: TaskView[]): HTMLElement {
+  const next = [
+    ...tasks.filter((task) => task.enabled && task.next_due !== null).map((task) => ({
+      epoch: task.next_due!, task: true, name: `${task_label(task)} of ${task.owner}`, where: task.description,
+    })),
+    ...timers.filter((timer) => timer.next_epoch !== null).map((timer) => ({ epoch: timer.next_epoch!, task: false, name: timer.unit, where: `on ${timer.host}` })),
+  ].sort((a, b) => a.epoch - b.epoch).slice(0, 8);
+  if (next.length === 0) return empty("Nothing scheduled.", "Tasks show once a job has a schedule, and timers are read from each host's systemd.");
+  return h("ul", { class: "plain-list" }, ...next.map((item) => h("li", {},
+    h("strong", { title: stamp(item.epoch) }, item.epoch <= now_seconds() ? "due now" : until(item.epoch)), " ",
+    item.task && h("span", { class: "chip" }, "task"), item.task ? " " : null,
+    h("span", {}, item.name), h("span", { class: "muted" }, ` · ${item.where}`),
   )));
 }
 

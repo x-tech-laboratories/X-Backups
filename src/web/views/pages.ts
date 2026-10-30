@@ -1,13 +1,15 @@
-// The smaller pages: every host's timers and their week, the event log, and the settings.
+// The smaller pages: the week of tasks and host timers, the event log, and the settings.
 
 import { timer_problem } from "../attention.ts";
-import { api, ApiError, query, send, type ConfigInfo, type EventRow, type RepositorySummary, type Setting, type TimerRow, type TimerRun } from "../api.ts";
+import { api, ApiError, query, send, type ConfigInfo, type EventRow, type RepositorySummary, type Setting, type TaskView, type TimerRow, type TimerRun } from "../api.ts";
 import { h, stamp, type Child } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
 import { theme_choice, type Theme } from "../theme.ts";
-import { chip, empty, facts, load, pager, section, select, skeleton, toast, toolbar } from "../ui.ts";
+import { empty, facts, load, pager, section, select, skeleton, toast, toolbar } from "../ui.ts";
+import { entity_panels } from "./entity_config.ts";
 import { event_levels } from "./repository.ts";
 import { events_list, timers_table, touches, type View } from "./shared.ts";
+import { task_label, tasks_table } from "./tasks.ts";
 
 const page_size = 50;
 
@@ -21,16 +23,24 @@ export function schedules_view(): View {
   let day = (new Date().getDay() + 6) % 7;
   let timers: TimerRow[] = [];
   let runs: TimerRun[] = [];
+  let tasks: TaskView[] = [];
   const host_filter = h("span");
   const list = h("div", {}, skeleton(5));
+  const task_list = h("div", {}, skeleton(4));
   const calendar = h("div", {}, skeleton(4));
   const week_label = h("span", { class: "muted small" });
 
   const render_calendar = () => {
     const start = week_start(week);
     week_label.textContent = `${new Date(start * 1000).toLocaleDateString()} – ${new Date((start + 6 * day_in_seconds) * 1000).toLocaleDateString()}`;
-    const shown = timers.filter((timer) => !host || timer.host === host);
-    calendar.replaceChildren(week_calendar(shown, runs, start, day, (next) => { day = next; render_calendar(); }));
+    // A task started only by hand that has never run has nothing to show in the week.
+    const shown_tasks = tasks.filter((task) => (task.schedule !== null || task.after !== null || task.last_run !== null) && (!host || task.targets.some((target) => target.host === host)));
+    const shown_timers = timers.filter((timer) => !host || timer.host === host);
+    const rows = [
+      ...shown_tasks.map((task) => task_row(task, host)),
+      ...shown_timers.map((timer) => ({ label: timer.unit, detail: `${timer.host} timer`, href: link(["hosts", timer.host]), task: false, entries: calendar_entries(timer, runs) })),
+    ];
+    calendar.replaceChildren(week_calendar(rows, start, day, (next) => { day = next; render_calendar(); }));
   };
   const load_week = async (quiet: boolean) => {
     await load(calendar, async () => {
@@ -49,13 +59,15 @@ export function schedules_view(): View {
     }, text)));
 
   const render = () => {
-    const hosts = [...new Set(timers.map((timer) => timer.host))].sort();
+    const hosts = [...new Set([...timers.map((timer) => timer.host), ...tasks.flatMap((task) => task.targets.map((target) => target.host))])].sort();
     host_filter.replaceChildren(select("Host", [["", "Any host"], ...hosts.map((name): [string, string] => [name, name])], host, (value) => {
       host = value;
       replace_query({ host: value });
       render();
     }));
     render_calendar();
+    const shown_tasks = tasks.filter((task) => (!host || task.targets.some((target) => target.host === host)) && (state !== "problem" || task.waiting !== null || task.last_run?.state === "failed"));
+    task_list.replaceChildren(shown_tasks.length === 0 && tasks.length > 0 ? empty("No task matches these filters.") : tasks_table(shown_tasks, { refresh: () => void refresh(true), with_owner: true }));
     const shown = timers
       .filter((timer) => (!host || timer.host === host) && (state !== "problem" || timer_problem(timer) !== null))
       .sort((a, b) => (a.next_epoch ?? Infinity) - (b.next_epoch ?? Infinity));
@@ -63,9 +75,10 @@ export function schedules_view(): View {
   };
   const refresh = async (quiet: boolean) => {
     await load(list, async () => {
-      [timers, runs] = await Promise.all([
+      [timers, runs, tasks] = await Promise.all([
         api<TimerRow[]>("/api/timers"),
         api<TimerRun[]>(`/api/timers/runs${query({ since: week_start(week) })}`),
+        api<TaskView[]>("/api/tasks").catch((): TaskView[] => []),
       ]);
       render();
       return [...list.childNodes];
@@ -77,13 +90,14 @@ export function schedules_view(): View {
     title: "Schedules",
     root: h("div", { class: "page" },
       h("h1", {}, "Schedules"),
-      h("p", { class: "muted" }, "Each host's own systemd timers run its backups; X-Backups reads them on each poll and flags missed and failed runs."),
+      h("p", { class: "muted" }, "X-Backups starts each job's and repository's tasks when they fall due. Hosts' own systemd timers are read too, for repositories a host fills itself, and missed and failed runs are flagged."),
       toolbar(host_filter, select("State", [["", "Any state"], ["problem", "Needs attention"]], state, (value) => { state = value; replace_query({ state: value }); render(); })),
       section(h("span", {}, "Week ", week_label), calendar, week_switch),
-      list,
+      section("Tasks", task_list),
+      section("Host timers", list),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["timers"])) await refresh(true);
+      if (touches(changes, null, ["timers", "tasks", "run", "config"])) await refresh(true);
     },
   };
 }
@@ -96,8 +110,17 @@ const missed_grace_in_seconds = 3600;
 
 interface CalendarEntry {
   epoch: number;
-  kind: "success" | "failed" | "missed" | "upcoming" | "unknown";
+  kind: "success" | "failed" | "missed" | "upcoming" | "unknown" | "task";
   title: string;
+}
+
+// One row of the calendar: an X-Backups task, or a host's timer.
+interface CalendarRow {
+  label: string;
+  detail: string;
+  href: string;
+  task: boolean;
+  entries: CalendarEntry[];
 }
 
 // Midnight starting the Monday of the week `offset` weeks from this one.
@@ -106,6 +129,24 @@ function week_start(offset: number): number {
   date.setHours(0, 0, 0, 0);
   date.setDate(date.getDate() - (date.getDay() + 6) % 7 + offset * 7);
   return date.getTime() / 1000;
+}
+
+// A task's row: when it is next due on each of its targets, and its newest run.
+function task_row(task: TaskView, host: string): CalendarRow {
+  const targets = task.targets.filter((target) => !host || target.host === host);
+  const entries: CalendarEntry[] = targets.flatMap((target) => target.next_due === null || !task.enabled ? [] : [{
+    epoch: Math.max(target.next_due, Date.now() / 1000), kind: "task" as const, title: `${stamp(target.next_due)}: due on ${target.target_id}${target.waiting ? `; ${target.waiting}` : ""}`,
+  }]);
+  if (task.last_run !== null) {
+    const run = task.last_run;
+    const kind = run.state === "succeeded" || run.state === "warning" ? "success" : run.state === "running" ? "unknown" : "failed";
+    entries.push({ epoch: run.started_epoch, kind, title: `${stamp(run.started_epoch)}: run #${run.id} ${run.state}` });
+  }
+  return {
+    label: `${task_label(task)} of ${task.owner}`, detail: task.description, task: true,
+    href: task.owner_kind === "job" ? link(["jobs", task.owner]) : link(["runs"], { task: task.id }),
+    entries: entries.sort((a, b) => a.epoch - b.epoch),
+  };
 }
 
 // What a timer did and will do: its recorded runs, the elapse it is overdue on, and its coming elapses.
@@ -124,9 +165,9 @@ function calendar_entries(timer: TimerRow, runs: TimerRun[]): CalendarEntry[] {
   return entries.sort((a, b) => a.epoch - b.epoch);
 }
 
-// A row per timer and a column per day of the week, each cell holding that day's runs; on phones one day shows at a time.
-function week_calendar(timers: TimerRow[], runs: TimerRun[], start: number, day: number, on_day: (day: number) => void): HTMLElement {
-  if (timers.length === 0) return empty("No backup timers found.", "Timers are read from each host's systemd.");
+// A row per task and timer and a column per day of the week, each cell holding that day's runs; on phones one day shows at a time.
+function week_calendar(rows: CalendarRow[], start: number, day: number, on_day: (day: number) => void): HTMLElement {
+  if (rows.length === 0) return empty("Nothing scheduled.", "Tasks show once a job or repository has one, and timers are read from each host's systemd.");
   const days = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(start * 1000);
     date.setDate(date.getDate() + index);
@@ -142,21 +183,19 @@ function week_calendar(timers: TimerRow[], runs: TimerRun[], start: number, day:
       "aria-pressed": String(index === day), onclick: () => on_day(index),
     }, name(date)))),
     h("div", { class: "table-wrap" }, h("table", { class: "calendar", "data-day": day },
-      h("thead", {}, h("tr", {}, h("th", {}, "Timer"), ...days.map((date, index) => h("th", { class: `day-${index}${date.toDateString() === today ? " today" : ""}` }, name(date))))),
-      h("tbody", {}, ...timers.map((timer) => {
-        const entries = calendar_entries(timer, runs);
-        return h("tr", {},
-          h("td", {}, h("div", {}, timer.unit), h("div", { class: "muted small" }, timer.host)),
-          ...days.map((date, index) => h("td", { class: `day-${index}${date.toDateString() === today ? " today" : ""}` },
-            ...entries.filter((entry) => day_of(entry.epoch) === index).map((entry) => h("span", { class: `run run-${entry.kind}`, title: entry.title },
-              entry.kind === "missed" ? `${time(entry.epoch)} missed` : time(entry.epoch))))),
-        );
-      })),
+      h("thead", {}, h("tr", {}, h("th", {}, "Task or timer"), ...days.map((date, index) => h("th", { class: `day-${index}${date.toDateString() === today ? " today" : ""}` }, name(date))))),
+      h("tbody", {}, ...rows.map((row) => h("tr", {},
+        h("td", {}, h("div", {}, row.task && h("span", { class: "chip" }, "task"), row.task ? " " : null, h("a", { href: row.href }, row.label)), h("div", { class: "muted small" }, row.detail)),
+        ...days.map((date, index) => h("td", { class: `day-${index}${date.toDateString() === today ? " today" : ""}` },
+          ...row.entries.filter((entry) => day_of(entry.epoch) === index).map((entry) => h("span", { class: `run run-${entry.kind}`, title: entry.title },
+            entry.kind === "missed" ? `${time(entry.epoch)} missed` : entry.kind === "task" ? `${time(entry.epoch)} due` : time(entry.epoch))))),
+      ))),
     )),
     h("p", { class: "muted small calendar-key" },
+      h("span", { class: "run run-task" }, "task due"), h("span", { class: "run run-upcoming" }, "timer due"),
       h("span", { class: "run run-success" }, "ran"), h("span", { class: "run run-failed" }, "failed"),
-      h("span", { class: "run run-missed" }, "missed"), h("span", { class: "run run-upcoming" }, "due"),
-      " Past weeks show runs X-Backups saw; its reads are every five minutes, so a timer that ran twice between two reads shows once."),
+      h("span", { class: "run run-missed" }, "missed"),
+      " A task shows when it is next due and its newest run. Past weeks show the timer runs X-Backups saw; its reads are every five minutes, so a timer that ran twice between two reads shows once."),
   );
 }
 
@@ -207,9 +246,9 @@ export function events_view(): View {
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 const mode_text: Record<ConfigInfo["mode"], [title: string, text: string]> = {
-  declarative: ["Declarative", "Everything comes from the Nix configuration and the page shows it read-only. Set services.x-backups.configMode to mixed to add repositories and defaults here too."],
-  mixed: ["Mixed", "What the Nix configuration declares is locked. The page may add repositories and set the defaults it leaves open; a declared repository of the same name replaces a page one."],
-  page: ["Page", "The page manages repositories and defaults; anything the Nix configuration declares is still locked."],
+  declarative: ["Declarative", "Everything comes from the Nix configuration and the page shows it read-only. Set services.x-backups.configMode to mixed to add hosts, repositories, sources, jobs and defaults here too."],
+  mixed: ["Mixed", "What the Nix configuration declares is locked. The page may add hosts, repositories, sources and jobs and set the defaults it leaves open; a declared entry of the same kind and name replaces a page one."],
+  page: ["Page", "The page manages hosts, repositories, sources, jobs and defaults; anything the Nix configuration declares is still locked."],
 };
 
 const setting_hints: Record<string, string> = {
@@ -231,17 +270,11 @@ const source_text: Record<Setting["source"], [label: string, title: string]> = {
 
 export function settings_view(): View {
   const configuration = h("div", {}, skeleton(4));
-  const repositories = h("div", {}, skeleton(3));
+  const entities = h("div", {}, skeleton(3));
 
   const refresh = async (quiet: boolean) => {
     await load(configuration, async () => configuration_panel(await api<ConfigInfo>("/api/config"), () => void refresh(true)), { quiet });
-    await load(repositories, async () => {
-      const list = await api<RepositorySummary[]>("/api/repositories");
-      if (list.length === 0) return empty("No repositories yet.");
-      return h("ul", { class: "plain-list" }, ...list.map((repository) => h("li", {},
-        h("a", { href: link(["repositories", repository.id, "config"]) }, repository.name), " ",
-        chip(repository.source === "declared" ? "declared" : "added here"))));
-    }, { quiet });
+    await load(entities, async () => entity_panels(), { quiet });
   };
   void refresh(false);
 
@@ -254,7 +287,7 @@ export function settings_view(): View {
         h("p", { class: "muted small" }, "Kept in this browser only."),
       )),
       configuration,
-      section("Repositories", repositories),
+      entities,
     ),
     update: async (changes) => {
       if (touches(changes, null, ["config"])) await refresh(true);
@@ -309,7 +342,8 @@ function configuration_panel(info: ConfigInfo, saved: () => void): Child[] {
       info.shadowed.length > 0 && h("div", { class: "banner", role: "note" },
         h("strong", {}, "Hidden by the Nix configuration: "), info.shadowed.join(", "),
         ". These were added here, but a declared repository of the same name replaces each one; remove them from the page or rename the declared one."),
-      info.editable && h("p", {}, h("a", { class: "button accent solid", href: link(["new-repository"]) }, "Add a repository")),
+      info.editable && h("p", { class: "muted small" }, "Add an entry of the older shape, a host, repository, source and job in one, with ",
+        h("a", { href: link(["new-repository"]) }, "Add a repository"), "."),
     )),
     section("Defaults for every repository", h("div", { class: "stack" },
       h("p", { class: "muted small" }, "A repository's own setting wins over these. An empty field goes back to the built-in value."),
