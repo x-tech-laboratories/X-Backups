@@ -75,6 +75,63 @@ loads: it expands into a host, a repository, a source and a job of its name, and
 its target and its archives' prefix. One with no `host` runs on this server. Its `ssh_user` is
 accepted and unused; on a host, `ssh_user` is refused, since the agent replaces SSH.
 
+## Scheduling
+
+X-Backups starts every backup itself, on the agent of each target's host; it needs no systemd timer.
+A job has the tasks `backup`, `prune` (when it has a `keep_*` policy), `check` and `canary` (when it
+has a `canary_path`); a repository has `compact` and `check`. Each is written under `tasks`, as a
+schedule or as an object:
+
+```json
+"jobs": [{
+  "name": "nightly", "sources": ["fileserver-data"], "repositories": ["offsite"], "keep_daily": 7,
+  "tasks": { "backup": "daily 02:00", "prune": { "after": "backup" }, "check": { "schedule": "weekly sun 04:00" } }
+}],
+"repositories": [{ "name": "offsite", "...": "...", "tasks": { "compact": { "schedule": "monthly", "after": "backup" } } }]
+```
+
+A schedule is one of:
+
+- a duration, `30m`, `6h`, `1d`, `1h30m` or a number of seconds, counted from the start of the
+  task's last run;
+- `hourly`, `daily`, `weekly` (Monday) or `monthly` (the 1st), at 00:00 or on the hour;
+- `daily HH:MM`, or `weekly <weekday> HH:MM` such as `weekly sun 03:00`;
+- a five-field cron line, `minute hour day-of-month month day-of-week`, with `*`, lists, ranges,
+  `/step` and names, such as `30 2 * * mon-fri`; with both day fields set, either matching is due.
+
+Calendar forms read the server's own time zone, or `X_BACKUPS_TIMEZONE` (an IANA name such as
+`Europe/Berlin`). A time the clocks skip runs as far past the jump as it was into the gap, and a
+time they repeat runs once. Each start is put off by up to a minute, the same for a task each time.
+
+An object takes `schedule`, `enabled` (true whenever it has a schedule or `after`), and `after:
+"backup"` on a prune or compact: a job's prune runs right after each successful backup of the same
+target, and a repository's compact once the backups and prunes due on it have finished. A check
+takes `kind`: on a job `archives` (`borg check --archives-only`, limited to the job's own archives)
+or `extract` (a dry-run extract of its newest archive); on a repository `repository`
+(`--repository-only`, the default where a job writes), `all` (the default where none does) or
+`data` (`--verify-data`, the default with `check_verify_data`). On a flat entry `check` is its
+repository's.
+
+Left out, a task still has defaults: a check runs every half of its `check_kinds` age, so it lands
+well before going stale, and the canary every `canary_interval` (a day unless set), and polls no
+longer restore it. `prune_after_backup` and `compact_after_backup` still work, as a prune and a
+compact `after: "backup"`. A task with no schedule runs only when started by hand. A scheduled prune
+needs no `allow_delete`, which guards only the Prune button.
+
+When a task is due comes from the store: a task never run is due at once, and otherwise from its
+last run on each target, or the last action of the same kind started by hand. So a restart picks up
+where it left off. One run goes at a time on a repository, and on one job's targets from one host;
+the rest queue. A task whose host's agent is away waits, and runs once when the agent connects
+however many times it fell due meanwhile. A start that is refused or skipped, such as by
+`skip_while_active`, tries again after ten minutes.
+
+Each run keeps its task's id, `job:<name>:<kind>` or `repository:<name>:<kind>`, in `task`; an action
+started from the page keeps null. `GET /api/tasks` lists each task the viewer sees with its schedule
+in words, whether it is enabled, when it is next due, its last run and why it waits, per target.
+An operator may `POST /api/tasks/:id/run` to run it now, and `/enable` or `/disable` it, which is
+kept in the store over the declared config; a repository's task also needs an admin or a user who
+sees every job writing there. Host timers are still read for repositories no job writes to.
+
 ## Users and access
 
 The password hash file logs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds

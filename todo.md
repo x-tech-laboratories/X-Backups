@@ -652,10 +652,19 @@ and 56.
     `runner.ts`, `detached.ts`, the shell health read, `sshKeyFile` and a host's `ssh_user` are gone,
     and the module keeps the built-in agent's runs across a restart with `KillMode=process`. Left for
     66: starting tasks on their agents. Left for 67: the Hosts page on `/api/hosts`.
-66. [ ] **Scheduler.** Each task has a frequency (a duration or a calendar expression) with presets
+66. [x] **Scheduler.** Each task has a frequency (a duration or a calendar expression) with presets
     and a readable description, enable and disable, and Run now. X-Backups starts each due task on
     its agent, runs a missed one when the agent reconnects, and queues tasks that share a repository
     lock. Host timers are still read where an agent finds them, for repositories with no job.
+    Built in `src/server/schedule.ts` (durations, presets, `daily HH:MM`, `weekly <day> HH:MM`, cron,
+    in `X_BACKUPS_TIMEZONE` or the server's zone) and `src/server/scheduler.ts`. Jobs and repositories
+    take `tasks`, defaulted from `check_kinds` and `canary_interval`; `prune_after_backup` and
+    `compact_after_backup` become tasks with `after: "backup"`, and a backup no longer chains them.
+    Due times come from each task's last run in the store, and runs carry the task's id in `task`;
+    page overrides live in `task_overrides`. `/api/tasks` lists them, with Run now, enable and disable
+    for an operator, and a repository's task held to 68's whole-repository rule. Left for 67: a Tasks
+    view on `/api/tasks` (next due, waiting reason, Run now and the switch) beside Schedules, and the
+    config form's `tasks` field, which it does not edit yet.
 67. [ ] **Pages.** Hosts (agent state, health, enrolment), Sources, Jobs (definitions, targets,
     tasks and their schedules) and Runs, beside Repositories with its own tasks. The Map draws the
     entities, and the Overview reports targets.

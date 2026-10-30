@@ -14,7 +14,9 @@
       "host": "storage",
       "repo": "ssh://borg@storage.example.org/./fileserver",
       "passphrase_file": "/run/secrets/borg-offsite",
-      "check_units": ["borgmatic-check.service"]
+      "check_units": ["borgmatic-check.service"],
+      "check_kinds": { "repository": "30d" },
+      "tasks": { "compact": { "schedule": "weekly sun 05:00", "after": "backup" } }
     },
     {
       "name": "local",
@@ -28,6 +30,9 @@
     { "name": "fileserver-data", "host": "fileserver", "source_paths": ["/srv/data", "/etc"], "exclude": ["*.tmp"] }
   ],
   "jobs": [
-    { "name": "nightly", "sources": ["fileserver-data"], "repositories": ["offsite"], "keep_daily": 7, "keep_weekly": 4 }
+    {
+      "name": "nightly", "sources": ["fileserver-data"], "repositories": ["offsite"], "keep_daily": 7, "keep_weekly": 4,
+      "tasks": { "backup": "daily 02:00", "prune": { "after": "backup" }, "check": { "schedule": "weekly sun 04:00" } }
+    }
   ]
 }
