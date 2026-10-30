@@ -132,6 +132,37 @@ in words, whether it is enabled, when it is next due, its last run and why it wa
 An operator may `POST /api/tasks/:id/run` to run it now, and `/enable` or `/disable` it, which is
 kept in the store over the declared config; a repository's task also needs an admin or a user who
 sees every job writing there. Host timers are still read for repositories no job writes to.
+`GET /api/schedule?text=` describes a schedule in words with its next three times, as the config
+form shows while one is typed.
+
+## Pages
+
+The sidebar holds Overview, Hosts, Repositories, Sources, Jobs, Runs, Map, Schedules, Events,
+Settings, Users and Account, and each entity's page links to the others it names.
+
+- **Overview:** tiles and a needs-attention list by target, with hosts whose agent is away and
+  tasks that wait, and the next task and timer runs.
+- **Hosts:** each host's kind, agent state (built in, connected, offline or never enrolled),
+  version, last seen, health and counts. A host's page shows its health, sources, the repositories
+  stored there, the targets running there, its runs and timers; an admin enrols its agent there,
+  getting the token once with the `services.x-backups-agent` options and the variables for a host
+  without NixOS, and revokes it.
+- **Repositories:** each target, a job's backups from one host to one repository or a repository
+  only watched. A target's page also names the jobs writing to its repository, the repository's
+  other targets and its own compact and check tasks.
+- **Sources** and **Jobs:** a source's paths, excludes and the jobs using it; a job's sources and
+  repositories, a target per host and repository with its newest archive against `max_age`, its
+  tasks with Run now and a switch that says when it differs from the config, and its runs.
+  `GET /api/jobs` and `GET /api/sources` serve them; `#/jobs/<number>` from before opens that run.
+- **Runs:** filtered by target, host, job, task, kind, outcome and period, each with its task and
+  a badge for a run waiting for its host's agent or lost (`condition` in `/api/runs`).
+- **Schedules:** the week of each task's next run and newest run beside the host timers, and the
+  tasks and timers as tables.
+- **Settings:** the defaults, and each host, repository, source and job as written. In `mixed` and
+  `page` modes an admin adds, changes and removes them there, picking a job's sources and
+  repositories from lists and writing its tasks with presets and their meaning in words; a declared
+  one shows read-only. `GET`, `POST /api/config/:kind` and `PUT`, `DELETE
+  /api/config/:kind/:name` back it, refusing to remove one another entity names.
 
 ## Users and access
 
@@ -228,7 +259,8 @@ the commands the server sends, keeps long runs such as backups going across a dr
 or its own restart, and samples the host's load, memory and disk. The server's own machine has an
 agent built in.
 
-To enrol a host, an admin issues it a token with `POST /api/hosts/<name>/token`; the token is shown
+To enrol a host, an admin presses Enrol agent on its page, or issues it a token with
+`POST /api/hosts/<name>/token`; the token is shown
 once and only its hash is kept, and issuing a new one hangs up on an agent using the old.
 `DELETE /api/hosts/<name>/token` revokes it. `GET /api/hosts` lists each host with whether its agent
 is connected, its version, when it was last seen and its newest health reading. Put the token in a
@@ -277,8 +309,8 @@ cannot open a borg 1 repository, so each repository keeps the version it was mad
 
 - `declarative`, the default: everything comes from `X_BACKUPS_CONFIG` and the page shows it
   read-only.
-- `mixed`: what the file declares stays locked, and the page may add repositories and set the
-  defaults the file leaves open.
+- `mixed`: what the file declares stays locked, and the page may add hosts, repositories, sources
+  and jobs, and set the defaults the file leaves open.
 - `page`: the same, with `X_BACKUPS_CONFIG` optional.
 
 The page keeps its part in `config.json` under `X_BACKUPS_STATE_DIR`, and a passphrase typed there in

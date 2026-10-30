@@ -665,9 +665,16 @@ and 56.
     for an operator, and a repository's task held to 68's whole-repository rule. Left for 67: a Tasks
     view on `/api/tasks` (next due, waiting reason, Run now and the switch) beside Schedules, and the
     config form's `tasks` field, which it does not edit yet.
-67. [ ] **Pages.** Hosts (agent state, health, enrolment), Sources, Jobs (definitions, targets,
+67. [x] **Pages.** Hosts (agent state, health, enrolment), Sources, Jobs (definitions, targets,
     tasks and their schedules) and Runs, beside Repositories with its own tasks. The Map draws the
     entities, and the Overview reports targets.
+    Built in `src/web/views/hosts.ts`, `sources.ts`, `jobs.ts`, `tasks.ts` and `entity_config.ts`, on
+    `GET /api/jobs`, `/api/sources`, `/api/schedule` and `/api/config/:kind` with its POST, PUT and
+    DELETE. A target's page carries its repository's writers, other targets and tasks; runs filter by
+    task and carry a `condition` for waiting for an agent or lost; Schedules puts task runs in the
+    week beside host timers; the Overview reports targets, agents away and waiting tasks; the Map
+    links hosts and folders to their pages. Settings edits each kind in `mixed` and `page` modes,
+    with a job's tasks and their schedules described as typed.
 68. [x] **Access per job.** A grant on a job shows its targets, runs, sources and repositories. A
     repository grant becomes grants on the jobs that write there.
     Built in `src/server/access.ts`, whose `scope_of` and `sees` decide every kind a route lists,
