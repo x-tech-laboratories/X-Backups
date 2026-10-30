@@ -9,7 +9,7 @@ import { BorgRepository, WAITING_FOR_AGENT, progress_from_lines, topmost_exclude
 import {
   INHIBIT_SCRIPT, piped, preflight_script, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_preflight, wrap_job,
 } from "../../src/server/borg/shell.ts";
-import { Harness } from "./testing.ts";
+import { Harness, MemoryRunStore } from "./testing.ts";
 import { ActionPlan, CollectResult, LongRunPlan, cmd_result, type ActionStart, type CmdResult, type DownloadPlan } from "../../src/server/borg/types.ts";
 import type { LongRunPoll } from "../../src/shared/agent_protocol.ts";
 
@@ -185,7 +185,7 @@ function start(harness: Harness, action_id: string, params: ActionParams = {}): 
 
 // Answers a long run the way the poller does: its preflight's result first, then the agent starting it.
 function settle_long_run(plan: LongRunPlan, preflight: CmdResult): CollectResult {
-  return plan.read_preflight(preflight) ?? plan.read_start(plan.record(), null);
+  return plan.read_preflight(preflight) ?? plan.read_start(plan.record(null), null);
 }
 
 // Starts an action, and has its agent start it when it is a long run.
@@ -810,7 +810,7 @@ describe("backup launch", () => {
   it("ends the job's record when the agent cannot start it", () => {
     const harness = make(BACKUP_CFG);
     const plan = long_run_of(harness, "run_backup");
-    const outcome = plan.read_start(plan.record(), "No agent is connected for odin.");
+    const outcome = plan.read_start(plan.record(null), "No agent is connected for odin.");
     expect(outcome.success).toBe(false);
     expect(harness.runs.running()).toBeNull();
     expect(harness.runs.recent()[0]).toMatchObject({ state: "failed", error: "Could not start: No agent is connected for odin." });
@@ -1778,11 +1778,26 @@ describe("backup chain", () => {
     expect(command).not.toContain(" compact ");
   });
 
-  it("prunes, then compacts, after the create", () => {
+  it("leaves the prune and compact after a backup to their own tasks", () => {
     const command = unquoted(command_of(make(CHAIN_CFG), "run_backup"));
-    expect(command.indexOf("create")).toBeLessThan(command.indexOf("prune --list --stats"));
-    expect(command.indexOf("prune --list --stats")).toBeLessThan(command.indexOf("compact --progress"));
-    expect(command).toContain("--keep-daily 7");
+    expect(command).toContain("create");
+    expect(command).not.toContain(" prune ");
+    expect(command).not.toContain(" compact ");
+  });
+
+  it("prunes for a task without allow_delete, which only guards the button", () => {
+    const repository = make({ ...BACKUP_CFG, keep_daily: 7 }).repository;
+    expect(repository.prune_repo()).toMatchObject({ success: false, content: expect.stringContaining("allow_delete") });
+    expect(repository.prune_repo(true)).toBeInstanceOf(LongRunPlan);
+  });
+
+  it("checks only the target's own archives", () => {
+    const repository = new BorgRepository("web", { ...BACKUP_CFG }, { list_match: "web-odin-????-??-??T*", repository_actions_on: "web:thor:disk" });
+    repository.runs = new MemoryRunStore();
+    const plan = repository.check_own_archives() as LongRunPlan;
+    expect(plan.kind).toBe("check-archives");
+    expect(unquoted(plan.command)).toContain("check --progress --archives-only --glob-archives web-odin-????-??-??T*");
+    expect(repository.check_repo("repository")).toMatchObject({ success: false });
   });
 
   it("never prunes on a dry run", () => {
@@ -1823,7 +1838,7 @@ describe("job wrappers", () => {
   it("wraps the whole job in the lock, then the inhibitor, then the priority", () => {
     const config = { ...CHAIN_CFG, job_lock: "/run/lock/x-monitor-borg", inhibit_sleep: true, job_nice: 19, job_io_idle: true };
     const command = unquoted(command_of(make(config), "run_backup"));
-    const order = ["flock /run/lock/x-monitor-borg sh -c", "systemd-inhibit", "--what=sleep:shutdown", "nice -n 19 ionice -c 3 sh -c", "create", "compact --progress"];
+    const order = ["flock /run/lock/x-monitor-borg sh -c", "systemd-inhibit", "--what=sleep:shutdown", "nice -n 19 ionice -c 3 sh -c", "create"];
     const positions = order.map((part) => command.indexOf(part));
     expect(positions.every((position) => position > -1)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));

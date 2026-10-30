@@ -20,7 +20,7 @@ import {
 } from "./parsing.ts";
 import {
   BASE_DIR_VAR, INHIBIT_SCRIPT, PASSPHRASE_VAR, STEP_MARK, archive_member, as_list, failure_hint, list_unavailable, piped, preflight_script,
-  redact, shell_quote, skip_reason, ssh_endpoint, then_steps, when_folder_empty, with_passphrase, with_preflight, wrap_job,
+  redact, shell_quote, skip_reason, ssh_endpoint, when_folder_empty, with_passphrase, with_preflight, wrap_job,
 } from "./shell.ts";
 import type { LongRunPoll } from "../../shared/agent_protocol.ts";
 import {
@@ -96,6 +96,8 @@ export interface BorgConfig extends Partial<Record<KeepOption, number | string>>
 export interface TargetScope {
   list_match?: string | null;
   repository_actions_on?: string | null;
+  // The canary runs as its job's task, so polls leave it out.
+  canary_by_task?: boolean;
 }
 
 // Keeps the "Processing" lines and the top-most excluded path of each dropped tree, then exits with borg's status.
@@ -203,8 +205,6 @@ export class BorgRepository {
   // Unset means every archive, since the repo may be shared with the tool that owns it.
   purge_match: string | null;
 
-  prune_after_backup: boolean;
-  compact_after_backup: boolean;
   skip_when_unreachable: boolean;
   skip_while_active: string[];
   job_nice: number | null;
@@ -214,6 +214,7 @@ export class BorgRepository {
   check_kinds: Record<string, number>;
   list_match: string | null;
   repository_actions_on: string | null;
+  canary_by_task: boolean;
 
   poll_calls: string[] = [];
   // Archives never change once written, so a folder listed once stays true until the archive is deleted.
@@ -280,9 +281,8 @@ export class BorgRepository {
     this.allow_purge = Boolean(config.allow_purge ?? false);
     this.purge_match = config.purge_match ?? null;
 
-    this.prune_after_backup = Boolean(config.prune_after_backup ?? false);
-    this.compact_after_backup = Boolean(config.compact_after_backup ?? false);
-    if (this.prune_after_backup && Object.keys(this.retention).length === 0) {
+    // The config turns prune_after_backup into a prune task run after each backup, which needs a retention policy.
+    if (config.prune_after_backup && Object.keys(this.retention).length === 0) {
       throw new Error("prune_after_backup needs a keep_* retention policy");
     }
     this.skip_when_unreachable = Boolean(config.skip_when_unreachable ?? true);
@@ -299,6 +299,7 @@ export class BorgRepository {
     }
     this.list_match = scope.list_match ?? null;
     this.repository_actions_on = scope.repository_actions_on ?? null;
+    this.canary_by_task = scope.canary_by_task ?? false;
   }
 
   // ── Building borg commands ─────────────────────────────────────────────────
@@ -377,7 +378,7 @@ export class BorgRepository {
     const calls: [string, string][] = [["list", this.list_command()]];
     if (this.collect_stats) calls.push(["info", this.info_command()]);
     const archive = this.canary_archive();
-    if (archive && this.canary_due()) calls.push(...this.canary_calls(archive));
+    if (archive && !this.canary_by_task && this.canary_due()) calls.push(...this.canary_calls(archive));
     if (this.check_units.length > 0) calls.push(["checks", check_unit_script(this.check_units)]);
     const path = this.local_path();
     if (path !== null) calls.push(["space", `df -B1 --output=size,avail -- ${shell_quote(path)}`]);
@@ -808,7 +809,7 @@ export class BorgRepository {
       command: with_passphrase(wrapped, { exported: true }),
       stdin: this.stdin_for([command]),
       read_preflight: (result) => this.read_preflight(kind, result),
-      record: () => this.runs!.create(kind, redact(wrapped)),
+      record: (task) => this.runs!.create(kind, redact(wrapped), task),
       read_start: (run_id, failure) => this.read_start(kind, started, run_id, failure),
     });
   }
@@ -850,14 +851,9 @@ export class BorgRepository {
     return this.backup_refusal() ?? this.launch("dry-run", this.backup_command({ dry_run: true }));
   }
 
+  // A prune or compact after the backup is a task of its own, which the scheduler starts once this run succeeds.
   run_backup(): ActionStart {
-    const refusal = this.backup_refusal();
-    if (refusal) return refusal;
-    const steps: [string, string][] = [];
-    if (this.prune_after_backup) steps.push(["Pruning", this.maintenance_command([...this.prune_args(), ...this.repo_args()])]);
-    // Compact acts on the whole repository, so of the targets sharing one only the one offering its actions compacts.
-    if (this.compact_after_backup && this.repository_actions_on === null) steps.push(["Compacting", this.maintenance_command(["compact", "--progress", ...this.repo_args()])]);
-    return this.launch("backup", then_steps(this.backup_command(), steps));
+    return this.backup_refusal() ?? this.launch("backup", this.backup_command());
   }
 
   // ── Prune preview ──────────────────────────────────────────────────────────
@@ -1075,14 +1071,26 @@ export class BorgRepository {
     }
     const refusal = this.repository_refusal() ?? this.run_refusal("check the repository");
     if (refusal) return refusal;
-    if (kind === "extract") {
-      const newest = this.state.archives[0]?.name ?? null;
-      if (!newest) return BorgRepository.refused("Cannot run an extract check: no archive listed yet");
-      const command = this.maintenance_command(["extract", "--dry-run", "--progress", ...this.archive_args(newest)]);
-      return this.launch(check_run_kind(kind), command, ` on ${newest}`);
-    }
+    if (kind === "extract") return this.extract_check();
     const args = ["check", "--progress", ...CHECK_KINDS[kind].options];
     return this.launch(check_run_kind(kind), this.maintenance_command([...args, ...this.repo_args()]));
+  }
+
+  // Checks only the archives this target lists, which any target writing to the repository may do: their metadata, or
+  // a dry-run extract of the newest.
+  check_own_archives(kind: "archives" | "extract" = "archives"): ActionStart {
+    const refusal = this.run_refusal("check the archives");
+    if (refusal) return refusal;
+    if (kind === "extract") return this.extract_check();
+    const scope = this.list_match === null ? [] : this.match_args(this.list_match);
+    return this.launch(check_run_kind("archives"), this.maintenance_command(["check", "--progress", "--archives-only", ...scope, ...this.repo_args()]));
+  }
+
+  private extract_check(): ActionStart {
+    const newest = this.state.archives[0]?.name ?? null;
+    if (!newest) return BorgRepository.refused("Cannot run an extract check: no archive listed yet");
+    const command = this.maintenance_command(["extract", "--dry-run", "--progress", ...this.archive_args(newest)]);
+    return this.launch(check_run_kind("extract"), command, ` on ${newest}`);
   }
 
   compact_repo(): ActionStart {
@@ -1091,8 +1099,9 @@ export class BorgRepository {
     return this.launch("compact", this.maintenance_command(["compact", "--progress", ...this.repo_args()]));
   }
 
-  prune_repo(): ActionStart {
-    if (!this.allow_delete) return BorgRepository.refused("Pruning is off for this monitor — set allow_delete: true to enable it");
+  // A prune task the config declares needs no allow_delete, which only guards the Prune button.
+  prune_repo(by_task = false): ActionStart {
+    if (!this.allow_delete && !by_task) return BorgRepository.refused("Pruning is off for this monitor — set allow_delete: true to enable it");
     if (Object.keys(this.retention).length === 0) return BorgRepository.refused("Cannot prune: no keep_* retention configured");
     const refusal = this.run_refusal("prune");
     if (refusal) return refusal;

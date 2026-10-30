@@ -9,6 +9,7 @@ import { hash_password } from "../src/server/auth.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
 import { parse_config, type Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
+import { Scheduler } from "../src/server/scheduler.ts";
 import { Store } from "../src/server/store.ts";
 import { code_at } from "../src/server/totp.ts";
 import { FakeAgent } from "./agents/fake_agent.ts";
@@ -115,11 +116,12 @@ const SHARED = JSON.stringify({
   jobs: [{ name: "nightly", sources: ["home"], repositories: ["vault"] }, { name: "mail", sources: ["maildir"], repositories: ["vault"] }],
 });
 
-async function rebuild(config: Config): Promise<void> {
+async function rebuild(config: Config, with_scheduler = false): Promise<void> {
   poller.stop();
   await app.close();
   poller = new Poller(config, store, agent_hub(store), async (_host, command) => cmd_result(0, command.includes("list") ? LIST : "", ""));
-  app = await build_app({ serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store });
+  const scheduler = with_scheduler ? new Scheduler(poller, store, { time_zone: "UTC", jitter_in_seconds: 0 }) : undefined;
+  app = await build_app({ serve_web: false, logger: false, password_hash: hash_password("declared admin pass"), poller, store, scheduler });
 }
 
 const ids = (response: { json: () => unknown }) => (response.json() as { id?: string; name?: string }[]).map((item) => item.id ?? item.name);
@@ -177,6 +179,27 @@ describe("job access", () => {
     const [compact] = (await call("GET", "/api/runs", vic)).json();
     expect((await call("POST", `/api/runs/${compact.id}/cancel`, vic)).statusCode).toBe(403);
     expect((await call("POST", `/api/runs/${compact.id}/cancel`, bea)).statusCode).toBe(200);
+  });
+
+  it("shows the tasks of the jobs and repositories a user sees, and holds repository tasks to the whole-repository rule", async () => {
+    await rebuild(parse_config(SHARED, "test.json"), true);
+    const admin = await login("admin", "declared admin pass");
+    const vic = await add_user(admin, "vic", "operator", [{ job: "nightly" }]);
+    const bea = await add_user(admin, "bea", "operator", [{ job: "nightly" }, { job: "mail" }]);
+    const vera = await add_user(admin, "vera", "viewer", [{ job: "nightly" }]);
+
+    expect(ids(await call("GET", "/api/tasks", vic))).toEqual(["job:nightly:backup", "job:nightly:check", "repository:vault:compact", "repository:vault:check"]);
+    expect((await call("GET", "/api/tasks", admin)).json().find((task: { id: string }) => task.id === "job:mail:backup").targets).toHaveLength(1);
+    expect((await call("POST", "/api/tasks/job:mail:backup/run", vic)).statusCode).toBe(404);
+    expect((await call("POST", "/api/tasks/job:nightly:backup/disable", vera)).statusCode).toBe(403);
+
+    expect((await call("POST", "/api/tasks/repository:vault:check/run", vic)).statusCode).toBe(403);
+    expect((await call("POST", "/api/tasks/repository:vault:compact/disable", vic)).statusCode).toBe(403);
+    const disabled = await call("POST", "/api/tasks/repository:vault:check/disable", bea);
+    expect(disabled.json()).toMatchObject({ id: "repository:vault:check", enabled: false });
+    const ran = await call("POST", "/api/tasks/job:nightly:check/run", vic);
+    expect(ran.statusCode).toBe(202);
+    expect(ran.json()).toEqual({ id: "job:nightly:check", targets: ["nightly:odin:vault"] });
   });
 
   it("shows a repository no job writes to through its own grant", async () => {

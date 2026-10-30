@@ -8,6 +8,7 @@ import type { LongRunPoll } from "../shared/agent_protocol.ts";
 import type { AgentRunOptions, AgentStreamOptions, CommandStream } from "./agents/agent.ts";
 import type { AgentHub, AgentStatus } from "./agents/hub.ts";
 import { BorgRepository } from "./borg/repository.ts";
+import { redact } from "./borg/shell.ts";
 import { CollectResult, LongRunPlan, type ActionPlan, type CmdResult, type MonitorStatus, type RunRecord } from "./borg/types.ts";
 import { own_host, target_id, target_key, type Config, type Entities, type RepositoryConfig } from "./config.ts";
 import type { Store } from "./store.ts";
@@ -34,6 +35,12 @@ export interface Watched {
   repository: BorgRepository;
   // The status the latest poll reported, kept until a poll reports another.
   status: MonitorStatus | null;
+}
+
+// The task a run is started for: its id, and the kind its run is recorded as when it has no long run of its own.
+export interface TaskRun {
+  id: string;
+  kind: string;
 }
 
 const run_poll_interval_in_seconds = 10;
@@ -162,14 +169,33 @@ export class Poller {
     }
   }
 
-  // Runs an action's commands one after another and keeps what its reader reports, or starts its long run.
-  run_action(id: string, plan: ActionPlan | LongRunPlan): Promise<CollectResult> {
+  // Runs an action's commands one after another and keeps what its reader reports, or starts its long run. A task's
+  // long run is recorded under the task, and its plain commands, such as the canary's, as a run of the task's kind.
+  run_action(id: string, plan: ActionPlan | LongRunPlan, task: TaskRun | null = null): Promise<CollectResult> {
     return this.queued(id, async () => {
       const watched = this.watched(id);
-      const result = plan instanceof LongRunPlan ? await this.start_run(watched, plan) : await this.run_plan(watched, plan);
+      let result: CollectResult;
+      if (plan instanceof LongRunPlan) result = await this.start_run(watched, plan, task?.id ?? null);
+      else result = task === null ? await this.run_plan(watched, plan) : await this.run_recorded(watched, plan, task);
       this.keep(watched, result, false);
       return result;
     }).finally(() => this.schedule(id));
+  }
+
+  // Runs a task's plain commands as a run of their own, so the task's history shows them like any other run.
+  private async run_recorded(watched: Watched, plan: ActionPlan, task: TaskRun): Promise<CollectResult> {
+    const runs = watched.repository.runs!;
+    const run_id = runs.create(task.kind, redact(plan.commands.join("\n")), task.id);
+    let result: CollectResult;
+    try {
+      result = await this.run_plan(watched, plan);
+    } catch (error) {
+      result = failed_result(error);
+    }
+    const message = result.content ?? result.logs.at(-1)?.[0] ?? null;
+    if (message !== null) runs.append_output(run_id, message.split("\n"));
+    runs.finish(run_id, result.success ? "succeeded" : "failed", { exit_code: result.success ? 0 : 1, error: result.success ? null : message });
+    return result;
   }
 
   private async run_plan(watched: Watched, plan: ActionPlan): Promise<CollectResult> {
@@ -182,13 +208,13 @@ export class Poller {
   }
 
   // Runs the plan's preflight, then records the run and has the host's agent start it under the record's agent run id.
-  private async start_run(watched: Watched, plan: LongRunPlan): Promise<CollectResult> {
+  private async start_run(watched: Watched, plan: LongRunPlan, task: string | null): Promise<CollectResult> {
     const host = host_name(watched);
     if (plan.preflight !== null) {
       const skipped = plan.read_preflight(await this.run(host, plan.preflight, { timeout_in_seconds: preflight_timeout_in_seconds }));
       if (skipped !== null) return skipped;
     }
-    const run_id = plan.record();
+    const run_id = plan.record(task);
     const agent_run = this.store.run_row(run_id)!.agent_run!;
     try {
       await this.agents.start(host, agent_run, plan.command, { stdin: plan.stdin });

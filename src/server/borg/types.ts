@@ -56,8 +56,9 @@ export class LongRunPlan {
   stdin: string | null;
   // Says why the run is skipped from its preflight's result, or null when it goes ahead.
   read_preflight: (result: CmdResult) => CollectResult | null;
-  // Records the run before the agent starts it, answering its id in the run store.
-  record: () => number;
+  // Records the run, under the task that started it or null for one started by hand, before the agent starts it,
+  // answering its id in the run store.
+  record: (task: string | null) => number;
   // What the action reports once the agent has started the run, or why it could not.
   read_start: (run_id: number, failure: string | null) => CollectResult;
 
@@ -201,7 +202,8 @@ export interface RunRecord {
 export interface RunStore {
   running(): RunRecord | null;
   action_run(action_id: string): RunRecord | null;
-  create(kind: string, command: string): number;
+  // A run of a task carries the task's id; one started by hand carries null.
+  create(kind: string, command: string, task?: string | null): number;
   set_progress(run_id: number, summary: string | null): void;
   append_output(run_id: number, lines: string[]): void;
   bump_output_seq(run_id: number, new_seq: number): void;

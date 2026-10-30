@@ -1,5 +1,6 @@
 // Reads the config: hosts, repositories, sources and jobs, their field checks and cross-references, the defaults a
-// file may set, and the targets each job expands into, each the repository config the poller watches.
+// file may set, the tasks of each job and repository with their schedules, and the targets each job expands into, each
+// the repository config the poller watches.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
@@ -9,6 +10,7 @@ import { parse_duration } from "./borg/durations.ts";
 import { BorgRepository, type BorgConfig, type TargetScope } from "./borg/repository.ts";
 import { as_list } from "./borg/shell.ts";
 import { repo_location } from "./map.ts";
+import { parse_schedule, type ScheduleText } from "./schedule.ts";
 import type { TargetKey } from "./store.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -50,6 +52,7 @@ export interface RepositoryEntity {
   // The targets that poll the repository, and the one that offers its own actions such as compact.
   targets: string[];
   actions_target: string | null;
+  tasks: Partial<Record<RepositoryTaskKind, TaskConfig>>;
 }
 
 export interface SourceEntity {
@@ -67,6 +70,26 @@ export interface JobEntity {
   borg: BorgConfig;
   source: ConfigSource;
   expanded_from: string | null;
+  tasks: Partial<Record<JobTaskKind, TaskConfig>>;
+}
+
+export type JobTaskKind = "backup" | "prune" | "check" | "canary";
+export type RepositoryTaskKind = "compact" | "check";
+export type TaskKind = JobTaskKind | RepositoryTaskKind;
+
+// One task of a job or a repository as the scheduler runs it.
+export interface TaskConfig {
+  // A duration or calendar expression, or null for a task started only by hand or after a backup.
+  schedule: ScheduleText | null;
+  // "backup" runs a job's prune right after each successful backup of the same target, and a repository's compact once
+  // its due backups and prunes have finished.
+  after: "backup" | null;
+  enabled: boolean;
+  // A check's kind: archives or extract on a job, repository, all or data on a repository; null on other tasks.
+  check: string | null;
+  // Where the schedule came from: written in tasks, translated from prune_after_backup or compact_after_backup,
+  // defaulted from a limit such as check_kinds or canary_interval, or none, for a task only started by hand.
+  origin: "written" | "translated" | "default" | "manual";
 }
 
 export interface Entities {
@@ -236,6 +259,34 @@ const entity_own_fields: Record<EntityKind, Record<string, FieldKind>> = {
   jobs: { name: "string", sources: "list", repositories: "list" },
 };
 
+// Each task an owner may write; a flat entry's check is its repository's.
+const owner_tasks: Record<TaskOwner, readonly TaskKind[]> = {
+  jobs: ["backup", "prune", "check", "canary"],
+  repositories: ["compact", "check"],
+  flat: ["backup", "prune", "canary", "compact", "check"],
+};
+
+type TaskOwner = "jobs" | "repositories" | "flat";
+
+// A task as written in a job's or repository's tasks, before its defaults are filled in.
+interface WrittenTask {
+  schedule?: ScheduleText;
+  enabled?: boolean;
+  after?: "backup";
+  kind?: string;
+}
+
+type WrittenTasks = Partial<Record<TaskKind, WrittenTask>>;
+
+// The kinds a check task takes on each owner.
+export const check_task_kinds: Record<"jobs" | "repositories", string[]> = { jobs: ["archives", "extract"], repositories: ["repository", "all", "data"] };
+
+// The tasks that may run after a backup.
+const after_backup_tasks: TaskKind[] = ["prune", "compact"];
+
+// A schedule defaulted from a freshness limit is never shorter than this.
+const shortest_default_schedule_in_seconds = 3600;
+
 // The own fields of a flat entry, which holds every borg field as well.
 const own_fields: Record<string, FieldKind> = { name: "string", host: "string", interval: "duration" };
 
@@ -354,22 +405,32 @@ export function compile_config(lists: EntityLists, defaults: Record<string, unkn
 
   const flat_targets = new Map<string, RepositoryConfig>();
   const written_poll_via = new Map<string, string>();
+  const written_tasks: Record<"jobs" | "repositories", Map<string, WrittenTasks>> = { jobs: new Map(), repositories: new Map() };
   for (const tagged of lists.repositories) {
     if (is_flat_entry(tagged.entry, written_hosts)) {
       const target = parse_flat_entry(tagged.entry, tagged.index, defaults, tagged.source);
       expand_flat_entry(target, maps);
       flat_targets.set(target.name, target);
+      const tasks = parse_tasks((tagged.entry as Record<string, unknown>).tasks, "flat", flat_fail(target.name));
+      written_tasks.jobs.set(target.name, pick_tasks(tasks, owner_tasks.jobs.filter((kind) => kind !== "check")));
+      written_tasks.repositories.set(target.name, pick_tasks(tasks, owner_tasks.repositories));
       continue;
     }
-    const { repository, poll_via } = parse_repository(tagged, defaults);
+    const { repository, poll_via, tasks } = parse_repository(tagged, defaults);
     add_entity(maps.repositories, repository, "repositories");
     if (poll_via !== null) written_poll_via.set(repository.name, poll_via);
+    written_tasks.repositories.set(repository.name, tasks);
   }
   for (const tagged of lists.sources) add_entity(maps.sources, parse_source(tagged), "sources");
-  for (const tagged of lists.jobs) add_entity(maps.jobs, parse_job(tagged), "jobs");
+  for (const tagged of lists.jobs) {
+    const { job, tasks } = parse_job(tagged);
+    add_entity(maps.jobs, job, "jobs");
+    written_tasks.jobs.set(job.name, tasks);
+  }
 
   check_references(maps, written_poll_via);
   const repositories = build_targets(maps, flat_targets, defaults);
+  resolve_tasks(maps, written_tasks, repositories);
   return {
     repositories,
     entities: { hosts: [...maps.hosts.values()], repositories: [...maps.repositories.values()], sources: [...maps.sources.values()], jobs: [...maps.jobs.values()] },
@@ -388,7 +449,7 @@ function is_flat_entry(entry: unknown, written_hosts: Set<string>): boolean {
   if (typeof entry.host !== "string" || !written_hosts.has(entry.host)) return true;
   const own = entity_own_fields.repositories;
   const borg = entity_borg_fields.repositories as readonly string[];
-  return Object.keys(entry).some((field) => !Object.hasOwn(own, field) && !borg.includes(field));
+  return Object.keys(entry).some((field) => field !== "tasks" && !Object.hasOwn(own, field) && !borg.includes(field));
 }
 
 // ── Entities ─────────────────────────────────────────────────────────────────
@@ -417,6 +478,8 @@ function entity_borg(entry: Record<string, unknown>, kind: EntityKind, fail: Fai
   const borg: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(entry)) {
     if (Object.hasOwn(removed_fields, field)) fail(removed_fields[field], field);
+    // A job's and a repository's tasks are read by parse_tasks.
+    if (field === "tasks" && (kind === "jobs" || kind === "repositories")) continue;
     const field_kind = Object.hasOwn(own, field) ? own[field] : homed.includes(field) ? borg_fields[field as keyof BorgConfig] : null;
     if (field_kind === null) fail(`unknown field '${field}'.`, field);
     if (!is_field_kind(value, field_kind!)) fail(`${field} must be ${describe_kind(field_kind!)}, not ${JSON.stringify(value)}.`, field);
@@ -434,7 +497,7 @@ function parse_host(tagged: TaggedEntry): HostEntity {
   return { name, kind, address, borg, source: tagged.source, expanded_from: null };
 }
 
-function parse_repository(tagged: TaggedEntry, defaults: Record<string, unknown>): { repository: RepositoryEntity; poll_via: string | null } {
+function parse_repository(tagged: TaggedEntry, defaults: Record<string, unknown>): { repository: RepositoryEntity; poll_via: string | null; tasks: WrittenTasks } {
   const { entry, name, fail } = named_entry(tagged, "repositories");
   const borg = entity_borg(entry, "repositories", fail);
   const host = optional_string(entry, "host", fail) ?? fail("host is required.", "host");
@@ -445,9 +508,9 @@ function parse_repository(tagged: TaggedEntry, defaults: Record<string, unknown>
   }
   const repository: RepositoryEntity = {
     name, host, id: optional_string(entry, "id", fail) ?? name, poll_via: host, repo_by_host,
-    interval_in_seconds: interval_of(entry, defaults, fail), borg, source: tagged.source, expanded_from: null, targets: [], actions_target: null,
+    interval_in_seconds: interval_of(entry, defaults, fail), borg, source: tagged.source, expanded_from: null, targets: [], actions_target: null, tasks: {},
   };
-  return { repository, poll_via: optional_string(entry, "poll_via", fail) };
+  return { repository, poll_via: optional_string(entry, "poll_via", fail), tasks: parse_tasks(entry.tasks, "repositories", fail) };
 }
 
 function parse_source(tagged: TaggedEntry): SourceEntity {
@@ -458,14 +521,15 @@ function parse_source(tagged: TaggedEntry): SourceEntity {
   return { name, host, borg, source: tagged.source, expanded_from: null };
 }
 
-function parse_job(tagged: TaggedEntry): JobEntity {
+function parse_job(tagged: TaggedEntry): { job: JobEntity; tasks: WrittenTasks } {
   const { entry, name, fail } = named_entry(tagged, "jobs");
   const borg = entity_borg(entry, "jobs", fail);
   const sources = [...new Set(as_list(entry.sources))];
   const repositories = [...new Set(as_list(entry.repositories))];
   if (sources.length === 0) fail("needs at least one source.", "sources");
   if (repositories.length === 0) fail("needs at least one repository.", "repositories");
-  return { name, sources, repositories, borg, source: tagged.source, expanded_from: null };
+  const job = { name, sources, repositories, borg, source: tagged.source, expanded_from: null, tasks: {} };
+  return { job, tasks: parse_tasks(entry.tasks, "jobs", fail) };
 }
 
 function interval_of(entry: Record<string, unknown>, defaults: Record<string, unknown>, fail: Fail): number {
@@ -494,17 +558,14 @@ export function parse_flat_entry(entry: unknown, index: number, defaults: Record
     throw new ConfigError(`Repository ${index + 1}: name must be letters, digits, '.', '_' or '-'.`, "name");
   }
 
-  const fail = (problem: string, field: string | null = null): never => {
-    throw new ConfigError(`Repository '${name}': ${problem}`, field);
-  };
-
+  const fail = flat_fail(name);
   const host = optional_string(entry, "host", fail);
   optional_string(entry, "ssh_user", fail);
   const interval_in_seconds = interval_of(entry, defaults, fail);
 
   const borg: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(entry)) {
-    if (Object.hasOwn(own_fields, field) || Object.hasOwn(flat_only_fields, field)) continue;
+    if (Object.hasOwn(own_fields, field) || Object.hasOwn(flat_only_fields, field) || field === "tasks") continue;
     if (!Object.hasOwn(borg_fields, field)) fail(`unknown field '${field}'.`, field);
 
     const kind = borg_fields[field as keyof BorgConfig];
@@ -516,6 +577,12 @@ export function parse_flat_entry(entry: unknown, index: number, defaults: Record
   check_buildable(name, borg, fail);
 
   return { name, host, interval_in_seconds, borg: borg as BorgConfig, source };
+}
+
+function flat_fail(name: string): Fail {
+  return (problem, field = null) => {
+    throw new ConfigError(`Repository '${name}': ${problem}`, field);
+  };
 }
 
 // Adds the host it runs on and the one its repo URL reaches, a repository, a source when it has paths, and a job, all
@@ -533,11 +600,11 @@ function expand_flat_entry(target: RepositoryConfig, maps: EntityMaps): void {
 
   add_entity(maps.repositories, {
     name, host: stored ?? runs_on, id: borg.id ?? name, poll_via: runs_on, repo_by_host: {}, interval_in_seconds: target.interval_in_seconds,
-    borg: pick(borg, repository_borg_fields), source, expanded_from: name, targets: [], actions_target: null,
+    borg: pick(borg, repository_borg_fields), source, expanded_from: name, targets: [], actions_target: null, tasks: {},
   }, "repositories");
   const sources = as_list(borg.source_paths).length > 0 ? [name] : [];
   if (sources.length > 0) add_entity(maps.sources, { name, host: runs_on, borg: pick(borg, source_borg_fields), source, expanded_from: name }, "sources");
-  add_entity(maps.jobs, { name, sources, repositories: [name], borg: pick(borg, job_borg_fields), source, expanded_from: name }, "jobs");
+  add_entity(maps.jobs, { name, sources, repositories: [name], borg: pick(borg, job_borg_fields), source, expanded_from: name, tasks: {} }, "jobs");
   target.target = { job: name, host: runs_on, repository: name, sources };
 }
 
@@ -744,6 +811,138 @@ function check_buildable(name: string, borg: Record<string, unknown>, fail: (pro
   } catch (error) {
     fail(`${(error as Error).message}.`);
   }
+}
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+
+// Reads an owner's tasks, each a schedule or an object of schedule, enabled, after and a check's kind.
+function parse_tasks(value: unknown, owner: TaskOwner, fail: Fail): WrittenTasks {
+  if (value === undefined || value === null) return {};
+  if (!is_plain_object(value)) fail('tasks must be an object of tasks by kind, such as {"backup": {"schedule": "daily 02:00"}}.', "tasks");
+  const allowed = owner_tasks[owner];
+  const tasks: WrittenTasks = {};
+  for (const [kind, written] of Object.entries(value as Record<string, unknown>)) {
+    const where = `tasks.${kind}`;
+    if (!(allowed as readonly string[]).includes(kind)) fail(`unknown task '${kind}'; use ${allowed.join(", ")}.`, "tasks");
+    const task = typeof written === "string" || typeof written === "number" ? { schedule: written } : written;
+    if (!is_plain_object(task)) fail(`${where} must be a schedule or an object with schedule, enabled and after.`, "tasks");
+    const fields = task as Record<string, unknown>;
+    for (const field of Object.keys(fields)) {
+      if (!["schedule", "enabled", "after", "kind"].includes(field)) fail(`${where}: unknown field '${field}'.`, "tasks");
+    }
+    if (fields.schedule !== undefined) {
+      if (typeof fields.schedule !== "string" && typeof fields.schedule !== "number") fail(`${where}.schedule must be a string or a number of seconds.`, "tasks");
+      try {
+        parse_schedule(fields.schedule as ScheduleText);
+      } catch (error) {
+        fail(`${where}.schedule: ${(error as Error).message}`, "tasks");
+      }
+    }
+    if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") fail(`${where}.enabled must be true or false.`, "tasks");
+    if (fields.after !== undefined) {
+      if (!after_backup_tasks.includes(kind as TaskKind)) fail(`${where}: only prune and compact run after a backup.`, "tasks");
+      if (fields.after !== "backup") fail(`${where}.after must be "backup", not ${JSON.stringify(fields.after)}.`, "tasks");
+    }
+    if (fields.kind !== undefined) {
+      const kinds = check_task_kinds[owner === "jobs" ? "jobs" : "repositories"];
+      if (kind !== "check") fail(`${where}: only a check takes a kind.`, "tasks");
+      if (!kinds.includes(String(fields.kind))) fail(`${where}.kind must be ${kinds.join(", ")}, not ${JSON.stringify(fields.kind)}.`, "tasks");
+    }
+    tasks[kind as TaskKind] = fields as WrittenTask;
+  }
+  return tasks;
+}
+
+function pick_tasks(tasks: WrittenTasks, kinds: readonly TaskKind[]): WrittenTasks {
+  return Object.fromEntries(Object.entries(tasks).filter(([kind]) => kinds.includes(kind as TaskKind)));
+}
+
+// Fills each job's and repository's tasks from what was written, prune_after_backup and compact_after_backup, and the
+// limits that imply a schedule, then has each target whose job runs its canary as a task leave it out of its polls.
+function resolve_tasks(maps: EntityMaps, written: Record<"jobs" | "repositories", Map<string, WrittenTasks>>, targets: RepositoryConfig[]): void {
+  const compact_after = new Set<string>();
+  const writers = new Set<string>();
+  for (const job of maps.jobs.values()) {
+    const tasks = written.jobs.get(job.name) ?? {};
+    const label = job.expanded_from === null ? `Job '${job.name}'` : `Repository '${job.name}'`;
+    const fail = (problem: string): never => {
+      throw new ConfigError(`${label}: ${problem}`, "tasks");
+    };
+    const backs_up = job.sources.length > 0;
+    if (backs_up) for (const name of job.repositories) writers.add(name);
+    if (job.borg.compact_after_backup) for (const name of job.repositories) compact_after.add(name);
+
+    if (backs_up) job.tasks.backup = task_config("backup", tasks.backup, {}, null, fail);
+    else if (tasks.backup !== undefined) fail("backup needs sources to back up.");
+
+    if (keep_fields.some((field) => job.borg[field] !== undefined && job.borg[field] !== "" && job.borg[field] !== 0)) {
+      job.tasks.prune = task_config("prune", tasks.prune, job.borg.prune_after_backup ? { after: "backup", origin: "translated" } : {}, null, fail);
+    } else if (tasks.prune !== undefined) {
+      fail("prune needs a keep_* retention policy.");
+    }
+
+    if (backs_up) {
+      const limits = job.repositories.map((name) => maps.repositories.get(name)!.borg.check_kinds ?? {});
+      const kind = tasks.check?.kind ?? (limits.some((limit) => limit.archives === undefined && limit.extract !== undefined) ? "extract" : "archives");
+      job.tasks.check = task_config("check", tasks.check, limit_schedule(limits.map((limit) => limit[kind])), kind, fail);
+    } else if (tasks.check !== undefined) {
+      fail("check needs sources, since it checks the job's own archives.");
+    }
+
+    if (job.borg.canary_path) job.tasks.canary = task_config("canary", tasks.canary, { schedule: job.borg.canary_interval ?? "1d", origin: "default" }, null, fail);
+    else if (tasks.canary !== undefined) fail("canary needs a canary_path to restore.");
+  }
+
+  for (const repository of maps.repositories.values()) {
+    const tasks = written.repositories.get(repository.name) ?? {};
+    const fail = (problem: string): never => {
+      throw new ConfigError(`Repository '${repository.name}': ${problem}`, "tasks");
+    };
+    const after = compact_after.has(repository.name) ? { after: "backup" as const, origin: "translated" as const } : {};
+    repository.tasks.compact = task_config("compact", tasks.compact, after, null, fail);
+    const limits = repository.borg.check_kinds ?? {};
+    const kind = tasks.check?.kind ?? (repository.borg.check_verify_data ? "data" : writers.has(repository.name) ? "repository" : "all");
+    const limit = kind === "all" ? [limits.repository, limits.archives] : [limits[kind]];
+    repository.tasks.check = task_config("check", tasks.check, limit_schedule(limit), kind, fail);
+  }
+
+  for (const target of targets) {
+    const job = target.target?.job;
+    if (job != null && maps.jobs.get(job)?.tasks.canary !== undefined) target.scope = { ...target.scope, canary_by_task: true };
+  }
+}
+
+const keep_fields = ["keep_within", "keep_last", "keep_secondly", "keep_minutely", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"] as const;
+
+// A task's settings: what was written, or else the fallback; enabled whenever it has a schedule or runs after a backup.
+function task_config(kind: TaskKind, written: WrittenTask | undefined, fallback: Partial<TaskConfig>, check: string | null, fail: (problem: string) => never): TaskConfig {
+  const own = written !== undefined && (written.schedule !== undefined || written.after !== undefined);
+  const schedule = own ? written.schedule ?? null : fallback.schedule ?? null;
+  const after = own ? written.after ?? null : fallback.after ?? null;
+  const origin = own ? "written" : schedule !== null || after !== null ? fallback.origin ?? "default" : "manual";
+  const enabled = written?.enabled ?? (schedule !== null || after !== null);
+  if (enabled && schedule === null && after === null) fail(`tasks.${kind} has no schedule, so it cannot be enabled.`);
+  return { schedule, after, enabled, check, origin };
+}
+
+// A check's schedule from its freshness limits: half the shortest, so a run lands well before the limit passes.
+function limit_schedule(limits: (number | string | undefined)[]): Partial<TaskConfig> {
+  const seconds = limits.filter((limit) => limit !== undefined).map((limit) => parse_duration(limit!)).filter((limit) => limit > 0);
+  if (seconds.length === 0) return {};
+  const half = Math.max(Math.floor(Math.min(...seconds) / 2), shortest_default_schedule_in_seconds);
+  return { schedule: duration_text(half), origin: "default" };
+}
+
+// Seconds as a duration such as "3d12h".
+function duration_text(seconds: number): string {
+  let rest = seconds;
+  let text = "";
+  for (const [size, unit] of [[86400, "d"], [3600, "h"], [60, "m"], [1, "s"]] as const) {
+    if (rest < size) continue;
+    text += `${Math.floor(rest / size)}${unit}`;
+    rest %= size;
+  }
+  return text;
 }
 
 // ── Field checks ─────────────────────────────────────────────────────────────

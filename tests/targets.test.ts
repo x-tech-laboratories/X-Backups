@@ -85,7 +85,7 @@ describe("job targets", () => {
     expect(odin.compact_repo()).toMatchObject({ success: false, content: expect.stringContaining("nightly:thor:offsite") });
   });
 
-  it("compacts after a backup only from the target offering the repository's actions", () => {
+  it("turns compact_after_backup into the repository's compact task, run once from the target offering its actions", () => {
     const compacting = parse({
       repositories: [{ name: "disk", host: "odin", repo: "/srv/borg" }],
       sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "media", host: "thor", source_paths: ["/srv/media"] }],
@@ -96,8 +96,10 @@ describe("job targets", () => {
       return "command" in start ? start.command : "";
     };
 
-    expect(backup_command(compacting.repositories[0])).toContain("compact --progress");
-    expect(backup_command(compacting.repositories[1])).not.toContain("compact --progress");
+    expect(backup_command(compacting.repositories[0])).not.toContain("compact --progress");
+    expect(compacting.entities!.repositories[0]).toMatchObject({
+      actions_target: "nightly:odin:disk", tasks: { compact: { after: "backup", enabled: true, origin: "translated" } },
+    });
   });
 });
 
@@ -202,5 +204,78 @@ describe("field homes", () => {
   it("gives every borg field but id an entity", () => {
     const homed = new Set(entity_kinds.flatMap((kind) => entity_field_list(kind).map((field) => field.name)));
     expect(Object.keys(borg_fields).filter((field) => !homed.has(field))).toEqual([]);
+  });
+});
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+
+describe("tasks", () => {
+  const disk = { name: "disk", host: "odin", repo: "/srv/borg", check_kinds: { repository: "14d", archives: "8d" } };
+  const home = { name: "home", host: "odin", source_paths: ["/home"] };
+
+  it("takes a schedule or an object, and fills what it leaves out", () => {
+    const config = parse({
+      repositories: [{ ...disk, tasks: { compact: { schedule: "weekly sun 03:00" }, check: { kind: "data", enabled: false } } }],
+      sources: [home],
+      jobs: [{ name: "web", sources: ["home"], repositories: ["disk"], keep_daily: 7, tasks: { backup: "daily 02:00", prune: { after: "backup" } } }],
+    });
+    const [repository] = config.entities!.repositories;
+    const [job] = config.entities!.jobs;
+
+    expect(job.tasks).toEqual({
+      backup: { schedule: "daily 02:00", after: null, enabled: true, check: null, origin: "written" },
+      prune: { schedule: null, after: "backup", enabled: true, check: null, origin: "written" },
+      // Half the archives check's limit of 8 days.
+      check: { schedule: "4d", after: null, enabled: true, check: "archives", origin: "default" },
+    });
+    expect(repository.tasks).toEqual({
+      compact: { schedule: "weekly sun 03:00", after: null, enabled: true, check: null, origin: "written" },
+      check: { schedule: null, after: null, enabled: false, check: "data", origin: "manual" },
+    });
+  });
+
+  it("defaults a repository's check from check_kinds, checking everything where no job writes", () => {
+    const config = parse({ repositories: [disk] });
+    expect(config.entities!.repositories[0].tasks.check).toEqual({ schedule: "4d", after: null, enabled: true, check: "all", origin: "default" });
+  });
+
+  it("translates prune_after_backup and compact_after_backup into tasks run after a backup", () => {
+    const config = parse({ repositories: [{ name: "flat", repo: "/srv/flat", source_paths: ["/etc"], keep_daily: 7, prune_after_backup: true, compact_after_backup: true }] });
+    const job = config.entities!.jobs.find((item) => item.name === "flat")!;
+    const repository = config.entities!.repositories.find((item) => item.name === "flat")!;
+
+    expect(job.tasks.prune).toMatchObject({ after: "backup", enabled: true, origin: "translated" });
+    expect(repository.tasks.compact).toMatchObject({ after: "backup", enabled: true, origin: "translated" });
+  });
+
+  it("splits a flat entry's tasks between its job and its repository", () => {
+    const config = parse({ repositories: [{ name: "flat", repo: "/srv/flat", source_paths: ["/etc"], tasks: { backup: "6h", check: "monthly", compact: "1w" } }] });
+    const job = config.entities!.jobs.find((item) => item.name === "flat")!;
+    const repository = config.entities!.repositories.find((item) => item.name === "flat")!;
+
+    expect(job.tasks.backup).toMatchObject({ schedule: "6h" });
+    expect(job.tasks.check).toMatchObject({ origin: "manual" });
+    expect(repository.tasks).toMatchObject({ check: { schedule: "monthly", check: "repository" }, compact: { schedule: "1w" } });
+  });
+
+  it("runs a job's canary as a task, which its polls then leave out", () => {
+    const config = parse({ repositories: [disk], sources: [home], jobs: [{ name: "web", sources: ["home"], repositories: ["disk"], canary_path: "/home/canary" }] });
+
+    expect(config.entities!.jobs[0].tasks.canary).toMatchObject({ schedule: "1d", origin: "default" });
+    expect(config.repositories[0].scope).toMatchObject({ canary_by_task: true });
+    const repository = built(config.repositories[0]);
+    repository.state = { ...repository.state, archives: [{ name: "web-odin-2026-10-01T10:00:00" } as never] };
+    expect(repository.poll_plan().map(([name]) => name)).not.toContain("canary");
+  });
+
+  it.each([
+    [{ backup: "whenever" }, "tasks.backup.schedule: Unrecognised schedule"],
+    [{ restore: "1d" }, "unknown task 'restore'"],
+    [{ backup: { after: "backup" } }, "only prune and compact run after a backup"],
+    [{ prune: "1d" }, "prune needs a keep_* retention policy"],
+    [{ check: { kind: "data" } }, "tasks.check.kind must be archives, extract"],
+    [{ backup: { enabled: true } }, "tasks.backup has no schedule, so it cannot be enabled"],
+  ])("refuses the job tasks %j", (tasks, message) => {
+    expect(() => parse({ repositories: [disk], sources: [home], jobs: [{ name: "web", sources: ["home"], repositories: ["disk"], tasks }] })).toThrow(message);
   });
 });

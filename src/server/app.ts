@@ -19,6 +19,7 @@ import { browser_rows } from "./borg/parsing.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
 import { host_name, type Poller, type Watched } from "./poller.ts";
+import type { Scheduler, TaskSpec, TaskView } from "./scheduler.ts";
 import { ConfigError, default_settings, field_list, is_own_host, target_key, type Config, type HostKind } from "./config.ts";
 import { mask, type ConfigSources } from "./sources.ts";
 import type { Change, RunRow, Store, VisibleRows } from "./store.ts";
@@ -41,6 +42,8 @@ export interface app_options {
   server_name?: string;
   // The agents commands run through, reached on /api/agent; the poller's own unless given.
   agents?: AgentHub;
+  // Starts the tasks; without it /api/tasks is not served.
+  scheduler?: Scheduler;
 }
 
 interface ActionBody {
@@ -481,6 +484,59 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const shown = scope(request);
     return store.timers().filter((timer) => sees(shown, { kind: "host", name: timer.host }));
   });
+
+  // ── Tasks ────────────────────────────────────────────────────────────────
+
+  if (options.scheduler !== undefined) {
+    const scheduler = options.scheduler;
+
+    // A job's task shows to whoever sees the job, and a repository's to whoever sees the repository.
+    const task_seen = (shown: Scope | null, task: TaskSpec | TaskView): boolean =>
+      sees(shown, task.owner_kind === "job" ? { kind: "job", name: task.owner } : { kind: "repository", name: task.owner });
+
+    // The task the viewer may act on: one they see, and for a repository's task, one whose whole repository they may act on.
+    const acting_on = (request: FastifyRequest, reply: FastifyReply, task_id: string): TaskSpec | null => {
+      const task = scheduler.spec(task_id);
+      if (task === null || !task_seen(scope(request), task)) {
+        void reply.code(404).send({ error: `No task '${task_id}'.` });
+        return null;
+      }
+      const watched = task.owner_kind === "repository" ? poller.repositories.get(task.targets[0] ?? "") : undefined;
+      if (watched !== undefined && !whole_repository(request, watched)) {
+        void refuse_whole_repository(reply, watched, `The ${task.kind} task`);
+        return null;
+      }
+      return task;
+    };
+
+    // Each task the viewer sees, with its schedule, when it is next due, its last run and why it waits; a job's task
+    // lists only the targets the viewer sees.
+    app.get("/api/tasks", async (request) => {
+      const shown = scope(request);
+      return scheduler.tasks().filter((task) => task_seen(shown, task)).map((task) => task.owner_kind === "repository" ? task : {
+        ...task, targets: task.targets.filter((target) => sees(shown, { kind: "target", target_id: target.target_id })),
+      });
+    });
+
+    app.post<{ Params: { id: string } }>("/api/tasks/:id/run", async (request, reply) => {
+      const task = acting_on(request, reply, request.params.id);
+      if (task === null) return reply;
+      const shown = scope(request);
+      const targets = task.owner_kind === "job" ? task.targets.filter((target_id) => sees(shown, { kind: "target", target_id })) : task.targets;
+      for (const target_id of targets) note_actor(request, target_id, `ran the task ${task.id} now`);
+      return reply.code(202).send({ id: task.id, targets: await scheduler.run_now(task.id, targets) });
+    });
+
+    for (const [action, enabled] of [["enable", true], ["disable", false]] as const) {
+      app.post<{ Params: { id: string } }>(`/api/tasks/:id/${action}`, async (request, reply) => {
+        const task = acting_on(request, reply, request.params.id);
+        if (task === null) return reply;
+        scheduler.set_enabled(task.id, enabled, request.viewer!.name);
+        for (const target_id of task.targets) note_actor(request, target_id, `${action}d the task ${task.id}`);
+        return scheduler.tasks().find((view) => view.id === task.id);
+      });
+    }
+  }
 
   // ── Hosts ────────────────────────────────────────────────────────────────
 

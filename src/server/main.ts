@@ -10,6 +10,7 @@ import { load_password_hash, type ProxyLogin } from "./auth.ts";
 import { own_host } from "./config.ts";
 import { OidcClient, oidc_from_environment } from "./oidc.ts";
 import { Poller } from "./poller.ts";
+import { Scheduler } from "./scheduler.ts";
 import { ConfigSources } from "./sources.ts";
 import { Store } from "./store.ts";
 
@@ -40,12 +41,15 @@ const agents = new AgentHub(new AgentTokens(store), {
   local: { host: own_host(config.entities), agent: new LocalAgent(join(state_directory, "agent")) },
 });
 const poller = new Poller(config, store, agents);
+// Starts every task when it falls due, reading calendar schedules in X_BACKUPS_TIMEZONE or the server's own zone.
+const scheduler = new Scheduler(poller, store);
 const app = await build_app({
-  serve_web: is_production, logger: true, password_hash, admin_name, poller, store, sources, agents,
+  serve_web: is_production, logger: true, password_hash, admin_name, poller, store, sources, agents, scheduler,
   oidc: oidc_settings === null ? null : new OidcClient(oidc_settings), proxy,
 });
 
 app.addHook("onClose", async () => {
+  scheduler.stop();
   poller.stop();
   store.close();
 });
@@ -56,3 +60,4 @@ if (process.env.X_BACKUPS_SSH_KEY_FILE) app.log.warn("X_BACKUPS_SSH_KEY_FILE is 
 
 await app.listen({ host, port });
 poller.start();
+scheduler.start();

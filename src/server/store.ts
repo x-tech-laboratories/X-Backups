@@ -1,5 +1,5 @@
 // Keeps each target's state, its poll history, archives, events and runs in one SQLite file under X_BACKUPS_STATE_DIR,
-// each row beside the host, job and repository its target is built from.
+// each row beside the host, job and repository its target is built from, and the page's overrides of declared tasks.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
@@ -101,7 +101,7 @@ const timer_run_retention_in_seconds = 90 * 86400;
 const timer_trigger_slack_in_seconds = 60;
 
 export interface RunRow extends RunRecord, TargetColumns {
-  // The task the run belongs to, or null for an action started by hand.
+  // The id of the task the run belongs to, such as "job:web:backup", or null for an action started by hand.
   task: string | null;
   started_epoch: number;
   ended_epoch: number | null;
@@ -109,7 +109,7 @@ export interface RunRow extends RunRecord, TargetColumns {
 
 // What changed, so a page that listens can fetch only what it shows.
 export interface Change {
-  kind: "repository" | "run" | "timers" | "hosts" | "config";
+  kind: "repository" | "run" | "timers" | "hosts" | "config" | "tasks";
   target_id: string | null;
   run_id?: number;
 }
@@ -133,6 +133,14 @@ export interface RunFilter {
   since_epoch?: number;
   limit?: number;
   offset?: number;
+}
+
+// A task switched on or off from the page, over what its config says.
+export interface TaskOverride {
+  task_id: string;
+  enabled: boolean;
+  changed_by: string;
+  changed_epoch: number;
 }
 
 export interface EventFilter {
@@ -283,6 +291,12 @@ const SCHEMA = `
     created_by TEXT NOT NULL,
     created_epoch INTEGER NOT NULL,
     last_used_epoch INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS task_overrides (
+    task_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL,
+    changed_by TEXT NOT NULL,
+    changed_epoch INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS agent_tokens (
     host TEXT PRIMARY KEY,
@@ -634,10 +648,43 @@ export class Store {
     return this.all(sql, ...values, options.limit ?? 100, options.offset ?? 0).map(run_row);
   }
 
+  // The target's newest run of the task, or of an action of one of the kinds started by hand, which counts the same.
+  last_task_run(target_id: string, task_id: string, kinds: string[]): RunRow | null {
+    const row = this.get(
+      `SELECT * FROM runs WHERE target_id = ? AND (task = ? OR (task IS NULL AND ${in_list("kind", kinds)})) ORDER BY id DESC LIMIT 1`,
+      target_id, task_id, ...kinds,
+    );
+    return row ? run_row(row) : null;
+  }
+
+  // When the newest run of one of the kinds on any of the targets ended, having succeeded or ended with only warnings.
+  last_success_epoch(target_ids: string[], kinds: string[]): number | null {
+    const row = this.get(
+      `SELECT max(ended_epoch) AS epoch FROM runs WHERE state IN ('succeeded', 'warning') AND ${in_list("target_id", target_ids)} AND ${in_list("kind", kinds)}`,
+      ...target_ids, ...kinds,
+    );
+    return number_or_null(row?.epoch);
+  }
+
   // The run's output lines after the first skipped ones, so a page can fetch only what is new.
   run_output(run_id: number, skip = 0): string[] {
     return this.all("SELECT line FROM run_output WHERE run_id = ? AND line_number >= ? ORDER BY line_number", run_id, skip)
       .map((row) => String(row.line));
+  }
+
+  // ── Task overrides ───────────────────────────────────────────────────────
+
+  task_overrides(): Map<string, TaskOverride> {
+    return new Map(this.all("SELECT * FROM task_overrides").map((row) => [String(row.task_id), {
+      task_id: String(row.task_id), enabled: row.enabled === 1, changed_by: String(row.changed_by), changed_epoch: Number(row.changed_epoch),
+    }]));
+  }
+
+  // Switches the task on or off over its config, or with null goes back to what the config says.
+  set_task_override(task_id: string, enabled: boolean | null, changed_by: string): void {
+    if (enabled === null) this.run("DELETE FROM task_overrides WHERE task_id = ?", task_id);
+    else this.run("INSERT OR REPLACE INTO task_overrides (task_id, enabled, changed_by, changed_epoch) VALUES (?, ?, ?, ?)", task_id, Number(enabled), changed_by, now_seconds());
+    this.changed({ kind: "tasks", target_id: null });
   }
 
   // ── SQL helpers ──────────────────────────────────────────────────────────
@@ -691,16 +738,16 @@ class TargetRuns implements RunStore {
     return row ? run_row(row) : null;
   }
 
-  // Every run is an action started by hand until the scheduler starts tasks, so none has a task yet. Its agent run id
-  // carries its start time as well as its id, so a database started over never reuses one an agent still holds.
-  create(kind: string, command: string): number {
+  // Its agent run id carries its start time as well as its id, so a database started over never reuses one an agent
+  // still holds.
+  create(kind: string, command: string, task: string | null = null): number {
     const started_epoch = now_seconds();
     let run_id = 0;
     this.store.transaction(() => {
       run_id = this.store.run(
         `INSERT INTO runs (target_id, host, job, repository, task, kind, command, state, started_epoch)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, 'running', ?)`,
-        this.target_id, ...this.store.names(this.target_id), kind, command, started_epoch,
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
+        this.target_id, ...this.store.names(this.target_id), task, kind, command, started_epoch,
       );
       this.store.run("UPDATE runs SET agent_run = ? WHERE id = ?", `run-${run_id}-${started_epoch}`, run_id);
     });
