@@ -343,7 +343,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return { success: result.success, content: result.content, ...(watched.repository.diff(archive) ?? { changes: [], more: false }) };
   });
 
-  // Which host's folders each repository backs up and where it is stored, with each repository's health.
+  // Which folders each job backs up and the repositories it writes them to, with each target's health.
   app.get("/api/map", async (request) => {
     const shown = watched_by(request);
     const server_name = options.server_name ?? hostname();
@@ -351,7 +351,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     return {
       ...map,
       links: map_links(poller.entities, server_name),
-      repositories: map.repositories.map((placed, index) => ({ ...summary(shown[index]), ...placed, retention: shown[index].repository.retention })),
+      targets: map.targets.map((placed, index) => ({ ...summary(shown[index]), ...placed, retention: shown[index].repository.retention })),
     };
   });
 

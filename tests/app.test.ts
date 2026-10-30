@@ -155,7 +155,8 @@ describe("repositories", () => {
 
     const [server] = map.hosts;
     expect(map.sources).toEqual([{ id: `${server.id}:/etc`, host: server.id, path: "/etc" }]);
-    expect(map.repositories).toMatchObject([{ id: "odin", stored_on: server.id, path: "/srv/repo", sources: [`${server.id}:/etc`], archive_count: 2, level: "critical" }]);
+    expect(map.repositories).toEqual([{ id: "odin", stored_on: server.id, path: "/srv/repo" }]);
+    expect(map.targets).toMatchObject([{ id: "odin", job: "odin", repository: "odin", sources: [`${server.id}:/etc`], archive_count: 2, level: "critical" }]);
   });
 
   it("shows one repository with its archives and actions", async () => {

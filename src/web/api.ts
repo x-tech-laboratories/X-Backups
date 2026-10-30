@@ -222,15 +222,19 @@ export interface SchedulePreview {
 export interface BackupMap {
   hosts: { id: string; name: string }[];
   sources: { id: string; host: string; path: string }[];
-  repositories: MapRepository[];
-  // The configured host and source each map host and folder stands for.
-  links: { hosts: Record<string, string>; sources: Record<string, string> };
+  // Each job and the folders it backs up.
+  jobs: { id: string; sources: string[] }[];
+  // Each repository, the host whose disk holds it, and its folder there.
+  repositories: { id: string; stored_on: string; path: string }[];
+  targets: MapTarget[];
+  // The configured host and source each map host and folder stands for, and the jobs that have their own page.
+  links: { hosts: Record<string, string>; sources: Record<string, string>; jobs: string[] };
 }
 
-export interface MapRepository extends RepositorySummary {
-  // The host whose disk holds the repository, and its folder there.
-  stored_on: string;
-  path: string;
+// One job's folders on one host written to one repository, or a repository only watched, with its health.
+export interface MapTarget extends RepositorySummary {
+  job: string | null;
+  repository: string;
   // The source ids it backs up; none for a repository that is only watched.
   sources: string[];
   retention: Record<string, number | string>;

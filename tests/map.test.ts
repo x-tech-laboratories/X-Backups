@@ -19,12 +19,12 @@ describe("repo_location", () => {
 });
 
 describe("backup_map", () => {
-  it("joins a host's names and draws each repository from its sources to where it is stored", () => {
+  it("joins a host's names and runs each job from its folders to the repositories it writes to", () => {
     const map = backup_map([
-      { id: "on-disk", name: "on-disk", host: "odin.technet", repo: "/Storage/Files/Backups/Laptop/Borgmatic", source_paths: ["/Storage"] },
-      { id: "to-heimdall", name: "to-heimdall", host: "odin.technet", repo: "ssh://borg@heimdall.technet/Storage/Files/Backups/Laptop/Borgmatic", source_paths: ["/Storage"] },
-      { id: "server", name: "server", host: null, repo: "/Storage/Backups/Server", source_paths: ["/Storage/Services", "/Storage/Apps"] },
-      { id: "watched", name: "watched", host: "10.100.100.6", repo: "/srv/repo", source_paths: [] },
+      { id: "on-disk", job: "laptop", repository: "on-disk", host: "odin.technet", repo: "/Storage/Files/Backups/Laptop/Borgmatic", source_paths: ["/Storage"] },
+      { id: "to-heimdall", job: "laptop", repository: "to-heimdall", host: "odin.technet", repo: "ssh://borg@heimdall.technet/Storage/Files/Backups/Laptop/Borgmatic", source_paths: ["/Storage"] },
+      { id: "server", job: "server", repository: "server", host: null, repo: "/Storage/Backups/Server", source_paths: ["/Storage/Services", "/Storage/Apps"] },
+      { id: "watched", job: null, repository: "watched", host: "10.100.100.6", repo: "/srv/repo", source_paths: [] },
     ], "Heimdall");
 
     expect(map.hosts).toEqual([
@@ -33,11 +33,21 @@ describe("backup_map", () => {
       { id: "10.100.100.6", name: "10.100.100.6" },
     ]);
     expect(map.sources.map((source) => source.id)).toEqual(["odin:/Storage", "heimdall:/Storage/Apps", "heimdall:/Storage/Services"]);
+    expect(map.jobs).toEqual([
+      { id: "laptop", sources: ["odin:/Storage"] },
+      { id: "server", sources: ["heimdall:/Storage/Services", "heimdall:/Storage/Apps"] },
+    ]);
     expect(map.repositories).toEqual([
-      { id: "on-disk", stored_on: "odin", path: "/Storage/Files/Backups/Laptop/Borgmatic", sources: ["odin:/Storage"] },
-      { id: "to-heimdall", stored_on: "heimdall", path: "/Storage/Files/Backups/Laptop/Borgmatic", sources: ["odin:/Storage"] },
-      { id: "server", stored_on: "heimdall", path: "/Storage/Backups/Server", sources: ["heimdall:/Storage/Services", "heimdall:/Storage/Apps"] },
-      { id: "watched", stored_on: "10.100.100.6", path: "/srv/repo", sources: [] },
+      { id: "on-disk", stored_on: "odin", path: "/Storage/Files/Backups/Laptop/Borgmatic" },
+      { id: "to-heimdall", stored_on: "heimdall", path: "/Storage/Files/Backups/Laptop/Borgmatic" },
+      { id: "server", stored_on: "heimdall", path: "/Storage/Backups/Server" },
+      { id: "watched", stored_on: "10.100.100.6", path: "/srv/repo" },
+    ]);
+    expect(map.targets).toEqual([
+      { id: "on-disk", job: "laptop", repository: "on-disk", sources: ["odin:/Storage"] },
+      { id: "to-heimdall", job: "laptop", repository: "to-heimdall", sources: ["odin:/Storage"] },
+      { id: "server", job: "server", repository: "server", sources: ["heimdall:/Storage/Services", "heimdall:/Storage/Apps"] },
+      { id: "watched", job: null, repository: "watched", sources: [] },
     ]);
   });
 });
@@ -57,17 +67,23 @@ describe("map_entry", () => {
     const map = backup_map(config.repositories.map((target) => map_entry(target, config.entities!)), "Heimdall");
 
     expect(map.hosts).toEqual([{ id: "odin", name: "Odin" }, { id: "vault", name: "Vault" }, { id: "heimdall", name: "Heimdall" }]);
+    expect(map.jobs).toEqual([{ id: "daily", sources: ["odin:/home"] }]);
     expect(map.repositories).toEqual([
-      { id: "daily:odin:offsite", stored_on: "vault", path: "/./offsite", sources: ["odin:/home"] },
-      { id: "daily:odin:server", stored_on: "heimdall", path: "/Storage/Backups/Server", sources: ["odin:/home"] },
+      { id: "offsite", stored_on: "vault", path: "/./offsite" },
+      { id: "server", stored_on: "heimdall", path: "/Storage/Backups/Server" },
+    ]);
+    expect(map.targets).toEqual([
+      { id: "daily:odin:offsite", job: "daily", repository: "offsite", sources: ["odin:/home"] },
+      { id: "daily:odin:server", job: "daily", repository: "server", sources: ["odin:/home"] },
     ]);
   });
 
-  it("draws a flat config as it reads its URLs", () => {
+  it("draws a flat config as it reads its URLs, as its own job", () => {
     const config = parse_config(JSON.stringify({ repositories: [{ name: "to-heimdall", host: "odin.technet", repo: "ssh://borg@heimdall.technet/srv/repo", source_paths: ["/home"] }] }), "test.json");
 
     const map = backup_map(config.repositories.map((target) => map_entry(target, config.entities!)), "Heimdall");
 
-    expect(map.repositories).toEqual([{ id: "to-heimdall", stored_on: "heimdall", path: "/srv/repo", sources: ["odin:/home"] }]);
+    expect(map.repositories).toEqual([{ id: "to-heimdall", stored_on: "heimdall", path: "/srv/repo" }]);
+    expect(map.targets).toEqual([{ id: "to-heimdall", job: "to-heimdall", repository: "to-heimdall", sources: ["odin:/home"] }]);
   });
 });
