@@ -85,6 +85,8 @@ describe("roles", () => {
     expect((await call("GET", "/api/users", operator)).statusCode).toBe(403);
     expect((await call("GET", "/api/hosts", operator)).statusCode).toBe(200);
     expect((await call("POST", "/api/hosts/local/token", operator)).statusCode).toBe(403);
+    expect((await call("POST", "/api/config/hosts", operator, { name: "thor" })).statusCode).toBe(403);
+    expect((await call("DELETE", "/api/config/hosts/thor", operator)).statusCode).toBe(403);
     expect((await call("DELETE", "/api/hosts/local/token", operator)).statusCode).toBe(403);
     const events = (await call("GET", "/api/events?repository=odin", operator)).json();
     expect(events.some((event: { message: string }) => event.message === "otto asked for run backup")).toBe(true);
@@ -200,6 +202,23 @@ describe("job access", () => {
     const ran = await call("POST", "/api/tasks/job:nightly:check/run", vic);
     expect(ran.statusCode).toBe(202);
     expect(ran.json()).toEqual({ id: "job:nightly:check", targets: ["nightly:odin:vault"] });
+  });
+
+  it("shows only the jobs, sources and writers a user sees", async () => {
+    await rebuild(parse_config(SHARED, "test.json"), true);
+    const admin = await login("admin", "declared admin pass");
+    const vic = await add_user(admin, "vic", "viewer", [{ job: "nightly" }]);
+
+    expect(ids(await call("GET", "/api/jobs", vic))).toEqual(["nightly"]);
+    expect((await call("GET", "/api/jobs/mail", vic)).statusCode).toBe(404);
+    expect((await call("GET", "/api/jobs/nightly", vic)).json().tasks.map((task: { id: string }) => task.id)).toEqual(["job:nightly:backup", "job:nightly:check"]);
+    expect(ids(await call("GET", "/api/sources", vic))).toEqual(["home"]);
+    expect((await call("GET", "/api/sources/maildir", vic)).statusCode).toBe(404);
+    const vault = (await call("GET", "/api/repositories/nightly:odin:vault", vic)).json();
+    expect(vault.writers).toEqual(["nightly"]);
+    expect(vault.repository_targets).toEqual([]);
+    expect(vault.tasks.map((task: { id: string }) => task.id)).toEqual(["repository:vault:compact", "repository:vault:check"]);
+    expect((await call("GET", "/api/repositories/nightly:odin:vault", admin)).json().writers).toEqual(["nightly", "mail"]);
   });
 
   it("shows a repository no job writes to through its own grant", async () => {

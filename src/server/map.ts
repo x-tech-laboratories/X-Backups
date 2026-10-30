@@ -4,7 +4,7 @@
 // ── Imports ──────────────────────────────────────────────────────────────────
 
 import { as_list } from "./borg/shell.ts";
-import type { Entities, RepositoryConfig } from "./config.ts";
+import type { Entities, HostEntity, RepositoryConfig } from "./config.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -88,6 +88,21 @@ export function map_entry(target: RepositoryConfig, entities: Entities | null): 
   };
   const repository = entities.repositories.find((item) => item.name === target.target!.repository);
   return { ...entry, host: host_named(target.target.host), stored_on: repository === undefined ? undefined : host_named(repository.host) };
+}
+
+// The configured host and source each map host and folder stands for, so the page can link them to their own pages.
+export function map_links(entities: Entities | null, server_name: string): { hosts: Record<string, string>; sources: Record<string, string> } {
+  const hosts: Record<string, string> = {};
+  const sources: Record<string, string> = {};
+  if (entities === null) return { hosts, sources };
+  const id_of = (host: HostEntity) => host_id(host.kind === "managed" && host.address === null ? server_name : host.name);
+  for (const host of entities.hosts) hosts[id_of(host)] ??= host.name;
+  for (const source of entities.sources) {
+    const host = entities.hosts.find((item) => item.name === source.host);
+    if (host === undefined) continue;
+    for (const path of as_list(source.borg.source_paths)) sources[`${id_of(host)}:${path}`] ??= source.name;
+  }
+  return { hosts, sources };
 }
 
 function target_id_of(target: RepositoryConfig): string {

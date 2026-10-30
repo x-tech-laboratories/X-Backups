@@ -127,6 +127,8 @@ export interface RunFilter {
   repository?: string;
   // What a viewer sees, when they do not see everything.
   visible?: VisibleRows;
+  // The task the runs belong to, such as "job:web:backup".
+  task?: string;
   // A kind matches itself and its variants, so "check" also matches "check-data".
   kind?: string;
   state?: string;
@@ -641,6 +643,7 @@ export class Store {
         visible === undefined ? undefined : [...visible.targets, ...visible.repositories],
       ],
       ["(kind = ? OR kind LIKE ? || '-%')", options.kind === undefined ? undefined : [options.kind, options.kind]],
+      ["task = ?", options.task],
       ["state = ?", options.state],
       ["started_epoch >= ?", options.since_epoch],
     ]);

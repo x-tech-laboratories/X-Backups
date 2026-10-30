@@ -333,6 +333,12 @@ export function entity_field_list(kind: EntityKind): { name: string; kind: Field
   ];
 }
 
+// The tasks an entity of the kind may write, with the kinds its check takes; hosts and sources have none.
+export function entity_tasks(kind: EntityKind): { kinds: readonly TaskKind[]; check_kinds: string[] } {
+  if (kind !== "jobs" && kind !== "repositories") return { kinds: [], check_kinds: [] };
+  return { kinds: owner_tasks[kind], check_kinds: check_task_kinds[kind] };
+}
+
 // ── Loading ──────────────────────────────────────────────────────────────────
 
 export function load_config(file_path: string | undefined = process.env.X_BACKUPS_CONFIG): Config {

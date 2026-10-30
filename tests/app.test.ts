@@ -9,6 +9,7 @@ import { AgentHub } from "../src/server/agents/hub.ts";
 import { AgentTokens } from "../src/server/agents/tokens.ts";
 import { build_app } from "../src/server/app.ts";
 import { hash_password } from "../src/server/auth.ts";
+import { WAITING_FOR_AGENT } from "../src/server/borg/repository.ts";
 import { cmd_result } from "../src/server/borg/types.ts";
 import { parse_config, type Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
@@ -311,12 +312,65 @@ describe("actions and runs", () => {
     expect((await get("/api/runs?kind=backup")).json()).toHaveLength(2);
   });
 
+  it("filters runs by task and marks one waiting for its agent and one lost", async () => {
+    const runs = store.runs_for({ target_id: "odin", host: "local", job: "odin", repository: "odin" });
+    const waiting = runs.create("backup", "borg create", "job:odin:backup");
+    runs.set_progress(waiting, WAITING_FOR_AGENT);
+    const lost = runs.create("check-archives", "borg check");
+    runs.finish(lost, "failed", { exit_code: -1, error: "Lost: the agent on local no longer knows this run, so its outcome is unknown." });
+
+    expect((await get("/api/runs?task=job:odin:backup")).json().map((run: { id: number }) => run.id)).toEqual([waiting]);
+    expect((await get(`/api/runs/${waiting}`)).json().condition).toBe("waiting_for_agent");
+    expect((await get(`/api/runs/${lost}`)).json().condition).toBe("lost");
+  });
+
   it("logs events", async () => {
     await post("/api/repositories/odin/actions/run_backup");
 
     const events = (await get("/api/events?repository=odin")).json();
 
     expect(events.some((event: { message: string }) => event.message.startsWith("Backup started"))).toBe(true);
+  });
+});
+
+// ── Jobs, sources and schedules ──────────────────────────────────────────────
+
+describe("jobs, sources and schedules", () => {
+  it("lists a flat entry's job with its target and status", async () => {
+    await poller.poll("odin");
+
+    const [job] = (await get("/api/jobs")).json();
+
+    expect(job).toMatchObject({ name: "odin", repositories: ["odin"], level: "critical", targets: [{ id: "odin", job: "odin" }], tasks: [] });
+    expect((await get("/api/jobs/odin")).json().name).toBe("odin");
+    expect((await get("/api/jobs/nowhere")).statusCode).toBe(404);
+    expect((await get("/api/sources")).json()).toEqual([]);
+  });
+
+  it("lists sources with the jobs using them, and a repository's writers", async () => {
+    poller.apply_config(parse_config(JSON.stringify({
+      hosts: [{ name: "server" }],
+      repositories: [{ name: "disk", host: "server", repo: "/srv/borg" }],
+      sources: [{ name: "etc", host: "server", source_paths: ["/etc"], exclude: ["*.tmp"] }],
+      jobs: [{ name: "nightly", sources: ["etc"], repositories: ["disk"], keep_daily: 7 }],
+    }), "test.json"));
+
+    expect((await get("/api/sources/etc")).json()).toMatchObject({ host: "server", paths: ["/etc"], exclude: ["*.tmp"], jobs: ["nightly"] });
+    expect((await get("/api/jobs/nightly")).json()).toMatchObject({ sources: ["etc"], repositories: ["disk"], settings: { keep_daily: 7 }, targets: [{ id: "nightly:server:disk" }] });
+    expect((await get("/api/repositories/nightly:server:disk")).json()).toMatchObject({ writers: ["nightly"], repository_targets: [], tasks: [] });
+    expect((await get("/api/hosts")).json()[0]).toMatchObject({ name: "server", sources: ["etc"], repositories: ["disk"] });
+  });
+
+  it("describes a schedule with its next times, and refuses one it cannot read", async () => {
+    const preview = (await get("/api/schedule?text=daily%2002:00")).json();
+    expect(preview.description).toMatch(/02:00/);
+    expect(preview.next).toHaveLength(3);
+    expect(preview.next[1] - preview.next[0]).toBe(86400);
+
+    expect((await get("/api/schedule?text=6h")).json().next).toHaveLength(3);
+    const refused = await get("/api/schedule?text=whenever");
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().field).toBe("schedule");
   });
 });
 
@@ -329,8 +383,9 @@ describe("hosts", () => {
     const hosts = (await get("/api/hosts")).json();
 
     expect(hosts).toEqual([{
-      name: "local", kind: "managed", address: null, connected: true, built_in: true, agent_version: "built in", reported_host: "local",
-      connected_epoch: null, enrolled: false, last_seen_epoch: null, health: { epoch: expect.any(Number), ...SAMPLE },
+      name: "local", kind: "managed", address: null, own: true, sources: [], repositories: [], connected: true, built_in: true,
+      agent_version: "built in", reported_host: "local", connected_epoch: null, enrolled: false, last_seen_epoch: null,
+      health: { epoch: expect.any(Number), ...SAMPLE },
     }]);
   });
 
@@ -430,7 +485,38 @@ describe("config from the page", () => {
     expect(editable_poller.repositories.get("odin")!.repository.browse_limit).toBe(50);
   });
 
+  it("adds, edits and removes hosts, sources, repositories and jobs, refusing to remove one still used", async () => {
+    expect((await send("POST", "/api/config/hosts", { name: "thor", address: "thor.lan" })).statusCode).toBe(201);
+    expect((await send("POST", "/api/config/sources", { name: "home", host: "thor", source_paths: ["/home"] })).statusCode).toBe(201);
+    expect((await send("POST", "/api/config/repositories", { name: "vault", host: "thor", repo: "/srv/vault" })).statusCode).toBe(201);
+    const job = { name: "nightly", sources: ["home"], repositories: ["vault"], tasks: { backup: { schedule: "daily 02:00" } } };
+    expect((await send("POST", "/api/config/jobs", job)).statusCode).toBe(201);
+    expect(editable_poller.repositories.has("nightly:thor:vault")).toBe(true);
+
+    const listed = (await send("GET", "/api/config/jobs")).json();
+    expect(listed).toMatchObject({ kind: "jobs", editable: true, tasks: { kinds: ["backup", "prune", "check", "canary"], check_kinds: ["archives", "extract"] } });
+    expect(listed.entries).toEqual([{ name: "nightly", source: "page", shadowed: false, flat: false, fields: job }]);
+    expect(listed.fields.map((field: { name: string }) => field.name)).toContain("sources");
+    expect((await send("GET", "/api/config/repositories")).json().entries.map((entry: { name: string; flat: boolean }) => [entry.name, entry.flat]))
+      .toEqual([["odin", true], ["vault", false]]);
+
+    expect((await send("PUT", "/api/config/jobs/nightly", { ...job, keep_daily: 7 })).statusCode).toBe(200);
+    expect(editable_poller.entities!.jobs.find((item) => item.name === "nightly")!.borg.keep_daily).toBe(7);
+    const declared = await send("PUT", "/api/config/repositories/odin", { name: "odin", host: "thor", repo: "/x" });
+    expect(declared.statusCode).toBe(400);
+    expect(declared.json().error).toContain("declared in the Nix configuration");
+
+    const used = await send("DELETE", "/api/config/sources/home");
+    expect(used.statusCode).toBe(400);
+    expect(used.json().error).toContain("job 'nightly'");
+    expect((await send("DELETE", "/api/config/jobs/nightly")).statusCode).toBe(204);
+    expect((await send("DELETE", "/api/config/sources/home")).statusCode).toBe(204);
+    expect((await send("GET", "/api/config/places")).statusCode).toBe(404);
+  });
+
   it("refuses edits when the app has no editable sources", async () => {
     expect((await post("/api/repositories", { name: "thor", repo: "/srv/thor" })).statusCode).toBe(403);
+    expect((await post("/api/config/hosts", { name: "thor" })).statusCode).toBe(403);
+    expect((await get("/api/config/hosts")).json()).toMatchObject({ editable: false, entries: [] });
   });
 });

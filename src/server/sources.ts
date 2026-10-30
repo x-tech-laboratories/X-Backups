@@ -102,6 +102,15 @@ export class ConfigSources {
     return entry === undefined ? null : mask(entry);
   }
 
+  // Each entry of the kind as written, the declared ones first, with secrets masked and whether a declared one hides it.
+  entries(kind: EntityKind): { name: string; source: ConfigSource; shadowed: boolean; fields: Record<string, unknown> }[] {
+    const declared = new Set(this.declared[kind].map((entry) => String(entry.name)));
+    return [
+      ...this.declared[kind].map((entry) => ({ name: String(entry.name), source: "declared" as const, shadowed: false, fields: mask(entry) })),
+      ...this.page[kind].map((entry) => ({ name: String(entry.name), source: "page" as const, shadowed: declared.has(String(entry.name)), fields: mask(entry) })),
+    ];
+  }
+
   // Each default with the value in force and where it came from.
   settings(): Setting[] {
     return Object.entries(default_settings).map(([name, { fallback }]) => {

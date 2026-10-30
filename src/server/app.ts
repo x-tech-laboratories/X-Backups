@@ -6,21 +6,26 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
-import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, type Scope, type World } from "./access.ts";
+import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, writers, type Scope, type World } from "./access.ts";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import type { AgentHub } from "./agents/hub.ts";
 import { register_agent_route } from "./agents/route.ts";
 import { register_auth, type ProxyLogin } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
-import { backup_map, map_entry } from "./map.ts";
+import { backup_map, map_entry, map_links } from "./map.ts";
 import { metrics_text } from "./metrics.ts";
 import type { OidcClient } from "./oidc.ts";
 import { browser_rows } from "./borg/parsing.ts";
-import type { BorgRepository } from "./borg/repository.ts";
+import { WAITING_FOR_AGENT, type BorgRepository } from "./borg/repository.ts";
+import { as_list } from "./borg/shell.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
 import { host_name, type Poller, type Watched } from "./poller.ts";
 import type { Scheduler, TaskSpec, TaskView } from "./scheduler.ts";
-import { ConfigError, default_settings, field_list, is_own_host, target_key, type Config, type HostKind } from "./config.ts";
+import {
+  ConfigError, default_settings, entity_field_list, entity_kinds, entity_tasks, field_list, is_own_host, target_key, type Config, type EntityKind,
+  type HostKind, type JobEntity,
+} from "./config.ts";
+import { describe, next_due, parse_schedule, schedule_time_zone } from "./schedule.ts";
 import { mask, type ConfigSources } from "./sources.ts";
 import type { Change, RunRow, Store, VisibleRows } from "./store.ts";
 
@@ -62,6 +67,7 @@ interface ListQuery {
   host?: string;
   job?: string;
   repository?: string;
+  task?: string;
   kind?: string;
   state?: string;
   level?: string;
@@ -74,6 +80,12 @@ const web_build_directory = fileURLToPath(new URL("../../dist", import.meta.url)
 
 // A stream sends a comment this often, so proxies keep an idle connection open.
 const stream_keepalive_in_milliseconds = 25_000;
+
+// How many coming times a schedule's preview lists.
+const preview_count = 3;
+
+// What access.ts calls one entity of each kind.
+const seen_kind: Record<EntityKind, "host" | "repository" | "source" | "job"> = { hosts: "host", repositories: "repository", sources: "source", jobs: "job" };
 
 
 // ── Actions ──────────────────────────────────────────────────────────────────
@@ -215,6 +227,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       actions: repository.get_actions()
         .filter((action) => !repository_actions.has(action.action_id) || whole_repository(request, watched))
         .map((action) => ({ ...action, state: repository.action_state(action) })),
+      ...repository_extras(request, watched),
     };
   });
 
@@ -332,9 +345,11 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // Which host's folders each repository backs up and where it is stored, with each repository's health.
   app.get("/api/map", async (request) => {
     const shown = watched_by(request);
-    const map = backup_map(shown.map(({ config }) => map_entry(config, poller.entities)), options.server_name ?? hostname());
+    const server_name = options.server_name ?? hostname();
+    const map = backup_map(shown.map(({ config }) => map_entry(config, poller.entities)), server_name);
     return {
       ...map,
+      links: map_links(poller.entities, server_name),
       repositories: map.repositories.map((placed, index) => ({ ...summary(shown[index]), ...placed, retention: shown[index].repository.retention })),
     };
   });
@@ -443,7 +458,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Querystring: ListQuery }>("/api/runs", async (request) => {
     const query = request.query;
     return store.runs({
-      ...target_filter(query), visible: visible_rows(request), kind: query.kind, state: query.state,
+      ...target_filter(query), visible: visible_rows(request), task: query.task, kind: query.kind, state: query.state,
       since_epoch: number_or_undefined(query.since),
       limit: Number(query.limit ?? 100), offset: Number(query.offset ?? 0),
     }).map(with_retry);
@@ -487,12 +502,41 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 
   // ── Tasks ────────────────────────────────────────────────────────────────
 
+  // A job's task shows to whoever sees the job, and a repository's to whoever sees the repository.
+  const task_seen = (shown: Scope | null, task: TaskSpec | TaskView): boolean =>
+    sees(shown, task.owner_kind === "job" ? { kind: "job", name: task.owner } : { kind: "repository", name: task.owner });
+
+  // Each task the viewer sees, with its schedule, when it is next due, its last run and why it waits; a job's task
+  // lists only the targets the viewer sees.
+  const visible_tasks = (request: FastifyRequest): TaskView[] => {
+    if (options.scheduler === undefined) return [];
+    const shown = scope(request);
+    return options.scheduler.tasks().filter((task) => task_seen(shown, task)).map((task) => task.owner_kind === "repository" ? task : {
+      ...task, targets: task.targets.filter((target) => sees(shown, { kind: "target", target_id: target.target_id })),
+    });
+  };
+
+  // A schedule in words with its next few times from now, for the config form to show as it is typed.
+  app.get<{ Querystring: { text?: string } }>("/api/schedule", async (request, reply) => {
+    const text = (request.query.text ?? "").trim();
+    const expression = /^\d+$/.test(text) ? Number(text) : text;
+    try {
+      parse_schedule(expression);
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message, field: "schedule" });
+    }
+    const zone = schedule_time_zone();
+    const next: number[] = [];
+    let after = Math.floor(Date.now() / 1000);
+    for (let index = 0; index < preview_count; index++) {
+      after = next_due(expression, after, zone);
+      next.push(after);
+    }
+    return { description: describe(expression), time_zone: zone, next };
+  });
+
   if (options.scheduler !== undefined) {
     const scheduler = options.scheduler;
-
-    // A job's task shows to whoever sees the job, and a repository's to whoever sees the repository.
-    const task_seen = (shown: Scope | null, task: TaskSpec | TaskView): boolean =>
-      sees(shown, task.owner_kind === "job" ? { kind: "job", name: task.owner } : { kind: "repository", name: task.owner });
 
     // The task the viewer may act on: one they see, and for a repository's task, one whose whole repository they may act on.
     const acting_on = (request: FastifyRequest, reply: FastifyReply, task_id: string): TaskSpec | null => {
@@ -509,14 +553,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
       return task;
     };
 
-    // Each task the viewer sees, with its schedule, when it is next due, its last run and why it waits; a job's task
-    // lists only the targets the viewer sees.
-    app.get("/api/tasks", async (request) => {
-      const shown = scope(request);
-      return scheduler.tasks().filter((task) => task_seen(shown, task)).map((task) => task.owner_kind === "repository" ? task : {
-        ...task, targets: task.targets.filter((target) => sees(shown, { kind: "target", target_id: target.target_id })),
-      });
-    });
+    app.get("/api/tasks", async (request) => visible_tasks(request));
 
     app.post<{ Params: { id: string } }>("/api/tasks/:id/run", async (request, reply) => {
       const task = acting_on(request, reply, request.params.id);
@@ -545,6 +582,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     const shown = scope(request);
     const enrolments = new Map(agents.enrolments().map((enrolment) => [enrolment.host, enrolment]));
     const samples = new Map(store.latest_host_samples().map(({ host, ...sample }) => [host, sample]));
+    const entities = poller.entities;
     return configured_hosts(poller).filter((host) => sees(shown, { kind: "host", name: host.name })).map((host) => {
       const status = agents.status(host.name);
       const enrolment = enrolments.get(host.name);
@@ -553,6 +591,10 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
         name: host.name,
         kind: host.kind,
         address: host.address,
+        own: host.own,
+        sources: (entities?.sources ?? []).filter((source) => source.host === host.name && sees(shown, { kind: "source", name: source.name })).map((source) => source.name),
+        repositories: (entities?.repositories ?? [])
+          .filter((repository) => repository.host === host.name && sees(shown, { kind: "repository", name: repository.name })).map((repository) => repository.name),
         connected: status !== null,
         built_in: status?.built_in ?? false,
         agent_version: status?.agent_version ?? null,
@@ -590,6 +632,113 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   app.get<{ Querystring: { since?: string } }>("/api/timers/runs", async (request) => {
     const shown = scope(request);
     return store.timer_runs(Number(request.query.since ?? 0)).filter((run) => sees(shown, { kind: "host", name: run.host }));
+  });
+
+  // ── Jobs and sources ─────────────────────────────────────────────────────
+
+  // Each job the viewer sees with its targets, their status rolled up, and its tasks.
+  const jobs_seen = (request: FastifyRequest) => {
+    const shown = scope(request);
+    const targets = watched_by(request);
+    const tasks = visible_tasks(request);
+    return configured_jobs(poller).filter((job) => sees(shown, { kind: "job", name: job.name })).map((job) => {
+      const own = targets.filter((watched) => target_key(watched.config).job === job.name).map(summary);
+      return {
+        name: job.name, source: job.source, expanded_from: job.expanded_from, sources: job.sources, repositories: job.repositories, settings: job.borg,
+        level: worst_level(own.map((target) => target.level)), targets: own,
+        tasks: tasks.filter((task) => task.owner_kind === "job" && task.owner === job.name),
+      };
+    });
+  };
+
+  app.get("/api/jobs", async (request) => jobs_seen(request));
+
+  app.get<{ Params: { name: string } }>("/api/jobs/:name", async (request, reply) => {
+    const job = jobs_seen(request).find((item) => item.name === request.params.name);
+    return job ?? reply.code(404).send({ error: `No job '${request.params.name}'.` });
+  });
+
+  // Each source the viewer sees with its paths and excludes, and the jobs that back it up.
+  const sources_seen = (request: FastifyRequest) => {
+    const shown = scope(request);
+    const jobs = configured_jobs(poller).filter((job) => sees(shown, { kind: "job", name: job.name }));
+    return (poller.entities?.sources ?? []).filter((source) => sees(shown, { kind: "source", name: source.name })).map((source) => ({
+      name: source.name, host: source.host, source: source.source, expanded_from: source.expanded_from,
+      paths: as_list(source.borg.source_paths), exclude: as_list(source.borg.exclude), settings: source.borg,
+      jobs: jobs.filter((job) => job.sources.includes(source.name)).map((job) => job.name),
+    }));
+  };
+
+  app.get("/api/sources", async (request) => sources_seen(request));
+
+  app.get<{ Params: { name: string } }>("/api/sources/:name", async (request, reply) => {
+    const source = sources_seen(request).find((item) => item.name === request.params.name);
+    return source ?? reply.code(404).send({ error: `No source '${request.params.name}'.` });
+  });
+
+  // The jobs writing to a target's repository, its other targets and its own tasks, as far as the viewer sees them.
+  const repository_extras = (request: FastifyRequest, watched: Watched) => {
+    const shown = scope(request);
+    const repository = target_key(watched.config).repository;
+    return {
+      writers: writers(repository, world()).filter((job) => sees(shown, { kind: "job", name: job })),
+      repository_targets: watched_by(request).filter((other) => other !== watched && target_key(other.config).repository === repository).map(summary),
+      tasks: visible_tasks(request).filter((task) => task.owner_kind === "repository" && task.owner === repository),
+    };
+  };
+
+  // ── Entity config ────────────────────────────────────────────────────────
+
+  const entity_kind = (kind: string, reply: FastifyReply): EntityKind | null => {
+    if ((entity_kinds as string[]).includes(kind)) return kind as EntityKind;
+    void reply.code(404).send({ error: `No kind '${kind}'; use ${entity_kinds.join(", ")}.` });
+    return null;
+  };
+
+  // Each entry of the kind the viewer sees as written, with where it came from, the fields and tasks the kind takes,
+  // and whether the page may change it; a flat repository entry is changed on its target's Config tab.
+  app.get<{ Params: { kind: string } }>("/api/config/:kind", async (request, reply) => {
+    const kind = entity_kind(request.params.kind, reply);
+    if (kind === null) return reply;
+    const shown = scope(request);
+    const flat = new Set((poller.entities?.repositories ?? []).filter((repository) => repository.expanded_from !== null).map((repository) => repository.name));
+    return {
+      kind,
+      mode: sources?.mode ?? "declarative",
+      editable: Boolean(sources?.editable) && has_role(request.viewer!.role, "admin"),
+      fields: entity_field_list(kind),
+      tasks: entity_tasks(kind),
+      entries: (sources?.entries(kind) ?? [])
+        .filter((entry) => sees(shown, { kind: seen_kind[kind], name: entry.name }))
+        .map((entry) => ({ ...entry, flat: kind === "repositories" && flat.has(entry.name) })),
+    };
+  });
+
+  app.post<{ Params: { kind: string }; Body: Record<string, unknown> }>("/api/config/:kind", async (request, reply) => {
+    const kind = entity_kind(request.params.kind, reply);
+    if (kind === null) return reply;
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    applied(editable.save_entity(kind, request.body ?? {}, null), null, "");
+    return reply.code(201).send({ name: String(request.body?.name ?? "") });
+  });
+
+  app.put<{ Params: { kind: string; name: string }; Body: Record<string, unknown> }>("/api/config/:kind/:name", async (request, reply) => {
+    const kind = entity_kind(request.params.kind, reply);
+    if (kind === null) return reply;
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    applied(editable.save_entity(kind, request.body ?? {}, request.params.name), null, "");
+    return { name: request.params.name };
+  });
+
+  app.delete<{ Params: { kind: string; name: string } }>("/api/config/:kind/:name", async (request, reply) => {
+    const kind = entity_kind(request.params.kind, reply);
+    if (kind === null) return reply;
+    const editable = editing(reply);
+    if (editable === null) return reply;
+    applied(editable.delete_entity(kind, request.params.name), null, "");
+    return reply.code(204).send();
   });
 
   app.get<{ Querystring: ListQuery }>("/api/events", async (request) => {
@@ -665,9 +814,27 @@ function configured_hosts(poller: Poller): { name: string; kind: HostKind; addre
   return names.map((name) => ({ name, kind: "managed" as const, address: null, own: poller.agents.status(name)?.built_in ?? false }));
 }
 
-// A run as the page shows it, with whether it can be run again.
+// The jobs the config names, or for a config built by hand one per target, named after it.
+function configured_jobs(poller: Poller): Pick<JobEntity, "name" | "source" | "expanded_from" | "sources" | "repositories" | "borg">[] {
+  if (poller.entities !== null) return poller.entities.jobs;
+  return [...poller.repositories.values()].map(({ config }) => {
+    const key = target_key(config);
+    return { name: key.job ?? key.target_id, source: config.source, expanded_from: config.name, sources: [], repositories: [key.repository], borg: {} };
+  });
+}
+
+// The worst of the levels, or null with none.
+function worst_level(levels: ("ok" | "warning" | "critical")[]): "ok" | "warning" | "critical" | null {
+  if (levels.length === 0) return null;
+  if (levels.includes("critical")) return "critical";
+  return levels.includes("warning") ? "warning" : "ok";
+}
+
+// A run as the page shows it, with whether it can be run again, and whether it waits for its host's agent or was lost.
 function with_retry(run: RunRow) {
-  return { ...run, retry: run.state !== "running" && retry_action(run.kind) !== null };
+  const condition = run.state === "running" && run.progress === WAITING_FOR_AGENT ? "waiting_for_agent"
+    : run.state === "failed" && run.error?.startsWith("Lost:") ? "lost" : null;
+  return { ...run, retry: run.state !== "running" && retry_action(run.kind) !== null, condition };
 }
 
 function target_filter(query: ListQuery) {

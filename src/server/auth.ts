@@ -74,7 +74,7 @@ export function needed(method: string, path: string): "open" | "any" | Role {
   if (!path.startsWith("/api/") || open_routes.has(path)) return "open";
   if (any_viewer_routes.has(path) || path.startsWith("/api/account/")) return "any";
   if (path.startsWith("/api/users") || path.startsWith("/api/tokens")) return "admin";
-  if (method === "POST" && path === "/api/repositories") return "admin";
+  if (method === "POST" && (path === "/api/repositories" || path.startsWith("/api/config/"))) return "admin";
   if (agent_token_route.test(path)) return "admin";
   if (method === "PUT" || method === "DELETE") return "admin";
   if (method === "POST") return "operator";
