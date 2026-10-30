@@ -858,10 +858,12 @@ function pick_tasks(tasks: WrittenTasks, kinds: readonly TaskKind[]): WrittenTas
 }
 
 // Fills each job's and repository's tasks from what was written, prune_after_backup and compact_after_backup, and the
-// limits that imply a schedule, then has each target whose job runs its canary as a task leave it out of its polls.
+// limits that imply a schedule where X-Backups schedules the backups too, then has each target whose job runs its canary as a task leave it out of its polls.
 function resolve_tasks(maps: EntityMaps, written: Record<"jobs" | "repositories", Map<string, WrittenTasks>>, targets: RepositoryConfig[]): void {
   const compact_after = new Set<string>();
   const writers = new Set<string>();
+  // Repositories some job backs up to on a schedule, the only ones whose checks X-Backups schedules by default.
+  const scheduled_writers = new Set<string>();
   for (const job of maps.jobs.values()) {
     const tasks = written.jobs.get(job.name) ?? {};
     const label = job.expanded_from === null ? `Job '${job.name}'` : `Repository '${job.name}'`;
@@ -884,7 +886,9 @@ function resolve_tasks(maps: EntityMaps, written: Record<"jobs" | "repositories"
     if (backs_up) {
       const limits = job.repositories.map((name) => maps.repositories.get(name)!.borg.check_kinds ?? {});
       const kind = tasks.check?.kind ?? (limits.some((limit) => limit.archives === undefined && limit.extract !== undefined) ? "extract" : "archives");
-      job.tasks.check = task_config("check", tasks.check, limit_schedule(limits.map((limit) => limit[kind])), kind, fail);
+      const scheduled = job.tasks.backup?.enabled === true;
+      if (scheduled) for (const name of job.repositories) scheduled_writers.add(name);
+      job.tasks.check = task_config("check", tasks.check, scheduled ? limit_schedule(limits.map((limit) => limit[kind])) : {}, kind, fail);
     } else if (tasks.check !== undefined) {
       fail("check needs sources, since it checks the job's own archives.");
     }
@@ -903,7 +907,7 @@ function resolve_tasks(maps: EntityMaps, written: Record<"jobs" | "repositories"
     const limits = repository.borg.check_kinds ?? {};
     const kind = tasks.check?.kind ?? (repository.borg.check_verify_data ? "data" : writers.has(repository.name) ? "repository" : "all");
     const limit = kind === "all" ? [limits.repository, limits.archives] : [limits[kind]];
-    repository.tasks.check = task_config("check", tasks.check, limit_schedule(limit), kind, fail);
+    repository.tasks.check = task_config("check", tasks.check, scheduled_writers.has(repository.name) ? limit_schedule(limit) : {}, kind, fail);
   }
 
   for (const target of targets) {

@@ -234,9 +234,19 @@ describe("tasks", () => {
     });
   });
 
-  it("defaults a repository's check from check_kinds, checking everything where no job writes", () => {
+  it("leaves a watched repository's check to be started by hand, checking everything where no job writes", () => {
     const config = parse({ repositories: [disk] });
-    expect(config.entities!.repositories[0].tasks.check).toEqual({ schedule: "4d", after: null, enabled: true, check: "all", origin: "default" });
+    expect(config.entities!.repositories[0].tasks.check).toEqual({ schedule: null, after: null, enabled: false, check: "all", origin: "manual" });
+  });
+
+  it("defaults checks from check_kinds only where a job's backup is scheduled", () => {
+    const scheduled = parse({ repositories: [disk], sources: [home], jobs: [{ name: "web", sources: ["home"], repositories: ["disk"], tasks: { backup: "daily 02:00" } }] });
+    const by_hand = parse({ repositories: [disk], sources: [home], jobs: [{ name: "web", sources: ["home"], repositories: ["disk"] }] });
+
+    // Half the repository check's limit of 14 days.
+    expect(scheduled.entities!.repositories[0].tasks.check).toMatchObject({ schedule: "7d", check: "repository", origin: "default" });
+    expect(by_hand.entities!.repositories[0].tasks.check).toMatchObject({ schedule: null, enabled: false, origin: "manual" });
+    expect(by_hand.entities!.jobs[0].tasks.check).toMatchObject({ schedule: null, enabled: false, origin: "manual" });
   });
 
   it("translates prune_after_backup and compact_after_backup into tasks run after a backup", () => {

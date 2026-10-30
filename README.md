@@ -112,8 +112,9 @@ or `extract` (a dry-run extract of its newest archive); on a repository `reposit
 `data` (`--verify-data`, the default with `check_verify_data`). On a flat entry `check` is its
 repository's.
 
-Left out, a task still has defaults: a check runs every half of its `check_kinds` age, so it lands
-well before going stale, and the canary every `canary_interval` (a day unless set), and polls no
+Left out, a task still has defaults: where a job's backup is scheduled, the checks of that job and
+of the repositories it writes to run every half of their `check_kinds` age, so they land well
+before going stale (a repository filled by a host's own timer keeps its checks to that host), and the canary every `canary_interval` (a day unless set), and polls no
 longer restore it. `prune_after_backup` and `compact_after_backup` still work, as a prune and a
 compact `after: "backup"`. A task with no schedule runs only when started by hand. A scheduled prune
 needs no `allow_delete`, which guards only the Prune button.
