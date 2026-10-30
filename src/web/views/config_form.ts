@@ -1,4 +1,5 @@
-// A repository's config as a form built from the fields the server lists, or read-only with its source named.
+// A host's, repository's, source's or job's config as a form built from the fields the server lists, or read-only with
+// its source named.
 
 import { SECRET_MASK, type FieldKind, type FieldSpec } from "../api.ts";
 import { h, type Child } from "../dom.ts";
@@ -6,8 +7,8 @@ import { facts, section, text_dialog, toolbar } from "../ui.ts";
 
 // The fields in groups, in the order a reader looks for them; anything unlisted lands in Other.
 export const field_groups: [title: string, fields: string[]][] = [
-  ["Connection", ["name", "id", "host", "repo", "borg_version", "rsh", "ssh_key", "borg_bin", "require_sudo", "passphrase", "passphrase_file", "passphrase_command", "lock_wait", "timeout", "interval", "skip_when_unreachable"]],
-  ["Sources", ["source_paths", "exclude", "exclude_from", "exclude_caches", "exclude_if_present", "one_file_system", "compression", "archive_prefix"]],
+  ["Connection", ["name", "kind", "address", "id", "host", "poll_via", "repo", "repo_by_host", "borg_version", "rsh", "ssh_key", "borg_bin", "require_sudo", "passphrase", "passphrase_file", "passphrase_command", "lock_wait", "timeout", "interval", "skip_when_unreachable"]],
+  ["Sources", ["sources", "repositories", "source_paths", "exclude", "exclude_from", "exclude_caches", "exclude_if_present", "one_file_system", "compression", "archive_prefix"]],
   ["Retention", ["keep_within", "keep_last", "keep_secondly", "keep_minutely", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly", "prune_match", "prune_after_backup", "compact_after_backup"]],
   ["Checks", ["max_age", "warn_age", "check_units", "check_max_age", "check_warn_age", "check_kinds", "check_verify_data", "canary_path", "canary_interval", "canary_warn_age", "canary_max_age"]],
   ["Jobs", ["job_nice", "job_io_idle", "inhibit_sleep", "job_lock", "skip_while_active", "backup_lock_wait", "cache_dir", "restore_dir", "browse_limit", "list_archives", "collect_stats", "quota"]],
@@ -47,7 +48,14 @@ const kind_placeholders: Partial<Record<FieldKind, string>> = {
   duration: "such as 1d, 12h or seconds",
   list: "one per line",
   durations: "kind duration, one per line",
+  strings: "name value, one per line",
 };
+
+// The values a field may take, picked from a list rather than typed: one, or any number.
+export interface Choice {
+  options: string[];
+  multiple: boolean;
+}
 
 // ── Form ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +67,12 @@ export interface ConfigForm {
   show_error: (message: string, field: string | null) => void;
 }
 
-export function config_form(fields: FieldSpec[], values: Record<string, unknown>, options: { adding: boolean }): ConfigForm {
+export function config_form(fields: FieldSpec[], values: Record<string, unknown>, options: {
+  adding: boolean;
+  choices?: Record<string, Choice>;
+  // Lines under fields that read differently on this kind, over the usual ones.
+  hints?: Record<string, string>;
+}): ConfigForm {
   const readers = new Map<string, () => unknown>();
   const notes = new Map<string, HTMLElement>();
   const groups = new Map<string, HTMLDetailsElement>();
@@ -70,11 +83,13 @@ export function config_form(fields: FieldSpec[], values: Record<string, unknown>
     const id = `field-${name}`;
     const note = h("p", { class: "field-error tone-bad small", id: `${id}-error`, hidden: true });
     notes.set(name, note);
-    const [input, read] = input_for(name, kind, values[name], id, options.adding);
+    const choice = options.choices?.[name];
+    const [input, read] = choice ? choice_for(name, choice, values[name], id) : input_for(name, kind, values[name], id, options.adding);
     readers.set(name, read);
+    const hint = options.hints?.[name] ?? field_hints[name];
     return h("div", { class: "form-row" },
       h("label", { for: id }, h("code", {}, name)),
-      h("div", {}, input, field_hints[name] && h("p", { class: "muted small" }, field_hints[name]), note),
+      h("div", {}, input, hint && h("p", { class: "muted small" }, hint), note),
     );
   };
 
@@ -134,7 +149,7 @@ function input_for(name: string, kind: FieldKind, value: unknown, id: string, ad
       h("option", { value: "false", selected: value === false }, "no"));
     return [select, () => select.value === "" ? undefined : select.value === "true"];
   }
-  if (kind === "list" || kind === "durations") {
+  if (kind === "list" || kind === "durations" || kind === "strings") {
     const text = kind === "list"
       ? (Array.isArray(value) ? value.join("\n") : typeof value === "string" ? value : "")
       : value && typeof value === "object" ? Object.entries(value).map(([key, item]) => `${key} ${item}`).join("\n") : "";
@@ -146,8 +161,8 @@ function input_for(name: string, kind: FieldKind, value: unknown, id: string, ad
       if (kind === "list") return lines;
       return Object.fromEntries(lines.map((line) => {
         const [key, ...rest] = line.split(/\s+/);
-        const age = rest.join(" ");
-        return [key, /^\d+$/.test(age) ? Number(age) : age];
+        const item = rest.join(" ");
+        return [key, kind === "durations" && /^\d+$/.test(item) ? Number(item) : item];
       }));
     }];
   }
@@ -172,12 +187,32 @@ function input_for(name: string, kind: FieldKind, value: unknown, id: string, ad
   }];
 }
 
+// A pick of one value from a list, or a set of checkboxes for any number; a value no longer listed stays shown.
+function choice_for(name: string, choice: Choice, value: unknown, id: string): [HTMLElement, () => unknown] {
+  const current = Array.isArray(value) ? value.map(String) : typeof value === "string" && value !== "" ? [value] : [];
+  const options = [...new Set([...choice.options, ...current])];
+  if (!choice.multiple) {
+    const select = h("select", { id },
+      h("option", { value: "", selected: current.length === 0 }, "none"),
+      ...options.map((option) => h("option", { value: option, selected: current.includes(option) }, option)));
+    return [select, () => select.value === "" ? undefined : select.value];
+  }
+  const boxes = options.map((option) => h("input", { type: "checkbox", value: option, checked: current.includes(option) }));
+  const group = h("fieldset", { class: "check-group", id, tabindex: "-1" },
+    h("legend", { class: "visually-hidden" }, name),
+    ...(options.length === 0 ? [h("p", { class: "muted small" }, "None to pick from yet.")] : boxes.map((box) => h("label", { class: "check" }, box, ` ${box.value}`))));
+  return [group, () => {
+    const picked = boxes.filter((box) => box.checked).map((box) => box.value);
+    return picked.length === 0 ? undefined : picked;
+  }];
+}
+
 // ── Read-only ────────────────────────────────────────────────────────────────
 
-export function config_tools(fields: Record<string, unknown>): HTMLElement {
+export function config_tools(fields: Record<string, unknown>, kind = "repositories"): HTMLElement {
   return toolbar(
     h("button", { onclick: () => text_dialog("Config as JSON", JSON.stringify(fields, null, 2)) }, "Show as JSON"),
-    h("button", { onclick: () => text_dialog("Config as Nix", as_nix(fields)) }, "Show as Nix"),
+    h("button", { onclick: () => text_dialog("Config as Nix", as_nix(fields, kind)) }, "Show as Nix"),
   );
 }
 
@@ -198,8 +233,8 @@ function config_value(value: unknown): Child {
   return h("code", {}, String(value));
 }
 
-// The repository as a Nix attribute set for services.x-backups.repositories, with secrets left as a comment.
-export function as_nix(fields: Record<string, unknown>): string {
+// The entry as a Nix attribute set for services.x-backups.<kind>, with secrets left as a comment.
+export function as_nix(fields: Record<string, unknown>, kind = "repositories"): string {
   const { name, ...rest } = fields;
   const value = (item: unknown, indent: string): string => {
     if (typeof item === "string") return JSON.stringify(item);
@@ -214,7 +249,7 @@ export function as_nix(fields: Record<string, unknown>): string {
   const lines = Object.entries(rest)
     .filter(([, item]) => item !== null && item !== undefined)
     .map(([key, item]) => item === SECRET_MASK ? `  # ${key} is set; keep it in a file outside the Nix store and use passphraseFile.` : `  ${nix_key(key)} = ${value(item, "  ")};`);
-  return `services.x-backups.repositories.${nix_key(String(name))} = {\n${lines.join("\n")}\n};\n`;
+  return `services.x-backups.${kind}.${nix_key(String(name))} = {\n${lines.join("\n")}\n};\n`;
 }
 
 function nix_key(key: string): string {
