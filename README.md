@@ -53,7 +53,8 @@ State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `st
 - A **host** is `managed` (it runs the X-Backups agent, which runs its commands; see Agents) or
   `storage-only` (it only holds repositories reached by `borg serve` or a hosted service, and runs
   no agent). `address` is its network name, shown on the page; the one managed host with no
-  `address` is this server, run by the agent built into it. A host holds `ssh_key` and `rsh` (the
+  `address` is this server, run by the agent built into it. `agent_public_key` is the OpenSSH
+  `ssh-ed25519` line of the key its agent logs in with (see Agents). A host holds `ssh_key` and `rsh` (the
   SSH borg itself uses for an `ssh://` repository), `require_sudo`, `borg_bin`, `cache_dir` and the
   `job_*`, `skip_*` and `inhibit_sleep` settings. `inhibit_sleep` keeps the host awake through
   `systemd-inhibit` where the host has it, and runs without it where it does not.
@@ -234,18 +235,12 @@ declared here; in `mixed` and `page` modes the page may add it.
 
 A repository entry of the older flat shape still works unchanged: one whose `host` is an address
 rather than a declared host's name, or that holds fields a repository does not, such as
-`source_paths`, is written as given and expanded as a flat entry (see Config).
+`source_paths`, is written as given and expanded as a flat entry (see Config). A flat entry whose
+`host` is a declared host's name runs on that host, with its key and kind, and stays flat, so a
+setup of flat entries can declare `hosts` beside them to give each its `agent_public_key`.
 
-A managed host other than this server runs `nixosModules.agent`, pointed at this server with the
-token an admin issues for it (see Agents). The fileserver above enables it in its own configuration:
-
-```nix
-services.x-backups-agent = {
-  enable = true;
-  url = "wss://backups.example.org/api/agent";
-  tokenFile = "/run/secrets/x-backups-agent-token";
-};
-```
+A managed host other than this server runs `nixosModules.agent`, which logs in with the host's
+declared key (see Agents).
 
 Borg on this machine reaches an
 `ssh://` repository through the system's ssh, whose host keys come from `programs.ssh.knownHosts`.
@@ -261,27 +256,91 @@ the commands the server sends, keeps long runs such as backups going across a dr
 or its own restart, and samples the host's load, memory and disk. The server's own machine has an
 agent built in.
 
-To enrol a host, an admin presses Enrol agent on its page, or issues it a token with
-`POST /api/hosts/<name>/token`; the token is shown
-once and only its hash is kept, and issuing a new one hangs up on an agent using the old.
-`DELETE /api/hosts/<name>/token` revokes it. `GET /api/hosts` lists each host with whether its agent
-is connected, its version, when it was last seen and its newest health reading. Put the token in a
-file on the host and enable the flake's `nixosModules.agent`:
+Each host's agent logs in with its own ed25519 key, declared in the server's config, so enrolling
+a host needs no step on the page. Make one key per host:
+
+```sh
+ssh-keygen -t ed25519 -N "" -C x-backups-agent-<host> -f x-backups-agent-<host>
+```
+
+The private file, in OpenSSH format and unencrypted since the agent cannot type a passphrase, goes
+in the host's secret store (such as sops) and is the agent's `keyFile`. The `.pub` line is the
+host's `agent_public_key` in the server's config:
 
 ```nix
+# On the server.
+services.x-backups.hosts.fileserver = {
+  address = "fileserver.example.org";
+  agent_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... x-backups-agent-fileserver";
+};
+
+# On fileserver.
 services.x-backups-agent = {
   enable = true;
   url = "wss://backups.example.org/api/agent";
-  tokenFile = "/run/secrets/x-backups-agent-token";
+  host = "fileserver";
+  keyFile = config.sops.secrets.x-backups-agent-key.path;
 };
 ```
 
-The URL must be `wss://`, since the token and repository passphrases travel over it; the agent
-accepts `ws://` only to the machine it runs on. The agent runs as root unless `user` says
-otherwise, since borg must read every source, and has borg and borg 2 on its path. Outside NixOS,
-run `packages.agent` with `X_BACKUPS_AGENT_URL`, `X_BACKUPS_AGENT_TOKEN_FILE` and
-`X_BACKUPS_AGENT_STATE_DIR` set, and have the service manager stop only the agent's own process,
-so its long runs outlive it.
+The agent names its host in the upgrade's `X-Backups-Agent-Host` header, the server sends a random
+nonce as its first message, and the agent's hello carries its signature of
+`x-backups-agent-v1|<host>|<nonce>`, which the server checks against the declared key. Nothing that
+crosses the wire logs in a second time, and neither side logs the key. `host` must be the host's
+name in the server's config; it defaults to the lower-case hostname. A host with a declared key
+refuses token logins, so a leaked token cannot stand in for it, and its page shows the key's
+fingerprint rather than offering a token. Changing or removing the key hangs up on its agent.
+
+A host with no declared key logs in with a token instead: an admin presses Enrol agent on its
+page, or issues one with `POST /api/hosts/<name>/token`. The token is shown once and only its hash
+is kept, issuing a new one hangs up on an agent using the old, and `DELETE /api/hosts/<name>/token`
+revokes it. Put it in a file on the host and give the agent `tokenFile` in place of `keyFile`; the
+module asserts exactly one of the two. `GET /api/hosts` lists each host with whether its agent is
+connected, how it logged in, its version, when it was last seen and its newest health reading.
+
+The URL must be `wss://`, since repository passphrases travel over it; the agent accepts `ws://`
+only to the machine it runs on. Node keeps its own CA list, so the module sets
+`NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`, and a server certificate from an internal
+CA in `security.pki.certificates` is trusted.
+
+The module runs the agent as the system user `x-backups-agent` (`user`, `group` and `extraGroups`
+change it), with its state and `HOME` in `/var/lib/x-backups-agent` and a cache folder in
+`/var/cache/x-backups-agent`. Its `PATH` is `/run/wrappers/bin`, then `path` (such as
+`"/run/current-system/sw"`), then its own bash, ssh, borg, borg 2, util-linux and core tools. It may
+read `/home` and run `sudo`, and a restart stops only the agent, so its long runs carry on. Outside
+NixOS, run `packages.agent` with `X_BACKUPS_AGENT_URL`, one of `X_BACKUPS_AGENT_KEY_FILE` and
+`X_BACKUPS_AGENT_TOKEN_FILE`, `X_BACKUPS_AGENT_HOST` and `X_BACKUPS_AGENT_STATE_DIR` set, and have
+the service manager stop only the agent's own process.
+
+A host with `require_sudo` runs these as root through `sudo -n`, with borg's environment given as
+arguments, so the agent's user needs passwordless rules with `SETENV` for borg:
+
+```sh
+sudo -n BORG_PASSPHRASE_FD=0 BORG_RELOCATED_REPO_ACCESS_IS_OK=no BORG_BASE_DIR=<cache_dir> borg <list|info|create|extract|prune|compact|check|delete> ...
+sudo -n cat <canary_path>                               # only when the agent cannot read the canary itself
+sudo -n find <restore folder> -mindepth 1 -maxdepth 1   # a restore checks the folder is empty
+sudo -n mkdir -p <restore folder>
+```
+
+The passphrase reaches borg on stdin, never as an argument. Borg may also be given `BORG_PASSCOMMAND`
+(a `passphrase_command`), `BORG_RSH` (`ssh_key` or `rsh`) and `BORG_EXIT_CODES=legacy` (borg 2),
+and `BORG_BASE_DIR` is a throwaway folder under `/tmp` when the host sets no `cache_dir`. `borg` is
+the host's `borg_bin`, `borg2` for a borg 2 repository, found on the agent's `PATH`; sudo matches a
+rule by the file it names, so a rule for the module's own borg covers it:
+
+```nix
+security.sudo.extraRules = [{
+  users = [ "x-backups-agent" ];
+  commands = [
+    { command = "${pkgs.borgbackup}/bin/borg"; options = [ "NOPASSWD" "SETENV" ]; }
+    { command = "${pkgs.coreutils}/bin/cat /srv/data/.canary"; options = [ "NOPASSWD" ]; }
+  ];
+}];
+```
+
+Borg 2 needs `${inputs.x-backups.packages.${pkgs.system}.borg2}/bin/borg2` too, and restores need
+`find` and `mkdir`. Borg under sudo with `SETENV` runs whatever `rsh` and `passphrase_command` say
+as root, so whoever may change the config may act as root on that host.
 
 A backup, prune, check, compact, restore, delete or purge is a long run, which the agent keeps going
 on its own and the server follows by reading its output from where it last stopped. After the

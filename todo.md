@@ -18,7 +18,7 @@ graph, groups, triggers, agent, sync or per-plugin UI contract.
   commands, a SQLite store keeps state, a scheduler starts tasks, a loop polls, Fastify routes expose
   it, the page shows it.
 - Every managed host runs the X-Backups agent, which dials out to the server over a WebSocket with
-  its own token and runs what it is sent. The server's own machine has an agent built in. There is
+  its host's declared key or token and runs what it is sent. The server's own machine has an agent built in. There is
   no SSH runner and no `systemd-run`; a storage host that allows only `borg serve` is reached by
   borg itself from an agent host.
 - Each target (one job, source host and repository) keeps one typed state record (archives, repo
@@ -689,6 +689,17 @@ and 56.
     for its key fields, written into the config file with its name. A flat repository entry is
     written as before, byte for byte, and `config.ts` tells it apart. With `configMode` declarative,
     a job naming an undeclared source or repository fails evaluation.
+70. [x] **Declared agent keys.** Each host's agent logs in with an ed25519 key, its public line
+    declared as the host's `agent_public_key`, as X-Monitor's agents do; tokens stay for hosts with
+    none.
+    Built in `src/shared/agent_keys.ts`, which reads the OpenSSH public line and the unencrypted
+    `openssh-key-v1` private key, and the hub, which sends a nonce to an agent naming its host in
+    `X-Backups-Agent-Host` and checks the hello's signature of `x-backups-agent-v1|<host>|<nonce>`.
+    A host with a key refuses tokens, and the Hosts page shows its fingerprint. The agent takes
+    `X_BACKUPS_AGENT_KEY_FILE`; `nixosModules.agent` takes `keyFile`, `host`, `user`, `group`,
+    `extraGroups` and `path`, runs as the system user `x-backups-agent` with sudo allowed, and trusts
+    the system CA bundle through `NODE_EXTRA_CA_CERTS`. A flat entry whose `host` names a declared
+    host runs there and stays flat.
 
 ## Apps to review for features
 

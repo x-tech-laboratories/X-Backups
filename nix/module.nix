@@ -23,6 +23,7 @@ let
   nullable_options = [
     "host"
     "address"
+    "agent_public_key"
   ];
 
   # A typed option left unset is left out, so an entry holds only what was declared.
@@ -242,14 +243,16 @@ in
       default = { };
       example = literalExpression ''
         {
-          # On the server; fileserver itself enables nixosModules.agent with the token issued for it:
+          # On the server; fileserver itself enables nixosModules.agent with the private half:
           #   services.x-backups-agent = {
           #     enable = true;
           #     url = "wss://backups.example.org/api/agent";
-          #     tokenFile = "/run/secrets/x-backups-agent-token";
+          #     host = "fileserver";
+          #     keyFile = "/run/secrets/x-backups-agent-key";
           #   };
           fileserver = {
             address = "fileserver.example.org";
+            agent_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... x-backups-agent-fileserver";
             require_sudo = true;
           };
           storage = {
@@ -262,8 +265,9 @@ in
       '';
       description = ''
         Hosts, keyed by name, each with the host fields of `config.example.json`. A managed host
-        runs `nixosModules.agent`, pointed at this server's `/api/agent` with the token an admin
-        issues on `POST /api/hosts/<name>/token`. The page shows each one as declared and locked.
+        runs `nixosModules.agent`, pointed at this server's `/api/agent`, which logs in with the
+        key its `agent_public_key` names, or for a host with none, with the token an admin issues
+        on its Hosts page. The page shows each one as declared and locked.
       '';
       type = entity {
         kind = mkOption {
@@ -282,6 +286,17 @@ in
           default = null;
           example = "fileserver.example.org";
           description = "The host's network name, shown on the page. The one managed host without one is this server.";
+        };
+        agent_public_key = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... x-backups-agent-fileserver";
+          description = ''
+            The OpenSSH public line of the ed25519 key the host's agent logs in with, made with
+            `ssh-keygen -t ed25519 -N "" -C x-backups-agent-<host>`; the private half goes in the
+            agent's `keyFile`. A host with a key refuses token logins; one without logs in with a
+            token issued on its Hosts page.
+          '';
         };
       };
     };
