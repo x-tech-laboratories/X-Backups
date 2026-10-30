@@ -112,8 +112,14 @@ target, and a repository's compact once the backups and prunes due on it have fi
 takes `kind`: on a job `archives` (`borg check --archives-only`, limited to the job's own archives)
 or `extract` (a dry-run extract of its newest archive); on a repository `repository`
 (`--repository-only`, the default where a job writes), `all` (the default where none does) or
-`data` (`--verify-data`, the default with `check_verify_data`). On a flat entry `check` is its
-repository's.
+`data` (`--verify-data`, the default with `check_verify_data`). `check` may also be a list, one
+object per kind, each with its own schedule, such as a weekly `all` and a monthly `data`. On a flat
+entry a check goes to its job or its repository by its kind, and one without a kind to its
+repository.
+
+```json
+"tasks": { "check": [{ "kind": "all", "schedule": "weekly sun 13:00" }, { "kind": "data", "schedule": "0 13 9 * *" }] }
+```
 
 Left out, a task still has defaults: where a job's backup is scheduled, the checks of that job and
 of the repositories it writes to run every half of their `check_kinds` age, so they land well
@@ -122,14 +128,16 @@ longer restore it. `prune_after_backup` and `compact_after_backup` still work, a
 compact `after: "backup"`. A task with no schedule runs only when started by hand. A scheduled prune
 needs no `allow_delete`, which guards only the Prune button.
 
-When a task is due comes from the store: a task never run is due at once, and otherwise from its
-last run on each target, or the last action of the same kind started by hand. So a restart picks up
-where it left off. One run goes at a time on a repository, and on one job's targets from one host;
+When a task is due comes from the store: from its last run on each target, or the last action of
+the same kind started by hand. A task never run on a duration is due at once, and one never run on
+a calendar form at its first time after X-Backups first saw it, so checks taken over from another
+tool keep their days rather than all starting together. So a restart picks up where it left off. One run goes at a time on a repository, and on one job's targets from one host;
 the rest queue. A task whose host's agent is away waits, and runs once when the agent connects
 however many times it fell due meanwhile. A start that is refused or skipped, such as by
 `skip_while_active`, tries again after ten minutes.
 
-Each run keeps its task's id, `job:<name>:<kind>` or `repository:<name>:<kind>`, in `task`; an action
+Each run keeps its task's id, `job:<name>:<kind>` or `repository:<name>:<kind>`, with a check's kind
+after it as in `repository:<name>:check:data`, in `task`; an action
 started from the page keeps null. `GET /api/tasks` lists each task the viewer sees with its schedule
 in words, whether it is enabled, when it is next due, its last run and why it waits, per target.
 An operator may `POST /api/tasks/:id/run` to run it now, and `/enable` or `/disable` it, which is

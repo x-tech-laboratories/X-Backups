@@ -89,12 +89,15 @@ async function finish(run: RunRow, exit_code = 0): Promise<void> {
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
-  at("2026-10-29T12:00:00");
+  at("2026-10-29T01:00:00");
   store = new Store(":memory:");
   server_agent = new FakeAgent();
   hub = new FakeHub(new AgentTokens(store), { local: { host: "local", agent: server_agent } });
   hub.connect("odin");
   build();
+  // Seen at 01:00, so web's backup, daily at 02:00 and never run, is due by noon.
+  scheduler.tasks();
+  at("2026-10-29T12:00:00");
 });
 
 afterEach(async () => {
@@ -113,14 +116,14 @@ describe("tasks", () => {
     const views = scheduler.tasks();
 
     expect(views.map((view) => view.id)).toEqual([
-      "job:web:backup", "job:web:prune", "job:web:check", "job:base:backup", "job:base:check",
-      "repository:disk:compact", "repository:disk:check", "repository:usb:compact", "repository:usb:check",
+      "job:web:backup", "job:web:prune", "job:web:check:archives", "job:base:backup", "job:base:check:archives",
+      "repository:disk:compact", "repository:disk:check:repository", "repository:usb:compact", "repository:usb:check:repository",
     ]);
     expect(task("job:web:backup")).toMatchObject({ description: "Every day at 02:00", enabled: true, origin: "written" });
     expect(task("job:web:backup").targets.map((target) => target.target_id)).toEqual(["web:odin:disk", "web:odin:usb"]);
     expect(task("job:web:prune")).toMatchObject({ description: "After each successful backup", next_due: null });
     expect(task("job:base:backup")).toMatchObject({ description: "Every 6 hours" });
-    expect(task("repository:disk:check")).toMatchObject({ check: "repository", enabled: false, origin: "manual", description: "Only when started by hand" });
+    expect(task("repository:disk:check:repository")).toMatchObject({ check: "repository", enabled: false, origin: "manual", description: "Only when started by hand" });
     expect(task("repository:disk:compact").targets.map((target) => target.target_id)).toEqual(["base:server:disk"]);
   });
 });
@@ -128,7 +131,7 @@ describe("tasks", () => {
 // ── Starting and queueing ────────────────────────────────────────────────────
 
 describe("starting and queueing", () => {
-  it("starts a task never run at once, recording its run under the task", async () => {
+  it("starts a task once it falls due, recording its run under the task", async () => {
     await scheduler.tick();
 
     const [run] = runs({ task: "job:web:backup" });
@@ -177,6 +180,19 @@ describe("starting and queueing", () => {
     for (const run of runs({ state: "running" })) await finish(run);
     await scheduler.tick();
     expect(runs({ task: "repository:disk:compact" })).toHaveLength(1);
+  });
+
+  it("starts a task on a duration never run at once, and one on a calendar never run at its next time after it was first seen", () => {
+    const document = { ...DOCUMENT, jobs: [{ ...DOCUMENT.jobs[1], tasks: { backup: "6h", check: [{ kind: "extract", schedule: "0 4 * * *" }] } }] };
+    build(document);
+
+    expect(task("job:base:backup").next_due).toBe(epoch("2026-10-29T12:00:00"));
+    expect(task("job:base:check:extract").next_due).toBe(epoch("2026-10-30T04:00:00"));
+    // The store keeps when it was first seen, so a restart does not push it back.
+    at("2026-10-30T03:00:00");
+    scheduler.stop();
+    build(document);
+    expect(task("job:base:check:extract").next_due).toBe(epoch("2026-10-30T04:00:00"));
   });
 
   it("counts a calendar schedule from the last run's start, and a duration likewise", async () => {
@@ -249,10 +265,10 @@ describe("page actions", () => {
   });
 
   it("runs a task now, whatever its schedule, on the target offering a repository's actions", async () => {
-    const started = await scheduler.run_now("repository:usb:check");
+    const started = await scheduler.run_now("repository:usb:check:repository");
 
     expect(started).toEqual(["web:odin:usb"]);
-    expect(runs({ task: "repository:usb:check" })).toMatchObject([{ kind: "check-repository", target_id: "web:odin:usb" }]);
+    expect(runs({ task: "repository:usb:check:repository" })).toMatchObject([{ kind: "check-repository", target_id: "web:odin:usb" }]);
   });
 
   it("holds a start that was refused, noting why once, and tries again later", async () => {

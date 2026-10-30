@@ -136,10 +136,14 @@ adapted where a task changes a contract.
     file needs a GitHub token with the `workflow` scope.
 16. [ ] **Cutover.**
     - [x] Deploy beside X-Monitor against the same repositories (Heimdall, `backups.heimdall.technet`, 2026-10-26).
-    - [ ] Compare the two for a few days.
-    - [ ] Import X-Monitor's borg history before its borg plugin goes, with
+    - [x] Compare the two for a few days.
+    - [x] Import X-Monitor's borg history before its borg plugin goes, with
       `npm run import-x-monitor -- <x-monitor.db> <x-backups.sqlite> <monitor>=<repository>...`
       (`--dry-run` first); it fills only the polls older than each repository's first own one.
+      Done: a dry run on 2026-10-30 found nothing left to write, the history reaching back to 2026-09-28.
+    - [x] Several checks per job and repository, so X-Monitor's weekly check and monthly extract and data
+      checks carry over, and a calendar task never run waits for its next time instead of starting at once.
+    - [ ] Schedule the backups and checks in X-Backups and drop X-Monitor's borg monitors in one deploy.
     - Remove X-Monitor's borg plugin: `x_monitor/plugins/borg/`, its tests, its `config.yaml`
       example, `borgPassphraseFile` in `nix/module.nix`, and the borg meter in
       `x_monitor/core/ui/views/fleet.py`.

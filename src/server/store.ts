@@ -300,6 +300,12 @@ const SCHEMA = `
     changed_by TEXT NOT NULL,
     changed_epoch INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS task_first_seen (
+    task_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    PRIMARY KEY (task_id, target_id)
+  );
   CREATE TABLE IF NOT EXISTS agent_tokens (
     host TEXT PRIMARY KEY,
     hash TEXT NOT NULL UNIQUE,
@@ -688,6 +694,12 @@ export class Store {
     if (enabled === null) this.run("DELETE FROM task_overrides WHERE task_id = ?", task_id);
     else this.run("INSERT OR REPLACE INTO task_overrides (task_id, enabled, changed_by, changed_epoch) VALUES (?, ?, ?, ?)", task_id, Number(enabled), changed_by, now_seconds());
     this.changed({ kind: "tasks", target_id: null });
+  }
+
+  // When the task was first seen on the target, recording now if it never was.
+  task_first_seen(task_id: string, target_id: string, now: number): number {
+    this.run("INSERT OR IGNORE INTO task_first_seen (task_id, target_id, epoch) VALUES (?, ?, ?)", task_id, target_id, now);
+    return Number(this.get("SELECT epoch FROM task_first_seen WHERE task_id = ? AND target_id = ?", task_id, target_id)!.epoch);
   }
 
   // ── SQL helpers ──────────────────────────────────────────────────────────

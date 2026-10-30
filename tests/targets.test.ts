@@ -321,17 +321,17 @@ describe("tasks", () => {
       backup: { schedule: "daily 02:00", after: null, enabled: true, check: null, origin: "written" },
       prune: { schedule: null, after: "backup", enabled: true, check: null, origin: "written" },
       // Half the archives check's limit of 8 days.
-      check: { schedule: "4d", after: null, enabled: true, check: "archives", origin: "default" },
+      check: [{ schedule: "4d", after: null, enabled: true, check: "archives", origin: "default" }],
     });
     expect(repository.tasks).toEqual({
       compact: { schedule: "weekly sun 03:00", after: null, enabled: true, check: null, origin: "written" },
-      check: { schedule: null, after: null, enabled: false, check: "data", origin: "manual" },
+      check: [{ schedule: null, after: null, enabled: false, check: "data", origin: "manual" }],
     });
   });
 
   it("leaves a watched repository's check to be started by hand, checking everything where no job writes", () => {
     const config = parse({ repositories: [disk] });
-    expect(config.entities!.repositories[0].tasks.check).toEqual({ schedule: null, after: null, enabled: false, check: "all", origin: "manual" });
+    expect(config.entities!.repositories[0].tasks.check).toEqual([{ schedule: null, after: null, enabled: false, check: "all", origin: "manual" }]);
   });
 
   it("defaults checks from check_kinds only where a job's backup is scheduled", () => {
@@ -339,9 +339,9 @@ describe("tasks", () => {
     const by_hand = parse({ repositories: [disk], sources: [home], jobs: [{ name: "web", sources: ["home"], repositories: ["disk"] }] });
 
     // Half the repository check's limit of 14 days.
-    expect(scheduled.entities!.repositories[0].tasks.check).toMatchObject({ schedule: "7d", check: "repository", origin: "default" });
-    expect(by_hand.entities!.repositories[0].tasks.check).toMatchObject({ schedule: null, enabled: false, origin: "manual" });
-    expect(by_hand.entities!.jobs[0].tasks.check).toMatchObject({ schedule: null, enabled: false, origin: "manual" });
+    expect(scheduled.entities!.repositories[0].tasks.check).toMatchObject([{ schedule: "7d", check: "repository", origin: "default" }]);
+    expect(by_hand.entities!.repositories[0].tasks.check).toMatchObject([{ schedule: null, enabled: false, origin: "manual" }]);
+    expect(by_hand.entities!.jobs[0].tasks.check).toMatchObject([{ schedule: null, enabled: false, origin: "manual" }]);
   });
 
   it("translates prune_after_backup and compact_after_backup into tasks run after a backup", () => {
@@ -359,8 +359,29 @@ describe("tasks", () => {
     const repository = config.entities!.repositories.find((item) => item.name === "flat")!;
 
     expect(job.tasks.backup).toMatchObject({ schedule: "6h" });
-    expect(job.tasks.check).toMatchObject({ origin: "manual" });
-    expect(repository.tasks).toMatchObject({ check: { schedule: "monthly", check: "repository" }, compact: { schedule: "1w" } });
+    expect(job.tasks.check).toMatchObject([{ origin: "manual" }]);
+    expect(repository.tasks).toMatchObject({ check: [{ schedule: "monthly", check: "repository" }], compact: { schedule: "1w" } });
+  });
+
+  it("takes a list of checks, one per kind, each with its own schedule", () => {
+    const config = parse({
+      repositories: [{ ...disk, tasks: { check: [{ kind: "all", schedule: "0 4 * * mon" }, { kind: "data", schedule: "0 4 15 * *" }] } }],
+      sources: [home],
+      jobs: [{ name: "web", sources: ["home"], repositories: ["disk"], tasks: { backup: "6h", check: [{ kind: "extract", schedule: "0 4 8 * *" }] } }],
+    });
+
+    expect(config.entities!.repositories[0].tasks.check).toMatchObject([{ check: "all", schedule: "0 4 * * mon" }, { check: "data", schedule: "0 4 15 * *" }]);
+    expect(config.entities!.jobs[0].tasks.check).toMatchObject([{ check: "extract", schedule: "0 4 8 * *", origin: "written" }]);
+  });
+
+  it("sends each of a flat entry's checks to its job or its repository by its kind", () => {
+    const tasks = { backup: "6h", check: [{ kind: "all", schedule: "weekly sun 13:00" }, { kind: "extract", schedule: "0 13 2 * *" }, { kind: "data", schedule: "0 13 9 * *" }] };
+    const config = parse({ repositories: [{ name: "flat", repo: "/srv/flat", source_paths: ["/etc"], tasks }] });
+    const job = config.entities!.jobs.find((item) => item.name === "flat")!;
+    const repository = config.entities!.repositories.find((item) => item.name === "flat")!;
+
+    expect(job.tasks.check!.map((check) => check.check)).toEqual(["extract"]);
+    expect(repository.tasks.check!.map((check) => check.check)).toEqual(["all", "data"]);
   });
 
   it("runs a job's canary as a task, which its polls then leave out", () => {
@@ -379,6 +400,9 @@ describe("tasks", () => {
     [{ backup: { after: "backup" } }, "only prune and compact run after a backup"],
     [{ prune: "1d" }, "prune needs a keep_* retention policy"],
     [{ check: { kind: "data" } }, "tasks.check.kind must be archives, extract"],
+    [{ check: [] }, "tasks.check must list at least one check"],
+    [{ check: [{ kind: "extract", schedule: "monthly" }, { schedule: "weekly" }] }, "tasks.check[1] must name its kind"],
+    [{ check: [{ kind: "extract", schedule: "monthly" }, { kind: "extract", schedule: "weekly" }] }, "lists the extract check more than once"],
     [{ backup: { enabled: true } }, "tasks.backup has no schedule, so it cannot be enabled"],
   ])("refuses the job tasks %j", (tasks, message) => {
     expect(() => parse({ repositories: [disk], sources: [home], jobs: [{ name: "web", sources: ["home"], repositories: ["disk"], tasks }] })).toThrow(message);

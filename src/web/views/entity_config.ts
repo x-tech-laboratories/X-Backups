@@ -203,71 +203,39 @@ interface TasksEditor {
   show_error: (message: string) => void;
 }
 
-// A row per task the kind takes: its schedule with presets and its meaning in words as it is typed, whether it is
-// switched on, whether it runs after each backup, and what a check checks.
+interface TaskRow {
+  element: HTMLElement;
+  read: () => Record<string, unknown> | undefined;
+}
+
+// A row per task the kind takes, and one per check with a button to add another: its schedule with presets and its
+// meaning in words as it is typed, whether it is switched on, whether it runs after each backup, and what a check checks.
 function tasks_editor(allowed: EntityConfig["tasks"], written: Record<string, unknown>): TasksEditor {
   const note = h("p", { class: "field-error tone-bad small", role: "alert", hidden: true });
   const presets = h("datalist", { id: "schedule-presets" }, ...schedule_presets.map((preset) => h("option", { value: preset })));
-  const readers: [kind: string, read: () => Record<string, unknown> | undefined][] = [];
+  const readers: [kind: string, read: () => unknown][] = [];
   const rows = allowed.kinds.map((kind) => {
-    const given = written[kind];
-    const task = (typeof given === "string" || typeof given === "number" ? { schedule: given } : given ?? {}) as Record<string, unknown>;
-    const id = `task-${kind}`;
-    const schedule = h("input", { id, type: "text", list: "schedule-presets", autocomplete: "off", placeholder: "such as daily 02:00, 6h or a cron line" });
-    schedule.value = task.schedule === undefined ? "" : String(task.schedule);
-    const preview = h("p", { class: "muted small", id: `${id}-preview`, "aria-live": "polite" });
-    schedule.setAttribute("aria-describedby", `${id}-preview`);
-    let timer: number | undefined;
-    const describe = () => {
-      clearTimeout(timer);
-      const text = schedule.value.trim();
-      if (!text) {
-        preview.textContent = "No schedule: the default from its limits applies, or it runs only by hand.";
-        preview.className = "muted small";
-        return;
-      }
-      timer = window.setTimeout(async () => {
-        try {
-          const answer = await api<SchedulePreview>(`/api/schedule${query({ text })}`);
-          if (schedule.value.trim() !== text) return;
-          preview.textContent = `${answer.description}; next ${answer.next.map(stamp).join(", ")} (${answer.time_zone})`;
-          preview.className = "muted small";
-        } catch (error) {
-          preview.textContent = error instanceof Error ? error.message : String(error);
-          preview.className = "tone-bad small";
-        }
-      }, 300);
+    if (kind !== "check") {
+      const row = task_row(kind, written[kind], `task-${kind}`, allowed);
+      readers.push([kind, row.read]);
+      return row.element;
+    }
+    const given = written.check;
+    const checks: TaskRow[] = [];
+    const list = h("div", { class: "form-rows" });
+    const add = (task: unknown) => {
+      const row = task_row(kind, task, `task-check-${checks.length}`, allowed);
+      checks.push(row);
+      list.append(row.element);
     };
-    schedule.addEventListener("input", describe);
-    describe();
-    const enabled = h("select", { "aria-label": `${kind} enabled` },
-      h("option", { value: "", selected: task.enabled === undefined }, "on when scheduled"),
-      h("option", { value: "true", selected: task.enabled === true }, "on"),
-      h("option", { value: "false", selected: task.enabled === false }, "off"));
-    const after = kind === "prune" || kind === "compact"
-      ? h("input", { type: "checkbox", checked: task.after === "backup", "aria-label": `${kind} after each backup` }) : null;
-    const check = kind === "check"
-      ? h("select", { "aria-label": "What the check checks" },
-        h("option", { value: "", selected: task.kind === undefined }, "default"),
-        ...allowed.check_kinds.map((option) => h("option", { value: option, selected: task.kind === option }, option)))
-      : null;
+    for (const task of Array.isArray(given) ? given : [given]) add(task);
+    // One check is written as an object, several as a list, each naming its kind.
     readers.push([kind, () => {
-      const result: Record<string, unknown> = {};
-      const text = schedule.value.trim();
-      if (text) result.schedule = /^\d+$/.test(text) ? Number(text) : text;
-      if (enabled.value) result.enabled = enabled.value === "true";
-      if (after?.checked) result.after = "backup";
-      if (check?.value) result.kind = check.value;
-      return Object.keys(result).length === 0 ? undefined : result;
+      const values = checks.map((row) => row.read()).filter((value) => value !== undefined);
+      return values.length <= 1 ? values[0] : values;
     }]);
-    return h("div", { class: "form-row" },
-      h("label", { for: id }, h("code", {}, kind)),
-      h("div", { class: "stack" }, schedule, preview,
-        h("div", { class: "toolbar" },
-          h("label", { class: "field" }, h("span", { class: "field-label" }, "Switched"), enabled),
-          after && h("label", { class: "check" }, after, " Also after each successful backup"),
-          check && h("label", { class: "field" }, h("span", { class: "field-label" }, "Checks"), check))),
-    );
+    return h("div", { class: "stack" }, list,
+      h("div", { class: "toolbar" }, h("button", { type: "button", onclick: () => add(undefined) }, "Add a check")));
   });
   return {
     element: h("section", { class: "panel" },
@@ -284,4 +252,65 @@ function tasks_editor(allowed: EntityConfig["tasks"], written: Record<string, un
       note.scrollIntoView({ block: "center" });
     },
   };
+}
+
+// One task's row: its schedule, whether it is switched on, and whether it runs after a backup or what it checks.
+function task_row(kind: string, given: unknown, id: string, allowed: EntityConfig["tasks"]): TaskRow {
+  const task = (typeof given === "string" || typeof given === "number" ? { schedule: given } : given ?? {}) as Record<string, unknown>;
+  const schedule = h("input", { id, type: "text", list: "schedule-presets", autocomplete: "off", placeholder: "such as daily 02:00, 6h or a cron line" });
+  schedule.value = task.schedule === undefined ? "" : String(task.schedule);
+  const preview = h("p", { class: "muted small", id: `${id}-preview`, "aria-live": "polite" });
+  schedule.setAttribute("aria-describedby", `${id}-preview`);
+  let timer: number | undefined;
+  const describe = () => {
+    clearTimeout(timer);
+    const text = schedule.value.trim();
+    if (!text) {
+      preview.textContent = "No schedule: the default from its limits applies, or it runs only by hand.";
+      preview.className = "muted small";
+      return;
+    }
+    timer = window.setTimeout(async () => {
+      try {
+        const answer = await api<SchedulePreview>(`/api/schedule${query({ text })}`);
+        if (schedule.value.trim() !== text) return;
+        preview.textContent = `${answer.description}; next ${answer.next.map(stamp).join(", ")} (${answer.time_zone})`;
+        preview.className = "muted small";
+      } catch (error) {
+        preview.textContent = error instanceof Error ? error.message : String(error);
+        preview.className = "tone-bad small";
+      }
+    }, 300);
+  };
+  schedule.addEventListener("input", describe);
+  describe();
+  const enabled = h("select", { "aria-label": `${kind} enabled` },
+    h("option", { value: "", selected: task.enabled === undefined }, "on when scheduled"),
+    h("option", { value: "true", selected: task.enabled === true }, "on"),
+    h("option", { value: "false", selected: task.enabled === false }, "off"));
+  const after = kind === "prune" || kind === "compact"
+    ? h("input", { type: "checkbox", checked: task.after === "backup", "aria-label": `${kind} after each backup` }) : null;
+  const check = kind === "check"
+    ? h("select", { "aria-label": "What the check checks" },
+      h("option", { value: "", selected: task.kind === undefined }, "default"),
+      ...allowed.check_kinds.map((option) => h("option", { value: option, selected: task.kind === option }, option)))
+    : null;
+  const read = () => {
+    const result: Record<string, unknown> = {};
+    const text = schedule.value.trim();
+    if (text) result.schedule = /^\d+$/.test(text) ? Number(text) : text;
+    if (enabled.value) result.enabled = enabled.value === "true";
+    if (after?.checked) result.after = "backup";
+    if (check?.value) result.kind = check.value;
+    return Object.keys(result).length === 0 ? undefined : result;
+  };
+  const element = h("div", { class: "form-row" },
+    h("label", { for: id }, h("code", {}, kind)),
+    h("div", { class: "stack" }, schedule, preview,
+      h("div", { class: "toolbar" },
+        h("label", { class: "field" }, h("span", { class: "field-label" }, "Switched"), enabled),
+        after && h("label", { class: "check" }, after, " Also after each successful backup"),
+        check && h("label", { class: "field" }, h("span", { class: "field-label" }, "Checks"), check))),
+  );
+  return { element, read };
 }

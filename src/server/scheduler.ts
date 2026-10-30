@@ -1,8 +1,9 @@
 // Starts each job's and repository's tasks when they fall due, on the agent of the host each target runs on, through
 // the poller's action paths so every run is recorded under its task. When a task is next due comes from the store: the
 // start of its newest run on each target, or of an action of the same kind started by hand, and for a task run after a
-// backup, the end of the newest successful one. A restart so picks up where it left off, and a task never run is due
-// at once.
+// backup, the end of the newest successful one. A restart so picks up where it left off. A task never run on an interval
+// is due at once, and one never run on a calendar schedule at its next time, so checks taken over from another tool
+// keep their days.
 //
 // One run goes at a time on a repository, and on a job's targets from one host; the rest queue. A task whose host's
 // agent is away waits, and runs once when the agent connects however many times it fell due meanwhile. A task that
@@ -14,9 +15,9 @@ import type { AgentStatus } from "./agents/hub.ts";
 import { check_run_kind } from "./borg/checks.ts";
 import type { BorgRepository } from "./borg/repository.ts";
 import { CollectResult, type ActionStart } from "./borg/types.ts";
-import { target_key, type Entities, type TaskConfig, type TaskKind } from "./config.ts";
+import { target_key, type Entities, type OwnerTasks, type TaskConfig, type TaskKind } from "./config.ts";
 import { host_name, type Poller } from "./poller.ts";
-import { describe, next_due, schedule_time_zone } from "./schedule.ts";
+import { describe, next_due, parse_schedule, schedule_time_zone } from "./schedule.ts";
 import type { Change, RunRow, Store, TaskOverride } from "./store.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
@@ -25,7 +26,8 @@ export type TaskOwnerKind = "job" | "repository";
 
 // One configured task with the targets it runs on: each of a job's, or the one offering a repository's own actions.
 export interface TaskSpec {
-  // Stable across restarts and config reloads: "job:<name>:<kind>" or "repository:<name>:<kind>".
+  // Stable across restarts and config reloads: "job:<name>:<kind>" or "repository:<name>:<kind>", and for a check
+  // "job:<name>:check:<check kind>" or "repository:<name>:check:<check kind>".
   id: string;
   owner_kind: TaskOwnerKind;
   owner: string;
@@ -122,17 +124,26 @@ export function task_specs(entities: Entities | null, target_jobs: Map<string, s
   const specs: TaskSpec[] = [];
   for (const job of entities.jobs) {
     const targets = [...target_jobs].filter(([, name]) => name === job.name).map(([target]) => target);
-    for (const [kind, config] of Object.entries(job.tasks)) {
-      specs.push({ id: `job:${job.name}:${kind}`, owner_kind: "job", owner: job.name, kind: kind as TaskKind, config, targets });
+    for (const [kind, config] of task_configs(job.tasks)) {
+      specs.push({ id: task_id("job", job.name, kind, config), owner_kind: "job", owner: job.name, kind, config, targets });
     }
   }
   for (const repository of entities.repositories) {
     const targets = repository.actions_target === null ? [] : [repository.actions_target];
-    for (const [kind, config] of Object.entries(repository.tasks)) {
-      specs.push({ id: `repository:${repository.name}:${kind}`, owner_kind: "repository", owner: repository.name, kind: kind as TaskKind, config, targets });
+    for (const [kind, config] of task_configs(repository.tasks)) {
+      specs.push({ id: task_id("repository", repository.name, kind, config), owner_kind: "repository", owner: repository.name, kind, config, targets });
     }
   }
   return specs;
+}
+
+// Each of an owner's tasks with its kind, a check once per kind of check.
+function task_configs(tasks: OwnerTasks<TaskKind>): [TaskKind, TaskConfig][] {
+  return Object.entries(tasks).flatMap(([kind, value]) => [value].flat().map((config): [TaskKind, TaskConfig] => [kind as TaskKind, config]));
+}
+
+function task_id(owner_kind: TaskOwnerKind, owner: string, kind: TaskKind, config: TaskConfig): string {
+  return kind === "check" ? `${owner_kind}:${owner}:check:${config.check}` : `${owner_kind}:${owner}:${kind}`;
 }
 
 // The task's schedule in words, with whether it also runs after a backup.
@@ -158,6 +169,8 @@ export class Scheduler {
   private readonly starting = new Set<string>();
   // Starts refused or skipped, held until they may try again.
   private readonly held = new Map<string, { reason: string; until: number }>();
+  // When each task was first seen on each target, as the store keeps it, so it is asked for once.
+  private readonly first_seen = new Map<string, number>();
   private interval: NodeJS.Timeout | null = null;
   private soon: NodeJS.Timeout | null = null;
   private readonly on_connect = (_status: AgentStatus) => this.tick_soon();
@@ -319,7 +332,7 @@ export class Scheduler {
         const last = this.store.last_task_run(target_id, task.id, run_kinds(task));
         const going = last?.state === "running" || this.starting.has(key);
         const requested = this.requested.has(key);
-        const scheduled = enabled ? this.scheduled_due(task, key, last) : null;
+        const scheduled = enabled ? this.scheduled_due(task, target_id, key, last) : null;
         const after_backup = enabled ? this.after_backup_due(task, target_id, entities.repository, last) : null;
         const next = requested ? now : min_of(scheduled, after_backup);
         items.push({
@@ -338,11 +351,15 @@ export class Scheduler {
     return items;
   }
 
-  private scheduled_due(task: TaskSpec, key: string, last: RunRow | null): number | null {
+  // A calendar schedule never run counts from when the task was first seen on the target, kept in the store so a
+  // restart does not move it.
+  private scheduled_due(task: TaskSpec, target_id: string, key: string, last: RunRow | null): number | null {
     if (task.config.schedule === null) return null;
-    if (last === null) return this.now();
-    const anchor = last.started_epoch;
-    return next_due(task.config.schedule, anchor, this.time_zone) + jitter(`${key}\n${anchor}`, this.jitter_in_seconds);
+    const schedule = parse_schedule(task.config.schedule);
+    if (last === null && schedule.kind === "interval") return this.now();
+    if (last === null && !this.first_seen.has(key)) this.first_seen.set(key, this.store.task_first_seen(task.id, target_id, this.now()));
+    const anchor = last?.started_epoch ?? this.first_seen.get(key)!;
+    return next_due(schedule, anchor, this.time_zone) + jitter(`${key}\n${anchor}`, this.jitter_in_seconds);
   }
 
   // When a successful backup, newer than the task's last run, makes it due: a prune's own target's backup, or for a

@@ -55,7 +55,7 @@ export interface RepositoryEntity {
   // The targets that poll the repository, and the one that offers its own actions such as compact.
   targets: string[];
   actions_target: string | null;
-  tasks: Partial<Record<RepositoryTaskKind, TaskConfig>>;
+  tasks: OwnerTasks<RepositoryTaskKind>;
 }
 
 export interface SourceEntity {
@@ -73,12 +73,15 @@ export interface JobEntity {
   borg: BorgConfig;
   source: ConfigSource;
   expanded_from: string | null;
-  tasks: Partial<Record<JobTaskKind, TaskConfig>>;
+  tasks: OwnerTasks<JobTaskKind>;
 }
 
 export type JobTaskKind = "backup" | "prune" | "check" | "canary";
 export type RepositoryTaskKind = "compact" | "check";
 export type TaskKind = JobTaskKind | RepositoryTaskKind;
+
+// An owner's tasks by kind; its checks are a list, one per kind of check.
+export type OwnerTasks<Kind extends TaskKind> = { [kind in Exclude<Kind, "check">]?: TaskConfig } & { check?: TaskConfig[] };
 
 // One task of a job or a repository as the scheduler runs it.
 export interface TaskConfig {
@@ -279,7 +282,7 @@ interface WrittenTask {
   kind?: string;
 }
 
-type WrittenTasks = Partial<Record<TaskKind, WrittenTask>>;
+type WrittenTasks = { [kind in Exclude<TaskKind, "check">]?: WrittenTask } & { check?: WrittenTask[] };
 
 // The kinds a check task takes on each owner.
 export const check_task_kinds: Record<"jobs" | "repositories", string[]> = { jobs: ["archives", "extract"], repositories: ["repository", "all", "data"] };
@@ -421,8 +424,8 @@ export function compile_config(lists: EntityLists, defaults: Record<string, unkn
       expand_flat_entry(target, maps);
       flat_targets.set(target.name, target);
       const tasks = parse_tasks((tagged.entry as Record<string, unknown>).tasks, "flat", flat_fail(target.name));
-      written_tasks.jobs.set(target.name, pick_tasks(tasks, owner_tasks.jobs.filter((kind) => kind !== "check")));
-      written_tasks.repositories.set(target.name, pick_tasks(tasks, owner_tasks.repositories));
+      written_tasks.jobs.set(target.name, pick_tasks(tasks, "jobs"));
+      written_tasks.repositories.set(target.name, pick_tasks(tasks, "repositories"));
       continue;
     }
     const { repository, poll_via, tasks } = parse_repository(tagged, defaults);
@@ -855,46 +858,71 @@ function check_buildable(name: string, borg: Record<string, unknown>, fail: (pro
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-// Reads an owner's tasks, each a schedule or an object of schedule, enabled, after and a check's kind.
+// Reads an owner's tasks, each a schedule or an object of schedule, enabled, after and a check's kind; check may also
+// be a list of such objects, one per kind of check.
 function parse_tasks(value: unknown, owner: TaskOwner, fail: Fail): WrittenTasks {
   if (value === undefined || value === null) return {};
   if (!is_plain_object(value)) fail('tasks must be an object of tasks by kind, such as {"backup": {"schedule": "daily 02:00"}}.', "tasks");
   const allowed = owner_tasks[owner];
   const tasks: WrittenTasks = {};
   for (const [kind, written] of Object.entries(value as Record<string, unknown>)) {
-    const where = `tasks.${kind}`;
     if (!(allowed as readonly string[]).includes(kind)) fail(`unknown task '${kind}'; use ${allowed.join(", ")}.`, "tasks");
-    const task = typeof written === "string" || typeof written === "number" ? { schedule: written } : written;
-    if (!is_plain_object(task)) fail(`${where} must be a schedule or an object with schedule, enabled and after.`, "tasks");
-    const fields = task as Record<string, unknown>;
-    for (const field of Object.keys(fields)) {
-      if (!["schedule", "enabled", "after", "kind"].includes(field)) fail(`${where}: unknown field '${field}'.`, "tasks");
+    if (kind !== "check") {
+      tasks[kind as Exclude<TaskKind, "check">] = parse_task(kind as TaskKind, written, `tasks.${kind}`, owner, fail);
+      continue;
     }
-    if (fields.schedule !== undefined) {
-      if (typeof fields.schedule !== "string" && typeof fields.schedule !== "number") fail(`${where}.schedule must be a string or a number of seconds.`, "tasks");
-      try {
-        parse_schedule(fields.schedule as ScheduleText);
-      } catch (error) {
-        fail(`${where}.schedule: ${(error as Error).message}`, "tasks");
-      }
-    }
-    if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") fail(`${where}.enabled must be true or false.`, "tasks");
-    if (fields.after !== undefined) {
-      if (!after_backup_tasks.includes(kind as TaskKind)) fail(`${where}: only prune and compact run after a backup.`, "tasks");
-      if (fields.after !== "backup") fail(`${where}.after must be "backup", not ${JSON.stringify(fields.after)}.`, "tasks");
-    }
-    if (fields.kind !== undefined) {
-      const kinds = check_task_kinds[owner === "jobs" ? "jobs" : "repositories"];
-      if (kind !== "check") fail(`${where}: only a check takes a kind.`, "tasks");
-      if (!kinds.includes(String(fields.kind))) fail(`${where}.kind must be ${kinds.join(", ")}, not ${JSON.stringify(fields.kind)}.`, "tasks");
-    }
-    tasks[kind as TaskKind] = fields as WrittenTask;
+    const list = Array.isArray(written);
+    const entries = list ? written as unknown[] : [written];
+    if (entries.length === 0) fail("tasks.check must list at least one check.", "tasks");
+    const checks = entries.map((entry, index) => parse_task("check", entry, list ? `tasks.check[${index}]` : "tasks.check", owner, fail));
+    const kinds = new Set<string>();
+    checks.forEach((check, index) => {
+      if (checks.length === 1) return;
+      if (check.kind === undefined) fail(`tasks.check[${index}] must name its kind, since tasks.check lists more than one.`, "tasks");
+      if (kinds.has(check.kind)) fail(`tasks.check lists the ${check.kind} check more than once.`, "tasks");
+      kinds.add(check.kind);
+    });
+    tasks.check = checks;
   }
   return tasks;
 }
 
-function pick_tasks(tasks: WrittenTasks, kinds: readonly TaskKind[]): WrittenTasks {
-  return Object.fromEntries(Object.entries(tasks).filter(([kind]) => kinds.includes(kind as TaskKind)));
+function parse_task(kind: TaskKind, written: unknown, where: string, owner: TaskOwner, fail: Fail): WrittenTask {
+  const task = typeof written === "string" || typeof written === "number" ? { schedule: written } : written;
+  if (!is_plain_object(task)) fail(`${where} must be a schedule or an object with schedule, enabled and after.`, "tasks");
+  const fields = task as Record<string, unknown>;
+  for (const field of Object.keys(fields)) {
+    if (!["schedule", "enabled", "after", "kind"].includes(field)) fail(`${where}: unknown field '${field}'.`, "tasks");
+  }
+  if (fields.schedule !== undefined) {
+    if (typeof fields.schedule !== "string" && typeof fields.schedule !== "number") fail(`${where}.schedule must be a string or a number of seconds.`, "tasks");
+    try {
+      parse_schedule(fields.schedule as ScheduleText);
+    } catch (error) {
+      fail(`${where}.schedule: ${(error as Error).message}`, "tasks");
+    }
+  }
+  if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") fail(`${where}.enabled must be true or false.`, "tasks");
+  if (fields.after !== undefined) {
+    if (!after_backup_tasks.includes(kind)) fail(`${where}: only prune and compact run after a backup.`, "tasks");
+    if (fields.after !== "backup") fail(`${where}.after must be "backup", not ${JSON.stringify(fields.after)}.`, "tasks");
+  }
+  if (fields.kind !== undefined) {
+    // A flat entry's check goes to its job or its repository by its kind.
+    const kinds = owner === "flat" ? [...check_task_kinds.repositories, ...check_task_kinds.jobs] : check_task_kinds[owner];
+    if (kind !== "check") fail(`${where}: only a check takes a kind.`, "tasks");
+    if (!kinds.includes(String(fields.kind))) fail(`${where}.kind must be ${kinds.join(", ")}, not ${JSON.stringify(fields.kind)}.`, "tasks");
+  }
+  return fields as WrittenTask;
+}
+
+// The tasks of a flat entry that go to the job or the repository it expands into; a check without a kind is the repository's.
+function pick_tasks(tasks: WrittenTasks, owner: "jobs" | "repositories"): WrittenTasks {
+  const kinds: readonly string[] = owner_tasks[owner];
+  const picked: WrittenTasks = Object.fromEntries(Object.entries(tasks).filter(([kind]) => kind !== "check" && kinds.includes(kind)));
+  const checks = (tasks.check ?? []).filter((check) => check.kind === undefined ? owner === "repositories" : check_task_kinds[owner].includes(check.kind));
+  if (checks.length > 0) picked.check = checks;
+  return picked;
 }
 
 // Fills each job's and repository's tasks from what was written, prune_after_backup and compact_after_backup, and the
@@ -925,10 +953,13 @@ function resolve_tasks(maps: EntityMaps, written: Record<"jobs" | "repositories"
 
     if (backs_up) {
       const limits = job.repositories.map((name) => maps.repositories.get(name)!.borg.check_kinds ?? {});
-      const kind = tasks.check?.kind ?? (limits.some((limit) => limit.archives === undefined && limit.extract !== undefined) ? "extract" : "archives");
+      const fallback_kind = limits.some((limit) => limit.archives === undefined && limit.extract !== undefined) ? "extract" : "archives";
       const scheduled = job.tasks.backup?.enabled === true;
       if (scheduled) for (const name of job.repositories) scheduled_writers.add(name);
-      job.tasks.check = task_config("check", tasks.check, scheduled ? limit_schedule(limits.map((limit) => limit[kind])) : {}, kind, fail);
+      job.tasks.check = (tasks.check ?? [undefined]).map((check) => {
+        const kind = check?.kind ?? fallback_kind;
+        return task_config("check", check, scheduled ? limit_schedule(limits.map((limit) => limit[kind])) : {}, kind, fail);
+      });
     } else if (tasks.check !== undefined) {
       fail("check needs sources, since it checks the job's own archives.");
     }
@@ -945,9 +976,12 @@ function resolve_tasks(maps: EntityMaps, written: Record<"jobs" | "repositories"
     const after = compact_after.has(repository.name) ? { after: "backup" as const, origin: "translated" as const } : {};
     repository.tasks.compact = task_config("compact", tasks.compact, after, null, fail);
     const limits = repository.borg.check_kinds ?? {};
-    const kind = tasks.check?.kind ?? (repository.borg.check_verify_data ? "data" : writers.has(repository.name) ? "repository" : "all");
-    const limit = kind === "all" ? [limits.repository, limits.archives] : [limits[kind]];
-    repository.tasks.check = task_config("check", tasks.check, scheduled_writers.has(repository.name) ? limit_schedule(limit) : {}, kind, fail);
+    const fallback_kind = repository.borg.check_verify_data ? "data" : writers.has(repository.name) ? "repository" : "all";
+    repository.tasks.check = (tasks.check ?? [undefined]).map((check) => {
+      const kind = check?.kind ?? fallback_kind;
+      const limit = kind === "all" ? [limits.repository, limits.archives] : [limits[kind]];
+      return task_config("check", check, scheduled_writers.has(repository.name) ? limit_schedule(limit) : {}, kind, fail);
+    });
   }
 
   for (const target of targets) {
