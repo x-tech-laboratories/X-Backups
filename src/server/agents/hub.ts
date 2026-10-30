@@ -1,11 +1,17 @@
-// The agents the server can reach, by host name: those that have dialled in over /api/agent with their host's token,
-// and the one built into the server for its own machine. Everything that runs a command on a host goes through here.
+// The agents the server can reach, by host name: those that have dialled in over /api/agent with their host's token
+// or declared key, and the one built into the server for its own machine. Everything that runs a command on a host
+// goes through here. A host with a declared key logs in only with that key, so a leaked token cannot stand in for it.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
+import { randomBytes, type KeyObject } from "node:crypto";
 import { EventEmitter } from "node:events";
+import type { IncomingHttpHeaders } from "node:http";
 
-import { parse_agent_message, protocol_version, type HealthSample, type LongRun, type LongRunPoll } from "../../shared/agent_protocol.ts";
+import { parse_public_key, verify_challenge } from "../../shared/agent_keys.ts";
+import {
+  encode_message, key_host_header, parse_agent_message, protocol_version, type HealthSample, type LongRun, type LongRunPoll,
+} from "../../shared/agent_protocol.ts";
 import { cmd_result, type CmdResult } from "../borg/types.ts";
 import { AgentError, ended_stream, type Agent, type AgentRunOptions, type AgentStreamOptions, type CommandStream } from "./agent.ts";
 import { AgentConnection, type ConnectionOptions, type ServerSocket } from "./connection.ts";
@@ -29,9 +35,16 @@ export interface AgentStatus {
   agent_version: string;
   connected_epoch: number;
   built_in: boolean;
+  // How the agent logged in; null for the built-in one.
+  login: AgentLogin | null;
   // The long runs the agent knew of when it connected.
   runs: LongRun[];
 }
+
+export type AgentLogin = "token" | "key";
+
+// Who an agent's upgrade says it is, before any socket opens, or why it is turned away.
+export type Admission = { host: string; login: AgentLogin } | { error: string };
 
 interface HubEvents {
   connect: [status: AgentStatus];
@@ -44,6 +57,7 @@ export const close_codes = {
   replaced: 4003,
   revoked: 4004,
   no_hello: 4005,
+  bad_key: 4006,
 } as const;
 
 const default_connection: ConnectionOptions = {
@@ -60,6 +74,9 @@ export class AgentHub extends EventEmitter<HubEvents> {
   private readonly hello_timeout: number;
   private readonly connection_options: ConnectionOptions;
   private readonly connections = new Map<string, AgentConnection>();
+  private readonly logins = new WeakMap<AgentConnection, AgentLogin>();
+  // Each host's declared public key, with the line it was read from.
+  private agent_keys = new Map<string, { line: string; key: KeyObject }>();
 
   constructor(tokens: AgentTokens, options: HubOptions = {}) {
     super();
@@ -76,16 +93,37 @@ export class AgentHub extends EventEmitter<HubEvents> {
 
   // ── Enrolment ────────────────────────────────────────────────────────────
 
+  // Takes each host's declared OpenSSH public key line, which config.ts has checked, and hangs up on an agent whose
+  // host's key is new, changed or gone, so it logs in again the way the config now asks.
+  set_agent_keys(lines: Map<string, string>): void {
+    const next = new Map([...lines].map(([host, line]) => [host, { line, key: parse_public_key(line) }]));
+    for (const host of new Set([...this.agent_keys.keys(), ...next.keys()])) {
+      if (this.agent_keys.get(host)?.line === next.get(host)?.line) continue;
+      this.disconnect(host, close_codes.revoked, "The host's declared agent key changed.");
+    }
+    this.agent_keys = next;
+  }
+
+  has_agent_key(host: string): boolean {
+    return this.agent_keys.has(host);
+  }
+
   // A new token for the host, shown this once; an agent still using the old one is hung up on.
   issue_token(host: string): string {
     const token = this.tokens.issue(host);
-    this.disconnect(host, close_codes.revoked, "The host's token was replaced.");
+    this.disconnect_token_login(host, "The host's token was replaced.");
     return token;
   }
 
   revoke(host: string): void {
     this.tokens.revoke(host);
-    this.disconnect(host, close_codes.revoked, "The host's token was revoked.");
+    this.disconnect_token_login(host, "The host's token was revoked.");
+  }
+
+  // An agent logged in with its key is left alone when the host's token changes.
+  private disconnect_token_login(host: string, reason: string): void {
+    const connection = this.connections.get(host);
+    if (connection !== undefined && this.logins.get(connection) === "token") connection.close(close_codes.revoked, reason);
   }
 
   // Each host issued a token, with when its agent was last in touch.
@@ -99,12 +137,28 @@ export class AgentHub extends EventEmitter<HubEvents> {
     return match === null ? null : this.tokens.host_for(match[1]);
   }
 
+  // Who an agent's upgrade request says it is: a token's host, or the host it names to log in with that host's key.
+  admit(headers: IncomingHttpHeaders): Admission {
+    const named = headers[key_host_header];
+    if (typeof named === "string" && named !== "") {
+      if (!this.agent_keys.has(named)) return { error: `Host '${named}' has no declared agent key.` };
+      return { host: named, login: "key" };
+    }
+    const host = this.authenticate(headers.authorization);
+    if (host === null) return { error: "This agent token is not enrolled." };
+    if (this.agent_keys.has(host)) return { error: `Host '${host}' has a declared agent key, so it logs in with that key, not a token.` };
+    return { host, login: "token" };
+  }
+
   // ── Connections ──────────────────────────────────────────────────────────
 
-  // Takes a socket whose token named the host, and waits for its hello before using it.
-  accept(socket: ServerSocket, host: string): void {
+  // Takes a socket whose upgrade named the host, and waits for its hello before using it; one logging in with its key
+  // is sent a nonce first, which its hello must carry signed.
+  accept(socket: ServerSocket, host: string, login: AgentLogin = "token"): void {
     let connection: AgentConnection | null = null;
     const hello_timer = setTimeout(() => socket.close(close_codes.no_hello, "No hello came."), this.hello_timeout);
+    const nonce = login === "key" ? randomBytes(32).toString("base64url") : null;
+    if (nonce !== null) socket.send(encode_message({ type: "challenge", nonce }));
 
     socket.on("message", (raw, is_binary) => {
       const data = as_buffer(raw);
@@ -119,10 +173,16 @@ export class AgentHub extends EventEmitter<HubEvents> {
         socket.close(close_codes.protocol, `This server speaks agent protocol ${protocol_version}, not ${hello.protocol}.`);
         return;
       }
+      const { signature, ...greeting } = hello;
+      if (nonce !== null && !this.proves_key(host, nonce, signature)) {
+        socket.close(close_codes.bad_key, `The agent's key is not the one declared for ${host}.`);
+        return;
+      }
       this.connections.get(host)?.close(close_codes.replaced, "A newer connection from the same host replaced this one.");
-      connection = new AgentConnection(socket, host, hello, this.connection_options);
+      connection = new AgentConnection(socket, host, greeting, this.connection_options);
       this.connections.set(host, connection);
-      this.emit("connect", status_of(connection));
+      this.logins.set(connection, login);
+      this.emit("connect", this.status_of(connection));
     });
     socket.on("error", () => {});
     socket.on("close", () => {
@@ -134,6 +194,11 @@ export class AgentHub extends EventEmitter<HubEvents> {
       this.connections.delete(host);
       this.emit("disconnect", host);
     });
+  }
+
+  private proves_key(host: string, nonce: string, signature: unknown): boolean {
+    const declared = this.agent_keys.get(host);
+    return declared !== undefined && typeof signature === "string" && verify_challenge(declared.key, host, nonce, signature);
   }
 
   disconnect(host: string, code = 1000, reason = "The server hung up."): void {
@@ -151,11 +216,11 @@ export class AgentHub extends EventEmitter<HubEvents> {
   status(host: string): AgentStatus | null {
     if (this.local?.host === host) return local_status(host);
     const connection = this.connections.get(host);
-    return connection?.is_open ? status_of(connection) : null;
+    return connection?.is_open ? this.status_of(connection) : null;
   }
 
   statuses(): AgentStatus[] {
-    const remote = [...this.connections.values()].filter((connection) => connection.is_open).map(status_of);
+    const remote = [...this.connections.values()].filter((connection) => connection.is_open).map((connection) => this.status_of(connection));
     return this.local === null ? remote : [local_status(this.local.host), ...remote];
   }
 
@@ -211,6 +276,18 @@ export class AgentHub extends EventEmitter<HubEvents> {
     if (agent === null) throw new AgentError(not_connected(host));
     return agent;
   }
+
+  private status_of(connection: AgentConnection): AgentStatus {
+    return {
+      host: connection.host,
+      reported_host: connection.hello.host,
+      agent_version: connection.hello.agent_version,
+      connected_epoch: connection.connected_epoch,
+      built_in: false,
+      login: this.logins.get(connection) ?? "token",
+      runs: connection.hello.runs,
+    };
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,19 +296,8 @@ function not_connected(host: string): string {
   return `No agent is connected for ${host}.`;
 }
 
-function status_of(connection: AgentConnection): AgentStatus {
-  return {
-    host: connection.host,
-    reported_host: connection.hello.host,
-    agent_version: connection.hello.agent_version,
-    connected_epoch: connection.connected_epoch,
-    built_in: false,
-    runs: connection.hello.runs,
-  };
-}
-
 function local_status(host: string): AgentStatus {
-  return { host, reported_host: host, agent_version: "built in", connected_epoch: 0, built_in: true, runs: [] };
+  return { host, reported_host: host, agent_version: "built in", connected_epoch: 0, built_in: true, login: null, runs: [] };
 }
 
 function as_buffer(raw: Buffer | ArrayBuffer | Buffer[]): Buffer {

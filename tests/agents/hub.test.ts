@@ -1,18 +1,19 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { start_agent, type RunningAgent } from "../../src/agent/agent.ts";
-import { encode_message, protocol_version } from "../../src/shared/agent_protocol.ts";
+import { encode_message, key_host_header, protocol_version } from "../../src/shared/agent_protocol.ts";
 import { AgentHub, close_codes } from "../../src/server/agents/hub.ts";
 import { LocalAgent } from "../../src/server/agents/local.ts";
 import { register_agent_route } from "../../src/server/agents/route.ts";
 import { AgentTokens } from "../../src/server/agents/tokens.ts";
 import { Store } from "../../src/server/store.ts";
+import { make_key } from "./test_keys.ts";
 
 const agent_main = join(import.meta.dirname, "../../src/agent/main.ts");
 
@@ -274,5 +275,114 @@ describe("agent hub", () => {
     expect(local.is_connected("heimdall")).toBe(true);
     expect(local.is_connected("local")).toBe(false);
     expect(local.status("heimdall")).toMatchObject({ host: "heimdall", built_in: true });
+  });
+});
+
+describe("agent key login", () => {
+  let key: { private_file: string; public_line: string };
+
+  beforeEach(() => {
+    key = make_key(folder, "odin");
+    hub.set_agent_keys(new Map([["odin", key.public_line]]));
+  });
+
+  function start_key_agent(private_file = key.private_file): RunningAgent {
+    agent = start_agent({
+      url, key_file: private_file, state_directory, host: "odin", agent_version: "test",
+      backoff_initial_in_milliseconds: 50, backoff_longest_in_milliseconds: 200, log: () => {},
+    });
+    return agent;
+  }
+
+  // Opens a socket that names the host for a key login, with the first message the server sends.
+  async function open_key_socket(): Promise<{ socket: WebSocket; challenge: { nonce: string } }> {
+    const socket = new WebSocket(url, { headers: { [key_host_header]: "odin" } } as unknown as string[]);
+    const first = new Promise<MessageEvent>((resolve) => socket.addEventListener("message", resolve, { once: true }));
+    return { socket, challenge: JSON.parse(String((await first).data)) };
+  }
+
+  it("connects a real agent that signs the server's challenge with its key", async () => {
+    start_key_agent();
+    await connected();
+
+    expect(hub.status("odin")).toMatchObject({ host: "odin", reported_host: "odin", login: "key" });
+    expect((await hub.run("odin", "echo signed in", { timeout_in_seconds: 5 })).stdout).toBe("signed in");
+  });
+
+  it("starts the agent process with X_BACKUPS_AGENT_KEY_FILE", async () => {
+    const child = spawn(process.execPath, [agent_main], {
+      env: {
+        ...process.env, X_BACKUPS_AGENT_URL: url, X_BACKUPS_AGENT_KEY_FILE: key.private_file, X_BACKUPS_AGENT_HOST: "odin",
+        X_BACKUPS_AGENT_STATE_DIR: state_directory,
+      },
+      stdio: "ignore",
+    });
+    processes.push(child);
+
+    await connected();
+
+    expect(hub.status("odin")?.login).toBe("key");
+  });
+
+  it("refuses an agent holding another key", async () => {
+    const other = make_key(folder, "other");
+    let connections = 0;
+    const listener = () => connections++;
+    hub.on("connect", listener);
+
+    start_key_agent(other.private_file);
+    await sleep(400);
+
+    hub.off("connect", listener);
+    expect(connections).toBe(0);
+    expect(hub.is_connected("odin")).toBe(false);
+  });
+
+  it("closes a socket whose hello carries a wrong signature, or none", async () => {
+    for (const signature of ["AAAA", undefined]) {
+      const { socket, challenge } = await open_key_socket();
+      expect(challenge).toMatchObject({ type: "challenge", nonce: expect.any(String) });
+      const ended = new Promise<CloseEvent>((resolve) => socket.addEventListener("close", resolve, { once: true }));
+
+      socket.send(encode_message({ type: "hello", protocol: protocol_version, host: "odin", agent_version: "test", runs: [], signature }));
+
+      expect((await ended).code).toBe(close_codes.bad_key);
+      expect(hub.is_connected("odin")).toBe(false);
+    }
+  });
+
+  it("refuses a key login for a host with no declared key", () => {
+    expect(hub.admit({ [key_host_header]: "thor" })).toEqual({ error: "Host 'thor' has no declared agent key." });
+  });
+
+  it("refuses a token login for a host with a declared key, even with a valid token", async () => {
+    const token = readFileSync(token_file, "utf8").trim();
+
+    expect(hub.admit({ authorization: `Bearer ${token}` })).toEqual({ error: "Host 'odin' has a declared agent key, so it logs in with that key, not a token." });
+    start_test_agent();
+    await sleep(300);
+    expect(hub.is_connected("odin")).toBe(false);
+  });
+
+  it("hangs up on an agent logged in with a token once its host's key is declared", async () => {
+    hub.set_agent_keys(new Map());
+    start_test_agent();
+    await connected();
+    const gone = new Promise((resolve) => hub.once("disconnect", resolve));
+
+    hub.set_agent_keys(new Map([["odin", key.public_line]]));
+
+    await gone;
+    await sleep(300);
+    expect(hub.is_connected("odin")).toBe(false);
+  });
+
+  it("keeps a key login when the host's token is replaced", async () => {
+    start_key_agent();
+    await connected();
+
+    hub.issue_token("odin");
+
+    expect(hub.status("odin")?.login).toBe("key");
   });
 });

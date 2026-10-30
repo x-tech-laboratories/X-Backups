@@ -30,6 +30,7 @@ const entity_hints: Record<string, string> = {
   host: "The configured host it is on.",
   kind: "managed runs the agent; storage-only holds repositories only.",
   address: "The host's network name. Leave empty only for this server's own host.",
+  agent_public_key: "The ssh-ed25519 line of the key its agent logs in with; with one set, tokens are refused. Empty logs in with a token.",
   poll_via: "The managed host that polls the repository when no job writes to it. Empty is the host it is on.",
   repo_by_host: "One per line: a host's name and the URL that host reaches the repository by, where it differs from repo.",
   sources: "The sources this job backs up; each host's sources go into one archive.",

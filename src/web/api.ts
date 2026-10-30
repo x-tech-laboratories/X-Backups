@@ -121,6 +121,9 @@ export interface HostRow {
   reported_host: string | null;
   connected_epoch: number | null;
   enrolled: boolean;
+  // The fingerprint of the host's declared agent key, which it logs in with instead of a token.
+  agent_key: string | null;
+  login: "token" | "key" | null;
   last_seen_epoch: number | null;
   health: Omit<HostSample, "host"> | null;
 }

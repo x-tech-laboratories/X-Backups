@@ -16,6 +16,8 @@ import { Poller } from "../src/server/poller.ts";
 import { ConfigSources } from "../src/server/sources.ts";
 import { Store } from "../src/server/store.ts";
 import { FakeAgent, SAMPLE } from "./agents/fake_agent.ts";
+import { key_fingerprint } from "../src/shared/agent_keys.ts";
+import { make_key } from "./agents/test_keys.ts";
 
 const password_hash = hash_password("correct horse");
 
@@ -384,8 +386,8 @@ describe("hosts", () => {
 
     expect(hosts).toEqual([{
       name: "local", kind: "managed", address: null, own: true, sources: [], repositories: [], connected: true, built_in: true,
-      agent_version: "built in", reported_host: "local", connected_epoch: null, enrolled: false, last_seen_epoch: null,
-      health: { epoch: expect.any(Number), ...SAMPLE },
+      agent_version: "built in", reported_host: "local", connected_epoch: null, enrolled: false, agent_key: null, login: null,
+      last_seen_epoch: null, health: { epoch: expect.any(Number), ...SAMPLE },
     }]);
   });
 
@@ -415,6 +417,23 @@ describe("hosts", () => {
     expect(revoked.statusCode).toBe(204);
     expect(hub.authenticate(`Bearer ${issued.json().token}`)).toBeNull();
     expect((await app.inject({ method: "DELETE", url: "/api/hosts/thor/token", headers: { cookie } })).statusCode).toBe(404);
+  });
+
+  it("issues no token to a host with a declared agent key, and shows the key's fingerprint", async () => {
+    const line = make_key(mkdtempSync(join(tmpdir(), "x-backups-app-keys-")), "thor").public_line;
+    poller.apply_config(parse_config(JSON.stringify({
+      hosts: [{ name: "server" }, { name: "thor", address: "thor.technet", agent_public_key: line }],
+      repositories: [{ name: "disk", host: "server", repo: "/srv/borg" }],
+    }), "test.json"));
+
+    const refused = await post(["/api/hosts", "thor", "token"].join("/"));
+
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toContain("declared agent key");
+    expect(hub.has_agent_key("thor")).toBe(true);
+    expect((await get("/api/hosts")).json().find((host: { name: string }) => host.name === "thor")).toMatchObject({
+      enrolled: false, agent_key: key_fingerprint(line), login: null,
+    });
   });
 });
 

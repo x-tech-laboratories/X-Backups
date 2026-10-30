@@ -6,6 +6,7 @@
 
 import { readFileSync } from "node:fs";
 
+import { AgentKeyError, parse_public_key } from "../shared/agent_keys.ts";
 import { parse_duration } from "./borg/durations.ts";
 import { BorgRepository, type BorgConfig, type TargetScope } from "./borg/repository.ts";
 import { as_list } from "./borg/shell.ts";
@@ -30,6 +31,8 @@ export interface HostEntity {
   kind: HostKind;
   // The host's network name, shown on the page; a managed host with none is this server, run by its built-in agent.
   address: string | null;
+  // The OpenSSH ed25519 public key its agent logs in with, or null for one that logs in with a token.
+  agent_public_key: string | null;
   borg: BorgConfig;
   source: ConfigSource;
   // The flat entry this entity was expanded from, or null for one written as an entity.
@@ -253,7 +256,7 @@ const entity_borg_fields: Record<EntityKind, readonly (keyof BorgConfig)[]> = {
 
 // The fields of each entity that are X-Backups' own rather than borg's.
 const entity_own_fields: Record<EntityKind, Record<string, FieldKind>> = {
-  hosts: { name: "string", kind: "string", address: "string" },
+  hosts: { name: "string", kind: "string", address: "string", agent_public_key: "string" },
   repositories: { name: "string", host: "string", id: "string", poll_via: "string", repo_by_host: "strings", interval: "duration" },
   sources: { name: "string", host: "string" },
   jobs: { name: "string", sources: "list", repositories: "list" },
@@ -500,7 +503,18 @@ function parse_host(tagged: TaggedEntry): HostEntity {
   const kind = (entry.kind ?? "managed") as HostKind;
   if (!host_kinds.includes(kind)) fail(`kind must be ${host_kinds.map((item) => `"${item}"`).join(" or ")}, not ${JSON.stringify(entry.kind)}.`, "kind");
   const address = optional_string(entry, "address", fail);
-  return { name, kind, address, borg, source: tagged.source, expanded_from: null };
+  const agent_public_key = optional_string(entry, "agent_public_key", fail)?.trim() ?? null;
+  if (agent_public_key !== null) {
+    if (kind !== "managed") fail("agent_public_key is for a managed host's agent, and a storage-only host runs none.", "agent_public_key");
+    if (address === null) fail("agent_public_key is for a host's own agent, and this server's host runs the one built in.", "agent_public_key");
+    try {
+      parse_public_key(agent_public_key);
+    } catch (error) {
+      if (!(error instanceof AgentKeyError)) throw error;
+      fail(`agent_public_key ${error.message}`, "agent_public_key");
+    }
+  }
+  return { name, kind, address, agent_public_key, borg, source: tagged.source, expanded_from: null };
 }
 
 function parse_repository(tagged: TaggedEntry, defaults: Record<string, unknown>): { repository: RepositoryEntity; poll_via: string | null; tasks: WrittenTasks } {
@@ -599,10 +613,10 @@ function expand_flat_entry(target: RepositoryConfig, maps: EntityMaps): void {
   const written_own = [...maps.hosts.values()].find((host) => host.expanded_from === null && is_own_host(host));
   const runs_on = target.host ?? written_own?.name ?? own_host_name;
   ensure_host(maps.hosts, {
-    name: runs_on, kind: "managed", address: target.host, borg: pick(borg, host_borg_fields), source, expanded_from: name,
+    name: runs_on, kind: "managed", address: target.host, agent_public_key: null, borg: pick(borg, host_borg_fields), source, expanded_from: name,
   });
   const stored = repo_location(borg.repo!).host;
-  if (stored !== null) ensure_host(maps.hosts, { name: stored, kind: "storage-only", address: stored, borg: {}, source, expanded_from: name });
+  if (stored !== null) ensure_host(maps.hosts, { name: stored, kind: "storage-only", address: stored, agent_public_key: null, borg: {}, source, expanded_from: name });
 
   add_entity(maps.repositories, {
     name, host: stored ?? runs_on, id: borg.id ?? name, poll_via: runs_on, repo_by_host: {}, interval_in_seconds: target.interval_in_seconds,
@@ -730,6 +744,11 @@ export function is_own_host(host: HostEntity): boolean {
 // The name of this server's own host, whose commands its built-in agent runs.
 export function own_host(entities: Entities | null | undefined): string {
   return entities?.hosts.find(is_own_host)?.name ?? own_host_name;
+}
+
+// Each host's declared agent public key, by host name.
+export function agent_keys(entities: Entities | null | undefined): Map<string, string> {
+  return new Map((entities?.hosts ?? []).filter((host) => host.agent_public_key !== null).map((host) => [host.name, host.agent_public_key!]));
 }
 
 export function target_id(target: RepositoryConfig): string {

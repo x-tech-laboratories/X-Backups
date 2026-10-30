@@ -1,8 +1,12 @@
-// One connection to the server: says hello, answers each request, and sends streamed output only as far as the
-// server's credit allows. Closing it stops the streams it was sending; long runs carry on.
+// One connection to the server: says hello, with its signature of the server's challenge when it logs in with a key,
+// answers each request, and sends streamed output only as far as the server's credit allows. Closing it stops the
+// streams it was sending; long runs carry on.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
+import type { KeyObject } from "node:crypto";
+
+import { sign_challenge } from "../shared/agent_keys.ts";
 import {
   encode_chunk, encode_message, parse_server_message, protocol_version,
   type AgentMessage, type RequestMessage, type ServerMessage,
@@ -18,6 +22,8 @@ export interface SessionOptions {
   agent_version: string;
   // A ping goes out this often, and a server silent for three of them is taken as gone.
   heartbeat_in_milliseconds: number;
+  // The host's private key, when it logs in with one rather than a token.
+  key?: KeyObject | null;
 }
 
 // The smallest message a socket can send, so a test can stand in for one.
@@ -105,6 +111,7 @@ export class AgentSession {
   private last_heard = Date.now();
   private readonly heartbeat: NodeJS.Timeout;
   private closed = false;
+  private greeted = false;
 
   constructor(socket: MessageSocket, runs: LongRuns, options: SessionOptions) {
     this.socket = socket;
@@ -112,7 +119,13 @@ export class AgentSession {
     this.options = options;
     this.heartbeat = setInterval(() => this.beat(), options.heartbeat_in_milliseconds);
     this.heartbeat.unref();
-    this.send({ type: "hello", protocol: protocol_version, host: options.host, agent_version: options.agent_version, runs: runs.list() });
+    if (!options.key) this.say_hello();
+  }
+
+  private say_hello(signature?: string): void {
+    this.greeted = true;
+    const hello = { type: "hello", protocol: protocol_version, host: this.options.host, agent_version: this.options.agent_version, runs: this.runs.list() } as const;
+    this.send(signature === undefined ? hello : { ...hello, signature });
   }
 
   // Handles one text frame from the server; anything this protocol does not know is ignored.
@@ -154,6 +167,9 @@ export class AgentSession {
         this.send({ type: "pong", epoch_ms: message.epoch_ms });
         return;
       case "pong":
+        return;
+      case "challenge":
+        if (this.options.key && !this.greeted) this.say_hello(sign_challenge(this.options.key, this.options.host, message.nonce));
         return;
       case "credit":
         this.pumps.get(message.id)?.grant(message.bytes);

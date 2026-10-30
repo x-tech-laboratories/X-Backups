@@ -10,7 +10,7 @@ import type { AgentHub, AgentStatus } from "./agents/hub.ts";
 import { BorgRepository } from "./borg/repository.ts";
 import { redact } from "./borg/shell.ts";
 import { CollectResult, LongRunPlan, type ActionPlan, type CmdResult, type MonitorStatus, type RunRecord } from "./borg/types.ts";
-import { own_host, target_id, target_key, type Config, type Entities, type RepositoryConfig } from "./config.ts";
+import { agent_keys, own_host, target_id, target_key, type Config, type Entities, type RepositoryConfig } from "./config.ts";
 import type { Store } from "./store.ts";
 import { parse_timers, timers_command } from "./timers.ts";
 
@@ -89,10 +89,11 @@ export class Poller {
   }
 
   // Tells the store the targets and hosts, so their rows carry the entity names and older rows gain them, and tells
-  // the hub which host its built-in agent answers for.
+  // the hub which host its built-in agent answers for and which hosts log in with a declared key.
   private adopt(config: Config): void {
     this.store.adopt_targets(config.repositories.map(target_key), config.entities?.hosts ?? []);
     this.agents.set_local_host(own_host(config.entities));
+    this.agents.set_agent_keys(agent_keys(config.entities));
   }
 
   private watch(repository_config: RepositoryConfig): Watched {

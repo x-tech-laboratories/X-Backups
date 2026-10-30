@@ -144,7 +144,7 @@ function attention_list(repositories: RepositorySummary[], timers: TimerRow[], h
     }))),
     ...hosts.filter(agent_away).map((host) => ({
       tone: "bad" as const, href: link(["hosts", host.name]), name: host.name,
-      text: host.enrolled ? `agent offline${host.last_seen_epoch ? `, last seen ${age(host.last_seen_epoch)}` : ""}` : "agent never enrolled",
+      text: host.enrolled || host.agent_key !== null ? `agent offline${host.last_seen_epoch ? `, last seen ${age(host.last_seen_epoch)}` : ""}` : "agent never enrolled",
     })),
     ...tasks.filter((task) => task.waiting !== null).map((task) => ({
       tone: "warn" as const, href: task.owner_kind === "job" ? link(["jobs", task.owner]) : link(["schedules"]), name: `${task_label(task)} of ${task.owner}`, text: task.waiting!,

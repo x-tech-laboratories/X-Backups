@@ -1,10 +1,13 @@
-// The agent's connection to the server: dials out over a WebSocket with its host's token, hands the connection to a
-// session, and dials again with a growing, jittered wait whenever it drops.
+// The agent's connection to the server: dials out over a WebSocket with its host's key or token, hands the connection
+// to a session, and dials again with a growing, jittered wait whenever it drops.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
+import type { KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 
+import { AgentKeyError, parse_private_key } from "../shared/agent_keys.ts";
+import { key_host_header } from "../shared/agent_protocol.ts";
 import { LongRuns, type LongRunOptions } from "./long_runs.ts";
 import { AgentSession } from "./session.ts";
 
@@ -12,9 +15,11 @@ import { AgentSession } from "./session.ts";
 
 export interface AgentConfig {
   url: string;
-  token_file: string;
+  // Exactly one of these: the host's OpenSSH ed25519 private key, or the token the server issued it.
+  key_file?: string;
+  token_file?: string;
   state_directory: string;
-  // The name the agent says hello with; the server knows the host by its token.
+  // The name the agent says hello with, and with a key the host it logs in as; with a token the server knows the host by it.
   host: string;
   agent_version: string;
   heartbeat_in_milliseconds?: number;
@@ -47,8 +52,29 @@ export function check_url(text: string): URL {
   if (url.protocol === "wss:") return url;
   if (url.protocol !== "ws:") throw new AgentConfigError(`The server URL must start with wss://, not ${url.protocol}//.`);
   const local = local_names.has(url.hostname) || /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
-  if (!local) throw new AgentConfigError(`ws:// sends the token unencrypted, so it is only allowed to this machine; use wss://${url.host}${url.pathname}.`);
+  if (!local) throw new AgentConfigError(`ws:// sends the token and passphrases unencrypted, so it is only allowed to this machine; use wss://${url.host}${url.pathname}.`);
   return url;
+}
+
+// How the agent logs in, which is read again on each dial so a replaced secret file is picked up.
+type Login = { kind: "key"; file: string } | { kind: "token"; file: string };
+
+function login_of(config: AgentConfig): Login {
+  const has_key = Boolean(config.key_file);
+  const has_token = Boolean(config.token_file);
+  if (has_key === has_token) throw new AgentConfigError("Give exactly one of a key file and a token file.");
+  return has_key ? { kind: "key", file: config.key_file! } : { kind: "token", file: config.token_file! };
+}
+
+// The key in the file, or an AgentConfigError naming the file for one that is not a usable key.
+export function read_key_file(file: string): KeyObject {
+  const text = readFileSync(file, "utf8");
+  try {
+    return parse_private_key(text);
+  } catch (error) {
+    if (error instanceof AgentKeyError) throw new AgentConfigError(`The key file ${file} ${error.message}`);
+    throw error;
+  }
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -63,6 +89,15 @@ export interface RunningAgent {
 
 export function start_agent(config: AgentConfig): RunningAgent {
   const url = check_url(config.url);
+  const login = login_of(config);
+  // A key that is there but unusable stops the agent at once; one not there yet, as before secrets are in place, is retried.
+  if (login.kind === "key") {
+    try {
+      read_key_file(login.file);
+    } catch (error) {
+      if (error instanceof AgentConfigError) throw error;
+    }
+  }
   const runs = new LongRuns(config.state_directory, config.long_runs);
   const log = config.log ?? ((line: string) => console.log(line));
   const heartbeat = config.heartbeat_in_milliseconds ?? 15_000;
@@ -86,21 +121,27 @@ export function start_agent(config: AgentConfig): RunningAgent {
 
   const dial = () => {
     if (stopping) return;
-    let token: string;
+    let headers: Record<string, string>;
+    let key: KeyObject | null = null;
     try {
-      token = readFileSync(config.token_file, "utf8").trim();
+      if (login.kind === "key") {
+        key = read_key_file(login.file);
+        headers = { [key_host_header]: config.host };
+      } else {
+        headers = { authorization: `Bearer ${readFileSync(login.file, "utf8").trim()}` };
+      }
     } catch (error) {
-      log(`Could not read the token file: ${(error as Error).message}`);
+      log(`Could not read the ${login.kind} file: ${(error as Error).message}`);
       dial_later();
       return;
     }
-    const current = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } });
+    const current = new WebSocket(url, { headers });
     current.binaryType = "arraybuffer";
     socket = current;
     current.addEventListener("open", () => {
       failures = 0;
       log(`Connected to ${url.origin}`);
-      session = new AgentSession(current, runs, { host: config.host, agent_version: config.agent_version, heartbeat_in_milliseconds: heartbeat });
+      session = new AgentSession(current, runs, { host: config.host, agent_version: config.agent_version, heartbeat_in_milliseconds: heartbeat, key });
     });
     current.addEventListener("message", (event) => {
       if (typeof event.data === "string") session?.receive(event.data);

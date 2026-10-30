@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
+import { key_fingerprint } from "../shared/agent_keys.ts";
 import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, writers, type Scope, type World } from "./access.ts";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import type { AgentHub } from "./agents/hub.ts";
@@ -601,6 +602,9 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
         reported_host: status?.reported_host ?? null,
         connected_epoch: remote ? status.connected_epoch : null,
         enrolled: enrolment !== undefined,
+        // A host with a declared key logs in with it alone, so the page offers it no token.
+        agent_key: host.agent_public_key === null ? null : key_fingerprint(host.agent_public_key),
+        login: remote ? status.login : null,
         last_seen_epoch: remote ? Math.floor(Date.now() / 1000) : enrolment?.last_seen_epoch ?? null,
         health: samples.get(host.name) ?? null,
       };
@@ -613,6 +617,9 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     if (host === undefined) return reply.code(404).send({ error: `No host '${request.params.name}'.` });
     if (host.kind !== "managed") return reply.code(409).send({ error: `Host '${host.name}' is storage-only, so it runs no agent.` });
     if (host.own) return reply.code(409).send({ error: `Host '${host.name}' is this server, whose agent is built in.` });
+    if (host.agent_public_key !== null) {
+      return reply.code(409).send({ error: `Host '${host.name}' has a declared agent key, so its agent logs in with that key, not a token.` });
+    }
     return reply.code(201).send({ host: host.name, token: agents.issue_token(host.name) });
   });
 
@@ -806,12 +813,14 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // The hosts the config names, or for a config built by hand the hosts its targets run on; own is this server's.
-function configured_hosts(poller: Poller): { name: string; kind: HostKind; address: string | null; own: boolean }[] {
+function configured_hosts(poller: Poller): { name: string; kind: HostKind; address: string | null; agent_public_key: string | null; own: boolean }[] {
   if (poller.entities !== null) {
-    return poller.entities.hosts.map((host) => ({ name: host.name, kind: host.kind, address: host.address, own: is_own_host(host) }));
+    return poller.entities.hosts.map((host) => ({
+      name: host.name, kind: host.kind, address: host.address, agent_public_key: host.agent_public_key, own: is_own_host(host),
+    }));
   }
   const names = [...new Set([...poller.repositories.values()].map(host_name))];
-  return names.map((name) => ({ name, kind: "managed" as const, address: null, own: poller.agents.status(name)?.built_in ?? false }));
+  return names.map((name) => ({ name, kind: "managed" as const, address: null, agent_public_key: null, own: poller.agents.status(name)?.built_in ?? false }));
 }
 
 // The jobs the config names, or for a config built by hand one per target, named after it.

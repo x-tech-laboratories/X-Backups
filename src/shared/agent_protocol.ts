@@ -4,6 +4,9 @@
 // the agent answers with one `reply` or `failed` of the same id. A stream or an attach sends its output as binary
 // frames tagged with its id, only as far as the credit the server has granted, then one `stream_end`. Either side
 // sends `ping` while idle and drops a connection that has been silent too long.
+//
+// An agent logging in with its host's key, rather than a token, names the host in the upgrade; the server's first
+// message is then a `challenge`, and the agent's hello carries its signature of that nonce (see agent_keys.ts).
 
 // ── Version ──────────────────────────────────────────────────────────────────
 
@@ -80,12 +83,15 @@ export type ServerMessage =
   // Stops a stream or an attach; the agent still ends it with a stream_end.
   | { type: "cancel"; id: string }
   | { type: "ping"; epoch_ms: number }
-  | { type: "pong"; epoch_ms: number };
+  | { type: "pong"; epoch_ms: number }
+  // Sent first to an agent logging in with its key, which signs the nonce in its hello.
+  | { type: "challenge"; nonce: string };
 
 // ── Agent to server ──────────────────────────────────────────────────────────
 
 export type AgentMessage =
-  | { type: "hello"; protocol: number; host: string; agent_version: string; runs: LongRun[] }
+  // An agent logging in with its key adds its signature of the challenge.
+  | { type: "hello"; protocol: number; host: string; agent_version: string; runs: LongRun[]; signature?: string }
   | { type: "reply"; id: string; value: unknown }
   | { type: "failed"; id: string; error: string }
   | { type: "stream_end"; id: string; exit_code: number; stderr: string }
@@ -113,6 +119,7 @@ const server_fields: Record<ServerMessage["type"], Record<string, FieldKind>> = 
   cancel: id_fields,
   ping: { epoch_ms: "number" },
   pong: { epoch_ms: "number" },
+  challenge: { nonce: "string" },
 };
 
 const agent_fields: Record<AgentMessage["type"], Record<string, FieldKind>> = {
@@ -177,6 +184,11 @@ export function decode_chunk(frame: Uint8Array): { id: string; data: Buffer } | 
   if (bytes.length < 1 || bytes.length < 1 + bytes[0]) return null;
   return { id: bytes.subarray(1, 1 + bytes[0]).toString("utf8"), data: bytes.subarray(1 + bytes[0]) };
 }
+
+// ── Key login ────────────────────────────────────────────────────────────────
+
+// The upgrade header an agent logging in with its key names its host in.
+export const key_host_header = "x-backups-agent-host";
 
 // ── Long run ids ─────────────────────────────────────────────────────────────
 

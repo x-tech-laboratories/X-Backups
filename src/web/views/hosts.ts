@@ -22,13 +22,13 @@ export function agent_state(host: HostRow): AgentState {
   if (host.kind === "storage-only") return "storage_only";
   if (host.built_in) return "built_in";
   if (host.connected) return "connected";
-  return host.enrolled ? "offline" : "never_enrolled";
+  return host.enrolled || host.agent_key !== null ? "offline" : "never_enrolled";
 }
 
 const agent_labels: Record<AgentState, [text: string, tone: string, title: string]> = {
   built_in: ["built in", "good", "This server's own host, run by the agent built into it"],
   connected: ["connected", "good", "Its agent is connected now"],
-  offline: ["offline", "bad", "It has a token, but its agent is not connected"],
+  offline: ["offline", "bad", "It has a token or a declared key, but its agent is not connected"],
   never_enrolled: ["never enrolled", "warn", "No token has been issued, so no agent can connect"],
   storage_only: ["no agent", "none", "A storage-only host holds repositories reached through borg serve, and runs no agent"],
 };
@@ -240,6 +240,7 @@ function host_header(host: HostRow, refresh: () => void): HTMLElement {
       ["Kind", host.kind],
       ["Address", host.address ?? "none, this server"],
       ["Agent", agent_labels[state][2]],
+      ...host.kind === "managed" && !host.own ? [["Login", login_text(host)] as [string, string]] : [],
       ["Sources", plural(host.sources.length, "source")],
       ["Repositories", `${host.repositories.length} ${host.repositories.length === 1 ? "repository" : "repositories"}`],
     ]),
@@ -247,11 +248,17 @@ function host_header(host: HostRow, refresh: () => void): HTMLElement {
       h("strong", {}, "Enrol this host's agent."), " Until it connects, backups and tasks on this host wait.",
       can("admin") ? "" : " An admin issues its token."),
     can("admin") && host.kind === "managed" && !host.own && h("div", { class: "head-actions" },
-      h("button", { class: host.enrolled ? null : "accent solid", onclick: () => enrol(host, refresh) }, host.enrolled ? "Issue a new token" : "Enrol agent"),
+      host.agent_key === null && h("button", { class: host.enrolled ? null : "accent solid", onclick: () => enrol(host, refresh) }, host.enrolled ? "Issue a new token" : "Enrol agent"),
       host.enrolled && h("button", { class: "danger", onclick: () => revoke(host, refresh) }, "Revoke token"),
       h("a", { class: "button", href: link(["settings", "hosts", host.name]) }, "Config"),
     ),
   );
+}
+
+// How the host's agent logs in: its declared key, which shuts out tokens, or a token issued here.
+function login_text(host: HostRow): string {
+  if (host.agent_key !== null) return `declared key ${host.agent_key}; tokens are refused`;
+  return host.enrolled ? "token issued here" : "none yet";
 }
 
 function sources_list(sources: SourceRow[]): HTMLElement {

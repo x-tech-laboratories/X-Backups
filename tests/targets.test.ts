@@ -1,13 +1,21 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { BorgRepository } from "../src/server/borg/repository.ts";
-import { borg_fields, entity_field_list, entity_kinds, parse_config, type RepositoryConfig } from "../src/server/config.ts";
+import {
+  agent_keys, borg_fields, entity_field_list, entity_kinds, parse_config, target_key, type ConfigError, type RepositoryConfig,
+} from "../src/server/config.ts";
+import { make_key } from "./agents/test_keys.ts";
 
 const hosts = [
   { name: "odin", address: "odin.technet", require_sudo: true },
   { name: "thor", address: "thor.technet" },
   { name: "storage", kind: "storage-only", address: "storage.technet" },
 ];
+
+const key_folder = mkdtempSync(join(tmpdir(), "x-backups-target-keys-"));
 
 function parse(document: Record<string, unknown>) {
   return parse_config(JSON.stringify({ hosts, repositories: [], ...document }), "test.json");
@@ -164,6 +172,82 @@ describe("flat entries", () => {
     const config = parse({ repositories: [{ name: "old", host: "odin", repo: "/srv/old", source_paths: ["/etc"] }] });
     expect(config.repositories[0]).toMatchObject({ name: "old", host: "odin", borg: { source_paths: ["/etc"] } });
     expect(config.entities!.hosts.find((host) => host.name === "odin")!.address).toBe("odin.technet");
+  });
+
+  it("run on the written host their host names, keeping its key and kind, and stay flat", () => {
+    const keys = { heimdall: make_key(key_folder, "heimdall").public_line, odin: make_key(key_folder, "odin").public_line };
+    const shared = {
+      ssh_user: "x-monitor-access", require_sudo: true, cache_dir: "/var/cache/x-monitor-borg", job_lock: "/run/x-monitor-borg.lock",
+      archive_prefix: "backup", prune_after_backup: true, compact_after_backup: true, keep_daily: 7,
+    };
+    const repositories = [
+      { ...shared, name: "heimdall-on-disk", host: "heimdall.technet", source_paths: ["/Storage/Services"], repo: "/Storage/Files/Backups/Server/Borgmatic" },
+      { ...shared, name: "heimdall-ragnarok", host: "heimdall.technet", source_paths: ["/Storage/Services"], repo: "ssh://borg@ragnarok.technet/Storage/Backups/Server" },
+      {
+        ...shared, name: "odin-vorta-heimdall", host: "odin.technet", source_paths: ["/Storage"], archive_prefix: "odin", prune_match: "Odin-*",
+        repo: "ssh://borg@heimdall.technet/Storage/Files/Backups/Laptop/Vorta",
+      },
+    ];
+    const declared_hosts = [
+      { name: "heimdall.technet", address: "heimdall.technet", agent_public_key: keys.heimdall },
+      { name: "odin.technet", address: "odin.technet", agent_public_key: keys.odin },
+    ];
+
+    const flat_only = parse_config(JSON.stringify({ repositories }), "test.json");
+    const with_hosts = parse_config(JSON.stringify({ hosts: declared_hosts, repositories }), "test.json");
+
+    expect(with_hosts.repositories).toEqual(flat_only.repositories);
+    expect(with_hosts.repositories.map((target) => [target_key(target), built(target).default_archive_name().replace(/\d.*$/, "")])).toEqual([
+      [{ target_id: "heimdall-on-disk", host: "heimdall.technet", job: "heimdall-on-disk", repository: "heimdall-on-disk" }, "backup-"],
+      [{ target_id: "heimdall-ragnarok", host: "heimdall.technet", job: "heimdall-ragnarok", repository: "heimdall-ragnarok" }, "backup-"],
+      [{ target_id: "odin-vorta-heimdall", host: "odin.technet", job: "odin-vorta-heimdall", repository: "odin-vorta-heimdall" }, "odin-"],
+    ]);
+    expect(with_hosts.repositories[2].borg.prune_match).toBe("Odin-*");
+    expect(with_hosts.repositories.every((target) => target.scope === undefined || target.scope.list_match === undefined)).toBe(true);
+    expect(with_hosts.entities!.hosts.map((host) => [host.name, host.kind, host.address, host.agent_public_key, host.expanded_from])).toEqual([
+      ["heimdall.technet", "managed", "heimdall.technet", keys.heimdall, null],
+      ["odin.technet", "managed", "odin.technet", keys.odin, null],
+      ["ragnarok.technet", "storage-only", "ragnarok.technet", null, "heimdall-ragnarok"],
+    ]);
+    expect(with_hosts.entities!.repositories.map((repository) => [repository.name, repository.expanded_from, repository.host, repository.poll_via])).toEqual([
+      ["heimdall-on-disk", "heimdall-on-disk", "heimdall.technet", "heimdall.technet"],
+      ["heimdall-ragnarok", "heimdall-ragnarok", "ragnarok.technet", "heimdall.technet"],
+      ["odin-vorta-heimdall", "odin-vorta-heimdall", "heimdall.technet", "odin.technet"],
+    ]);
+    expect(agent_keys(with_hosts.entities)).toEqual(new Map([["heimdall.technet", keys.heimdall], ["odin.technet", keys.odin]]));
+  });
+});
+
+describe("agent keys on hosts", () => {
+  function field_of(run: () => unknown): string | null {
+    try {
+      run();
+    } catch (error) {
+      return (error as ConfigError).field;
+    }
+    return null;
+  }
+
+  it("takes an ssh-ed25519 line on a managed host", () => {
+    const line = make_key(key_folder, "thor").public_line;
+
+    const config = parse({ hosts: [{ name: "thor", address: "thor.technet", agent_public_key: line }] });
+
+    expect(config.entities!.hosts[0].agent_public_key).toBe(line);
+    expect(entity_field_list("hosts").map((field) => field.name)).toContain("agent_public_key");
+  });
+
+  it("refuses a bad line, another key type, and a host that runs no agent of its own", () => {
+    const blob = make_key(key_folder, "refused").public_line.split(" ")[1];
+    const host = (fields: Record<string, unknown>) => () => parse({ hosts: [{ name: "thor", address: "thor.technet", ...fields }] });
+
+    expect(host({ agent_public_key: "not a key" })).toThrow("Host 'thor': agent_public_key must be an ssh-ed25519 key, not not");
+    expect(host({ agent_public_key: `ssh-rsa ${blob}` })).toThrow("agent_public_key must be an ssh-ed25519 key, not ssh-rsa");
+    expect(host({ agent_public_key: "ssh-ed25519 AAAA" })).toThrow("Host 'thor': agent_public_key is cut short");
+    expect(host({ agent_public_key: 42 })).toThrow("agent_public_key must be a string");
+    expect(field_of(host({ agent_public_key: "ssh-ed25519" }))).toBe("agent_public_key");
+    expect(host({ kind: "storage-only", agent_public_key: `ssh-ed25519 ${blob}` })).toThrow("storage-only host runs none");
+    expect(() => parse({ hosts: [{ name: "server", agent_public_key: `ssh-ed25519 ${blob}` }] })).toThrow("runs the one built in");
   });
 });
 

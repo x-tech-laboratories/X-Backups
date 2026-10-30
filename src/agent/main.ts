@@ -1,5 +1,5 @@
-// Starts the X-Backups agent from its environment: the server's URL, the file holding this host's token, and the
-// folder long runs keep their output in.
+// Starts the X-Backups agent from its environment: the server's URL, the file holding this host's private key or its
+// token, the host it logs in as, and the folder long runs keep their output in.
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
@@ -22,6 +22,17 @@ function required(name: string): string {
   return value;
 }
 
+// Exactly one of the key file and the token file says how the agent logs in.
+function login_files(): { key_file?: string; token_file?: string } {
+  const key_file = process.env.X_BACKUPS_AGENT_KEY_FILE || undefined;
+  const token_file = process.env.X_BACKUPS_AGENT_TOKEN_FILE || undefined;
+  if ((key_file === undefined) === (token_file === undefined)) {
+    console.error("Set exactly one of X_BACKUPS_AGENT_KEY_FILE and X_BACKUPS_AGENT_TOKEN_FILE.");
+    process.exit(2);
+  }
+  return { key_file, token_file };
+}
+
 function agent_version(): string {
   try {
     return String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
@@ -35,7 +46,7 @@ function agent_version(): string {
 try {
   const agent = start_agent({
     url: required("X_BACKUPS_AGENT_URL"),
-    token_file: required("X_BACKUPS_AGENT_TOKEN_FILE"),
+    ...login_files(),
     state_directory: process.env.X_BACKUPS_AGENT_STATE_DIR || "state",
     host: process.env.X_BACKUPS_AGENT_HOST || hostname(),
     agent_version: agent_version(),
