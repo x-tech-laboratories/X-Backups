@@ -1,5 +1,6 @@
-// The fleet at a glance: tiles that open filtered views, what needs attention and why (by target, agent and task), backup
-// ages and sizes, runs and archives over time, and what runs next.
+// The fleet at a glance: tiles that open filtered views, what needs attention and why (by target, agent and task), the
+// backup flow from folders through jobs to repositories, backup ages and sizes, runs and archives over time, and what
+// runs next.
 
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
 import { api, query, repository_path, type History, type HostRow, type HostSample, type Run, type RepositorySummary, type TaskView, type TimerRow } from "../api.ts";
@@ -9,6 +10,7 @@ import { current_route, link, replace_query } from "../router.ts";
 import { attempt, empty, run_badge, load, section, skeleton } from "../ui.ts";
 import { agent_away, host_health } from "./hosts.ts";
 import { repository_card, status_rank, target_label, touches, type View } from "./shared.ts";
+import { map_section } from "./map.ts";
 import { task_label } from "./tasks.ts";
 
 const day_in_seconds = 86400;
@@ -28,6 +30,7 @@ export function overview_view(): View {
   const upcoming = h("div");
   const stored = h("div");
   const grid = h("div", { class: "grid" });
+  const flow = map_section();
   let span = current_route().query.get("span") === "24h" ? "24h" : "7d";
   let runs: Run[] = [];
   let repositories: RepositorySummary[] = [];
@@ -90,6 +93,7 @@ export function overview_view(): View {
         section("Needs attention", attention),
         section("Runs", activity, span_switch),
       ),
+      flow.root,
       h("div", { class: "columns" },
         section("Time since last backup", ages, h("span", { class: "muted small" }, "ticks at the warning and max age")),
         section("Storage per repository", storage, h("span", { class: "muted small" }, `against its quota or disk; ticks at ${storage_warning_percent}% and ${storage_danger_percent}%`)),
@@ -106,7 +110,10 @@ export function overview_view(): View {
       section("Targets", grid, h("a", { href: link(["repositories"]) }, "Filter and sort")),
     ),
     update: async (changes) => {
-      if (touches(changes, null, ["repository", "run", "timers", "hosts", "config", "tasks"])) await update(true, touches(changes, null, ["repository", "config"]));
+      await Promise.all([
+        touches(changes, null, ["repository", "run", "timers", "hosts", "config", "tasks"]) ? update(true, touches(changes, null, ["repository", "config"])) : null,
+        flow.update(changes),
+      ]);
     },
   };
 }

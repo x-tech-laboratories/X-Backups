@@ -1,11 +1,11 @@
-// The backup flow in three columns: each host's folders on the left, the jobs that back them up in the middle, and the
-// repositories they write to on the right, under the hosts that store them; every box opens its own page.
+// The Overview's map of the backup flow in three columns: each host's folders on the left, the jobs that back them up in
+// the middle, and the repositories they write to on the right, under the hosts that store them; every box opens its page.
 
-import { api, type BackupMap, type MapTarget } from "../api.ts";
+import { api, type BackupMap, type Change, type MapTarget } from "../api.ts";
 import { age, h } from "../dom.ts";
 import { link } from "../router.ts";
 import { attempt, empty, section, skeleton } from "../ui.ts";
-import { touches, type View } from "./shared.ts";
+import { touches } from "./shared.ts";
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 
@@ -362,9 +362,9 @@ function svg(tag: string, attributes: Record<string, string | number>, ...childr
   return element;
 }
 
-// ── View ─────────────────────────────────────────────────────────────────────
+// ── Section ──────────────────────────────────────────────────────────────────
 
-export function map_view(): View {
+export function map_section(): { root: HTMLElement; update: (changes: Change[] | null) => Promise<void> } {
   const body = h("div", {}, skeleton(6));
   const view_box: { current: Box | null } = { current: null };
   let controls: ReturnType<typeof draw> | null = null;
@@ -399,11 +399,7 @@ export function map_view(): View {
   void update(false);
 
   return {
-    title: "Map",
-    root: h("div", { class: "page" },
-      h("div", { class: "page-title" }, h("h1", {}, "Map")),
-      section("What is backed up where", body, tools),
-    ),
+    root: section("What is backed up where", body, tools),
     update: async (changes) => {
       if (touches(changes, null, ["repository", "run", "config"])) await update(true);
     },

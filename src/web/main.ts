@@ -11,7 +11,6 @@ import { entity_view } from "./views/entity_config.ts";
 import { host_view, hosts_view } from "./views/hosts.ts";
 import { job_view, jobs_view } from "./views/jobs.ts";
 import { run_view, runs_view } from "./views/runs.ts";
-import { map_view } from "./views/map.ts";
 import { new_repository_view } from "./views/new_repository.ts";
 import { overview_view } from "./views/overview.ts";
 import { events_view, schedules_view, settings_view } from "./views/pages.ts";
@@ -45,7 +44,6 @@ function view_for(parts: string[]): View {
   if (section === "sources") return sources_view();
   if (section === "jobs" && id) return job_view(id);
   if (section === "jobs") return jobs_view();
-  if (section === "map") return map_view();
   if (section === "runs" && id) return run_view(Number(id));
   if (section === "runs") return runs_view();
   if (section === "schedules") return schedules_view();

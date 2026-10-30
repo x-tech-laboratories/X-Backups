@@ -148,11 +148,14 @@ form shows while one is typed.
 
 ## Pages
 
-The sidebar holds Overview, Hosts, Repositories, Sources, Jobs, Runs, Map, Schedules, Events,
+The sidebar holds Overview, Hosts, Repositories, Sources, Jobs, Runs, Schedules, Events,
 Settings, Users and Account, and each entity's page links to the others it names.
 
 - **Overview:** tiles and a needs-attention list by target, with hosts whose agent is away and
-  tasks that wait, and the next task and timer runs.
+  tasks that wait, and the next task and timer runs. Its map draws the backup flow in three
+  columns: each host's folders, the jobs backing them up, and the repositories they write to under
+  the hosts storing them, a host showing on both sides when it does both. Lines take their target's
+  health, and hovering a box follows its folders through to their repositories.
 - **Hosts:** each host's kind, agent state (built in, connected, offline or never enrolled),
   version, last seen, health and counts. A host's page shows its health, sources, the repositories
   stored there, the targets running there, its runs and timers; an admin enrols its agent there,
@@ -167,10 +170,6 @@ Settings, Users and Account, and each entity's page links to the others it names
   `GET /api/jobs` and `GET /api/sources` serve them; `#/jobs/<number>` from before opens that run.
 - **Runs:** filtered by target, host, job, task, kind, outcome and period, each with its task and
   a badge for a run waiting for its host's agent or lost (`condition` in `/api/runs`).
-- **Map:** the backup flow in three columns: each host's folders, the jobs backing them up, and the
-  repositories they write to under the hosts storing them, a host showing on both sides when it
-  does both. Lines take their target's health, and hovering a box follows its folders through to
-  their repositories.
 - **Schedules:** the week of each task's next run and newest run beside the host timers, and the
   tasks and timers as tables.
 - **Settings:** the defaults, and each host, repository, source and job as written. In `mixed` and
