@@ -48,7 +48,7 @@ describe("map_entry", () => {
       hosts: [{ name: "odin", address: "10.0.0.5" }, { name: "heimdall" }, { name: "vault", kind: "storage-only" }],
       repositories: [
         { name: "offsite", host: "vault", repo: "ssh://borg@10.0.0.9/./offsite" },
-        { name: "server", host: "heimdall", repo: "/Storage/Backups/Server" },
+        { name: "server", host: "heimdall", repo: "/Storage/Backups/Server", repo_by_host: { odin: "ssh://borg@heimdall.technet/Storage/Backups/Server" } },
       ],
       sources: [{ name: "home", host: "odin", source_paths: ["/home"] }],
       jobs: [{ name: "daily", sources: ["home"], repositories: ["offsite", "server"] }],

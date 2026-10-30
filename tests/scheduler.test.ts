@@ -16,8 +16,8 @@ const LIST = JSON.stringify({ archives: [{ name: "web-odin-2026-10-01T10:00:00",
 const DOCUMENT = {
   hosts: [{ name: "server" }, { name: "odin", address: "odin.technet" }],
   repositories: [
-    { name: "disk", host: "server", repo: "/srv/disk", tasks: { compact: { after: "backup" } } },
-    { name: "usb", host: "server", repo: "/srv/usb" },
+    { name: "disk", host: "server", repo: "/srv/disk", repo_by_host: { odin: "ssh://borg@server//srv/disk" }, tasks: { compact: { after: "backup" } } },
+    { name: "usb", host: "server", repo: "/srv/usb", repo_by_host: { odin: "ssh://borg@server//srv/usb" } },
   ],
   sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "etc", host: "server", source_paths: ["/etc"] }],
   jobs: [

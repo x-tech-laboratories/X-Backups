@@ -749,10 +749,13 @@ function job_target(job: JobEntity, host: HostEntity, sources: SourceEntity[], r
   const archive_prefix = `${job.borg.archive_prefix ?? job.name}-${host.name}`;
   // A job judges freshness by its own ages, so a watched repository's ages stay out.
   const repository_borg = pick(repository.borg, repository_borg_fields.filter((field) => field !== "max_age" && field !== "warn_age"));
+  const repo = reachable_repo(repository, host, (problem) => {
+    throw new ConfigError(`Job '${job.name}' from '${host.name}' to '${repository.name}': ${problem}`, "repo_by_host");
+  });
   const borg: Record<string, unknown> = {
     ...host.borg,
     ...repository_borg,
-    repo: repository.repo_by_host[host.name] ?? repository.borg.repo,
+    repo,
     ...merged_sources(job, host, sources),
     ...job.borg,
     id,
@@ -773,7 +776,10 @@ function job_target(job: JobEntity, host: HostEntity, sources: SourceEntity[], r
 
 // A repository no job writes to, polled from poll_via for its archives, checks and freshness.
 function watch_target(repository: RepositoryEntity, host: HostEntity, defaults: Record<string, unknown>): RepositoryConfig {
-  const borg: Record<string, unknown> = { ...host.borg, ...repository.borg, repo: repository.repo_by_host[host.name] ?? repository.borg.repo, id: repository.id };
+  const repo = reachable_repo(repository, host, (problem) => {
+    throw new ConfigError(`Repository '${repository.name}': ${problem}`, "poll_via");
+  });
+  const borg: Record<string, unknown> = { ...host.borg, ...repository.borg, repo, id: repository.id };
   fill_defaults(borg, defaults);
   check_buildable(repository.name, borg, (problem) => {
     throw new ConfigError(`Repository '${repository.name}': ${problem}`);
@@ -782,6 +788,15 @@ function watch_target(repository: RepositoryEntity, host: HostEntity, defaults: 
     name: repository.name, host: host.address, interval_in_seconds: repository.interval_in_seconds, borg: borg as BorgConfig,
     source: repository.source, target: { job: null, host: host.name, repository: repository.name, sources: [] },
   };
+}
+
+// The repo URL borg uses from this host, which must reach another host over ssh, since a plain path is a folder on this one.
+function reachable_repo(repository: RepositoryEntity, host: HostEntity, fail: (problem: string) => never): string {
+  const repo = repository.repo_by_host[host.name] ?? repository.borg.repo!;
+  if (repository.host !== host.name && repo_location(repo).host === null) {
+    fail(`${repo} is a folder on '${repository.host}', which '${host.name}' cannot reach; give repo_by_host.${host.name} an ssh:// URL to it.`);
+  }
+  return repo;
 }
 
 // The paths and excludes of a job's sources on one host, which go into one archive, so their single settings must agree.

@@ -59,7 +59,9 @@ State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `st
   `systemd-inhibit` where the host has it, and runs without it where it does not.
 - A **repository** sits on a host, with its `repo` URL, passphrase, `quota`, `borg_version`, checks
   and safety switches. `repo_by_host` gives a client host its own URL, and `poll_via` names the
-  managed host that polls a repository no job writes to.
+  managed host that polls a repository no job writes to. A `repo` that is a plain folder path is
+  a folder on the repository's own host, so every other host that backs up to it or polls it
+  needs an `ssh://` URL in `repo_by_host`.
 - A **source** is `source_paths` and its excludes on one managed host.
 - A **job** backs up `sources` to `repositories`, with retention, `compression`, `archive_prefix`
   (the job's name by default), freshness ages and the restore canary.

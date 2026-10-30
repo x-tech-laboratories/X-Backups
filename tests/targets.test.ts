@@ -23,7 +23,7 @@ describe("job targets", () => {
   const config = parse({
     repositories: [
       { name: "offsite", host: "storage", repo: "ssh://borg@storage.technet/./shared", repo_by_host: { thor: "ssh://borg@storage.technet/./thor" }, poll_via: "thor" },
-      { name: "disk", host: "odin", repo: "/srv/borg", interval: "10m" },
+      { name: "disk", host: "odin", repo: "/srv/borg", repo_by_host: { thor: "ssh://borg@odin.technet//srv/borg" }, interval: "10m" },
     ],
     sources: [
       { name: "home", host: "odin", source_paths: ["/home"], exclude: ["*.tmp"] },
@@ -87,7 +87,7 @@ describe("job targets", () => {
 
   it("turns compact_after_backup into the repository's compact task, run once from the target offering its actions", () => {
     const compacting = parse({
-      repositories: [{ name: "disk", host: "odin", repo: "/srv/borg" }],
+      repositories: [{ name: "disk", host: "odin", repo: "/srv/borg", repo_by_host: { thor: "ssh://borg@odin.technet//srv/borg" } }],
       sources: [{ name: "home", host: "odin", source_paths: ["/home"] }, { name: "media", host: "thor", source_paths: ["/srv/media"] }],
       jobs: [{ name: "nightly", sources: ["home", "media"], repositories: ["disk"], compact_after_backup: true }],
     });
@@ -120,6 +120,17 @@ describe("repositories no job writes to", () => {
     expect(() => parse({ repositories: [{ name: "offsite", host: "storage", repo: "ssh://storage.technet/./x" }] })).toThrow("poll_via must name");
     const config = parse({ repositories: [{ name: "offsite", host: "storage", repo: "ssh://storage.technet/./x", poll_via: "thor" }] });
     expect(config.repositories[0]).toMatchObject({ host: "thor.technet", target: { host: "thor" } });
+  });
+
+  it("refuse a folder path from a host other than their own, unless repo_by_host gives that host a URL", () => {
+    const disk = { name: "disk", host: "odin", repo: "/srv/borg" };
+    const home = { name: "home", host: "thor", source_paths: ["/home"] };
+    const job = { name: "web", sources: ["home"], repositories: ["disk"] };
+
+    expect(() => parse({ repositories: [disk], sources: [home], jobs: [job] })).toThrow("/srv/borg is a folder on 'odin', which 'thor' cannot reach");
+    expect(() => parse({ repositories: [{ ...disk, poll_via: "thor" }] })).toThrow("which 'thor' cannot reach");
+    const config = parse({ repositories: [{ ...disk, repo_by_host: { thor: "ssh://borg@odin.technet//srv/borg" } }], sources: [home], jobs: [job] });
+    expect(config.repositories.find((target) => target.target?.job === "web")!.borg.repo).toBe("ssh://borg@odin.technet//srv/borg");
   });
 
   it("use the job's freshness, not their own, once a job writes to them", () => {
