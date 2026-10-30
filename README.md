@@ -306,7 +306,8 @@ CA in `security.pki.certificates` is trusted.
 The module runs the agent as the system user `x-backups-agent` (`user`, `group` and `extraGroups`
 change it), with its state and `HOME` in `/var/lib/x-backups-agent` and a cache folder in
 `/var/cache/x-backups-agent`. Its `PATH` is `/run/wrappers/bin`, then `path` (such as
-`"/run/current-system/sw"`), then its own bash, ssh, borg, borg 2, util-linux and core tools. It may
+`"/run/current-system/sw"`), then its own bash, ssh, borg, util-linux and core tools, plus borg 2
+when `borg2 = true`. It may
 read `/home` and run `sudo`, and a restart stops only the agent, so its long runs carry on. Outside
 NixOS, run `packages.agent` with `X_BACKUPS_AGENT_URL`, one of `X_BACKUPS_AGENT_KEY_FILE` and
 `X_BACKUPS_AGENT_TOKEN_FILE`, `X_BACKUPS_AGENT_HOST` and `X_BACKUPS_AGENT_STATE_DIR` set, and have

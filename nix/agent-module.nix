@@ -100,6 +100,12 @@ in
       description = "Further groups for the agent's user, such as one that may read the sources.";
     };
 
+    borg2 = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Put borg 2 beside borg 1 on the agent's PATH, for repositories with `borg_version: 2`.";
+    };
+
     path = mkOption {
       type = types.listOf (types.either types.package types.str);
       default = [ ];
@@ -144,9 +150,9 @@ in
         pkgs.bash
         pkgs.openssh
         pkgs.borgbackup
-        packages.borg2
         pkgs.util-linux
-      ];
+      ]
+      ++ lib.optional cfg.borg2 packages.borg2;
 
       environment = {
         X_BACKUPS_AGENT_URL = cfg.url;
