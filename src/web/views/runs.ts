@@ -1,11 +1,13 @@
-// Every run across the repositories, filtered and paged, and one run's page with its outcome and live output.
+// Every run across the targets, filtered by target, host, job, task, kind, outcome and period and paged, and one run's
+// page with its outcome and live output.
 
-import { api, query, type Run, type RepositorySummary } from "../api.ts";
+import { api, query, type HostRow, type JobRow, type Run, type RepositorySummary, type TaskView } from "../api.ts";
 import { age, duration, h, now_seconds, stamp } from "../dom.ts";
 import { current_route, link, replace_query } from "../router.ts";
-import { attempt, crumbs, facts, run_badge, load, pager, section, select, skeleton, toolbar } from "../ui.ts";
+import { attempt, crumbs, facts, load, pager, run_state_badge, section, select, skeleton, toolbar } from "../ui.ts";
 import { run_kinds, run_states } from "./repository.ts";
 import { run_buttons, runs_table, medians, touches, type View } from "./shared.ts";
+import { task_label } from "./tasks.ts";
 
 const page_size = 50;
 
@@ -17,11 +19,17 @@ const periods: [value: string, text: string][] = [["", "Any time"], ["1", "Last 
 export function runs_view(): View {
   const route_query = current_route().query;
   let repository = route_query.get("repository") ?? "";
+  let host = route_query.get("host") ?? "";
+  let job = route_query.get("job") ?? "";
+  let task = route_query.get("task") ?? "";
   let kind = route_query.get("kind") ?? "";
   let state = route_query.get("state") ?? "";
   let days = route_query.get("days") ?? "";
   let page = Number(route_query.get("page") ?? 1);
   const repository_filter = h("span");
+  const host_filter = h("span");
+  const job_filter = h("span");
+  const task_filter = h("span");
   const list = h("div", {}, skeleton(8));
   let usual = new Map<string, number>();
 
@@ -29,7 +37,7 @@ export function runs_view(): View {
     await load(list, async () => {
       const since = days ? Math.floor(now_seconds() - Number(days) * 86400) : null;
       const [runs, sample] = await Promise.all([
-        api<Run[]>(`/api/runs${query({ target: repository, kind, state, since, limit: page_size + 1, offset: (page - 1) * page_size })}`),
+        api<Run[]>(`/api/runs${query({ target: repository, host, job, task, kind, state, since, limit: page_size + 1, offset: (page - 1) * page_size })}`),
         usual.size === 0 ? api<Run[]>(`/api/runs${query({ state: "succeeded", limit: median_sample })}`) : Promise.resolve(null),
       ]);
       if (sample !== null) usual = medians(sample);
@@ -41,13 +49,26 @@ export function runs_view(): View {
   };
   const refilter = () => {
     page = 1;
-    replace_query({ repository, kind, state, days, page: null });
+    replace_query({ repository, host, job, task, kind, state, days, page: null });
     void refresh(false);
   };
 
   void api<RepositorySummary[]>("/api/repositories").then((repositories) => {
-    repository_filter.replaceChildren(select("Repository", [["", "Any repository"], ...repositories.map((item): [string, string] => [item.id, item.name])], repository,
+    repository_filter.replaceChildren(select("Target", [["", "Any target"], ...repositories.map((item): [string, string] => [item.id, item.name])], repository,
       (value) => { repository = value; refilter(); }));
+  }).catch(() => {});
+  void api<HostRow[]>("/api/hosts").then((hosts) => {
+    host_filter.replaceChildren(select("Host", [["", "Any host"], ...hosts.map((item): [string, string] => [item.name, item.name])], host,
+      (value) => { host = value; refilter(); }));
+  }).catch(() => {});
+  void api<JobRow[]>("/api/jobs").then((jobs) => {
+    job_filter.replaceChildren(select("Job", [["", "Any job"], ...jobs.map((item): [string, string] => [item.name, item.name])], job,
+      (value) => { job = value; refilter(); }));
+  }).catch(() => {});
+  void api<TaskView[]>("/api/tasks").then((tasks) => {
+    const options = tasks.map((item): [string, string] => [item.id, `${task_label(item)} of ${item.owner}`]);
+    if (task && !options.some(([id]) => id === task)) options.push([task, task]);
+    task_filter.replaceChildren(select("Task", [["", "Any task"], ...options], task, (value) => { task = value; refilter(); }));
   }).catch(() => {});
   void refresh(false);
 
@@ -57,6 +78,9 @@ export function runs_view(): View {
       h("h1", {}, "Runs"),
       toolbar(
         repository_filter,
+        host_filter,
+        job_filter,
+        task_filter,
         select("Kind", run_kinds, kind, (value) => { kind = value; refilter(); }),
         select("Outcome", run_states, state, (value) => { state = value; refilter(); }),
         select("Started", periods, days, (value) => { days = value; refilter(); }),
@@ -125,15 +149,20 @@ function run_head(run: Run, refresh: () => void): HTMLElement {
   return h("header", { class: "page-head" },
     h("div", { class: "page-title" },
       h("h1", {}, `${run.kind} #${run.id}`),
-      run_badge(run.state),
+      run_state_badge(run),
       h("a", { href: link(["repositories", run.target_id]) }, `on ${run.target_id}`),
     ),
-    h("div", { class: `result-bar tone-fill-${result_tones[run.state]}`, role: "status", "aria-live": "polite" },
-      `${result_text[run.state]}${run.state === "running" ? ` for ${duration(took)}` : ` after ${duration(took)}`}`,
-      run.progress && run.state === "running" ? ` · ${run.progress}` : "",
-      run.error ? ` · ${run.error}` : "",
+    h("div", { class: `result-bar tone-fill-${run.condition === "waiting_for_agent" ? "warn" : result_tones[run.state]}`, role: "status", "aria-live": "polite" },
+      run.condition === "waiting_for_agent" ? `Waiting for ${run.host ?? "its host"}'s agent; the run carries on there, started ${duration(took)} ago`
+        : run.condition === "lost" ? `Lost after ${duration(took)}: its agent no longer knew it, so its outcome is unknown`
+          : `${result_text[run.state]}${run.state === "running" ? ` for ${duration(took)}` : ` after ${duration(took)}`}`,
+      run.progress && run.state === "running" && run.condition === null ? ` · ${run.progress}` : "",
+      run.error && run.condition === null ? ` · ${run.error}` : "",
     ),
     facts([
+      ["Task", run.task === null ? "started by hand" : h("a", { href: link(["runs"], { task: run.task }) }, run.task)],
+      ["Job", run.job === null ? "—" : h("a", { href: link(["jobs", run.job]) }, run.job)],
+      ["Host", run.host === null ? "—" : h("a", { href: link(["hosts", run.host]) }, run.host)],
       ["Started", h("span", { title: stamp(run.started_epoch) }, `${stamp(run.started_epoch)} (${age(run.started_epoch)})`)],
       ["Ended", run.ended_epoch ? stamp(run.ended_epoch) : "still running"],
       ["Exit code", run.exit_code ?? "—"],
