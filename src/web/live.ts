@@ -27,8 +27,8 @@ export function connect(): void {
   source = new EventSource("/api/stream");
   source.onopen = () => {
     stop_fallback();
-    // Whatever changed while the stream was down was missed, so everything is fetched again.
-    if (was_down) listener(null);
+    // Whatever changed while the stream was down was missed, so everything is fetched again, unless a deploy replaced this page.
+    if (was_down) void reload_if_replaced().then((replaced) => replaced || listener(null));
     was_down = false;
   };
   source.onmessage = (message) => {
@@ -54,6 +54,21 @@ export function disconnect(): void {
 
 export function stream_up(): boolean {
   return source?.readyState === EventSource.OPEN;
+}
+
+// A deploy restarts the server with new scripts, and a page left open would read its data wrongly, so the page loads again
+// when the server now names another script than the one running.
+async function reload_if_replaced(): Promise<boolean> {
+  const running = document.querySelector("script[type=module][src]")?.getAttribute("src");
+  try {
+    const page = await (await fetch("/", { cache: "no-store" })).text();
+    const served = /<script[^>]*type="module"[^>]*src="([^"]+)"/.exec(page)?.[1];
+    if (running === undefined || running === null || served === undefined || served === running) return false;
+    location.reload();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function start_fallback(): void {
