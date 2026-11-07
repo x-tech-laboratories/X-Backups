@@ -1,11 +1,11 @@
 // Every job with its status rolled up from its targets, and one job's page: its sources and repositories, a target per
 // host and repository with its freshness, its tasks and its runs.
 
-import { Badge, StateBadge, type Tone } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { Crumbs, Facts, Section, type Fact } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { Age } from "@x-tech-laboratories/x-libs/web/preact/time";
+import { Badge, StateBadge, type Tone } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { Crumbs, Facts, Section, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable } from "@x-tech-laboratories/x-libs/web/react/table";
+import { Age } from "@x-tech-laboratories/x-libs/web/react/time";
 import { age, duration, size, stamp, until } from "@x-tech-laboratories/x-libs/web/format";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
 import { overdue } from "../attention.ts";
@@ -24,8 +24,8 @@ export function JobsView() {
   const jobs = use_resource(() => api<JobRow[]>("/api/jobs"), []);
   use_changes((changes) => { if (touches(changes, null, ["repository", "run", "tasks", "config"])) jobs.reload(true); });
   return (
-    <div class="page">
-      <div class="page-title spread"><h1>Jobs</h1>{can("admin") && <a class="button" href={link(["settings", "new", "jobs"])}>Add job</a>}</div>
+    <div className="page">
+      <div className="page-title spread"><h1>Jobs</h1>{can("admin") && <a className="button" href={link(["settings", "new", "jobs"])}>Add job</a>}</div>
       <div>
         <Loaded resource={jobs} lines={5}>
           {(rows) => rows.length === 0
@@ -33,7 +33,7 @@ export function JobsView() {
             : <DataTable<JobRow> rows={rows} row_key={(job) => job.name} caption="Jobs" columns={[
               { label: "Job", cell: (job) => <a href={link(["jobs", job.name])}>{job.name}</a>, sort: (job) => job.name },
               { label: "Status", cell: (job) => <HealthBadge level={job.level} />, sort: (job) => job.level === null ? 3 : level_rank[job.level] },
-              { label: "Sources", cell: (job) => job.sources.length === 0 ? <span class="muted">none</span> : job.sources.join(", ") },
+              { label: "Sources", cell: (job) => job.sources.length === 0 ? <span className="muted">none</span> : job.sources.join(", ") },
               { label: "Repositories", cell: (job) => job.repositories.join(", ") },
               { label: "Targets", class: "number", cell: (job) => job.targets.length, sort: (job) => job.targets.length },
               { label: "Last backup", cell: (job) => <NewestBackup targets={job.targets} />, sort: (job) => newest_epoch(job.targets) },
@@ -53,15 +53,15 @@ function newest_epoch(targets: RepositorySummary[]): number | null {
 
 function NewestBackup({ targets }: { targets: RepositorySummary[] }) {
   const epoch = newest_epoch(targets);
-  return epoch === null ? <span class="muted">never</span> : <Age epoch={epoch} />;
+  return epoch === null ? <span className="muted">never</span> : <Age epoch={epoch} />;
 }
 
 function NextBackup({ job }: { job: JobRow }) {
   const task = job.tasks.find((item) => item.kind === "backup");
-  if (task === undefined) return <span class="muted">—</span>;
+  if (task === undefined) return <span className="muted">—</span>;
   if (task.running) return <Badge tone="info">running</Badge>;
   if (task.waiting) return <Badge tone="warn" title={task.waiting}>waiting</Badge>;
-  if (!task.enabled || task.next_due === null) return <span class="muted">{task.enabled ? "by hand" : "switched off"}</span>;
+  if (!task.enabled || task.next_due === null) return <span className="muted">{task.enabled ? "by hand" : "switched off"}</span>;
   return <span title={stamp(task.next_due)}>{until(task.next_due)}</span>;
 }
 
@@ -82,13 +82,13 @@ export function JobView({ name }: { name: string }) {
   // Every panel waits on the job, and a failure to load it shows once, in the header.
   const loaded = job.data;
   return (
-    <div class="page">
+    <div className="page">
       <Crumbs items={[["Jobs", link(["jobs"])], [name, null]]} />
       <div><Loaded resource={job} lines={2}>{([row]) => <JobHeader job={row} />}</Loaded></div>
       <Section title="Sources to repositories">
         <div>{loaded ? <JobFlow job={loaded[0]} sources={loaded[1]} /> : <Skeleton lines={2} />}</div>
       </Section>
-      <Section title="Targets" tools={<span class="muted small">one per source host and repository</span>}>
+      <Section title="Targets" tools={<span className="muted small">one per source host and repository</span>}>
         <div>{loaded ? <TargetsTable targets={loaded[0].targets} /> : <Skeleton lines={3} />}</div>
       </Section>
       <Section title="Tasks" tools={<a href={link(["schedules"])}>All schedules</a>}>
@@ -112,13 +112,13 @@ export function JobView({ name }: { name: string }) {
 
 function JobHeader({ job }: { job: JobRow }) {
   return (
-    <header class="page-head">
-      <div class="page-title"><h1>{job.name}</h1><HealthBadge level={job.level} /><OriginChip entity={job} /></div>
-      <p class="muted" role="status" aria-live="polite">
+    <header className="page-head">
+      <div className="page-title"><h1>{job.name}</h1><HealthBadge level={job.level} /><OriginChip entity={job} /></div>
+      <p className="muted" role="status" aria-live="polite">
         {`${job.targets.length} ${job.targets.length === 1 ? "target" : "targets"}`}
         {job.targets.some((target) => target.running_run) ? " · a run is going" : ""}
       </p>
-      {can("admin") && <div class="head-actions"><a class="button" href={config_link(job, "jobs")}>Config</a></div>}
+      {can("admin") && <div className="head-actions"><a className="button" href={config_link(job, "jobs")}>Config</a></div>}
     </header>
   );
 }
@@ -126,28 +126,28 @@ function JobHeader({ job }: { job: JobRow }) {
 // The job's sources, grouped by host, beside the repositories they go to.
 function JobFlow({ job, sources }: { job: JobRow; sources: SourceRow[] }) {
   return (
-    <div class="columns">
+    <div className="columns">
       <div>
         <h3>Backs up</h3>
         {job.sources.length > 0
           ? (
-            <ul class="plain-list">
+            <ul className="plain-list">
               {job.sources.map((name) => {
                 const source = sources.find((item) => item.name === name);
                 return (
                   <li key={name}>
                     <a href={link(["sources", name])}>{name}</a>
-                    {source && <span class="muted"> on <a href={link(["hosts", source.host])}>{source.host}</a>{` · ${source.paths.join(", ")}`}</span>}
+                    {source && <span className="muted"> on <a href={link(["hosts", source.host])}>{source.host}</a>{` · ${source.paths.join(", ")}`}</span>}
                   </li>
                 );
               })}
             </ul>
           )
-          : <p class="muted">No sources: it only prunes or checks.</p>}
+          : <p className="muted">No sources: it only prunes or checks.</p>}
       </div>
       <div>
         <h3><span aria-hidden="true">→ </span>Into</h3>
-        <ul class="plain-list">
+        <ul className="plain-list">
           {job.repositories.map((name) => {
             const target = job.targets.find((item) => item.repository === name);
             return <li key={name}>{target ? <a href={link(["repositories", target.id])}>{name}</a> : name}</li>;
@@ -170,8 +170,8 @@ function TargetsTable({ targets }: { targets: RepositorySummary[] }) {
       { label: "Stored", class: "number", cell: (target) => size(target.stats?.deduplicated_size), sort: (target) => target.stats?.deduplicated_size ?? null },
       {
         label: "Last backup", cell: (target) => target.running_run
-          ? <a class="chip chip-info" href={link(["runs", String(target.running_run.id)])}>{`${target.running_run.kind} running`}</a>
-          : <span class="muted">{target.last_backup_epoch ? stamp(target.last_backup_epoch) : "never"}</span>,
+          ? <a className="chip chip-info" href={link(["runs", String(target.running_run.id)])}>{`${target.running_run.kind} running`}</a>
+          : <span className="muted">{target.last_backup_epoch ? stamp(target.last_backup_epoch) : "never"}</span>,
       },
     ]} />
   );
@@ -184,7 +184,7 @@ function TargetStatus({ target }: { target: RepositorySummary }) {
   if (target.last_poll_epoch === null) return <StatusBadge status={null} />;
   return <>
     <StateBadge labels={health_labels} state={target.level} title={target.reasons.map((reason) => reason.text).join("\n")} />
-    {target.reasons.slice(0, 1).map((reason) => <div key={reason.text} class="muted small">{reason.text}</div>)}
+    {target.reasons.slice(0, 1).map((reason) => <div key={reason.text} className="muted small">{reason.text}</div>)}
   </>;
 }
 
@@ -192,7 +192,7 @@ function TargetStatus({ target }: { target: RepositorySummary }) {
 function Freshness({ target }: { target: RepositorySummary }) {
   const late = target.last_poll_epoch !== null && overdue(target);
   return (
-    <span class={late ? "tone-bad" : undefined} title={target.last_backup_epoch ? stamp(target.last_backup_epoch) : undefined}>
+    <span className={late ? "tone-bad" : undefined} title={target.last_backup_epoch ? stamp(target.last_backup_epoch) : undefined}>
       {target.last_backup_epoch ? age(target.last_backup_epoch) : "none yet"}{` · limit ${duration(target.max_age)}`}{late ? " · overdue" : ""}
     </span>
   );
@@ -200,6 +200,6 @@ function Freshness({ target }: { target: RepositorySummary }) {
 
 function SettingsFacts({ job }: { job: JobRow }) {
   const entries = Object.entries(job.settings);
-  if (entries.length === 0) return <p class="muted">Nothing set; each repository's own settings and the defaults apply.</p>;
+  if (entries.length === 0) return <p className="muted">Nothing set; each repository's own settings and the defaults apply.</p>;
   return <Facts layout="rows" rows={entries.map(([field, value]): Fact => [field, <code>{typeof value === "string" ? value : JSON.stringify(value)}</code>])} />;
 }

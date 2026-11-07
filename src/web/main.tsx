@@ -4,10 +4,10 @@ import "@x-tech-laboratories/halon/halon-tokens.css";
 import "@x-tech-laboratories/halon/halon.css";
 import "./app.css";
 import { stamp } from "@x-tech-laboratories/x-libs/web/format";
-import { Shell, use_route, type ShellSection } from "@x-tech-laboratories/x-libs/web/preact/shell";
+import { Shell, use_route, type ShellSection } from "@x-tech-laboratories/x-libs/web/react/shell";
 import { current_route, link, type Route } from "@x-tech-laboratories/x-libs/web/router";
-import { Fragment, render, type ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from "react";
+import { createRoot } from "react-dom/client";
 import { api, LoginNeeded, query, type Run, type SearchResults } from "./api.ts";
 import { connect, disconnect, stream_up } from "./live.ts";
 import { Login } from "./login.tsx";
@@ -44,7 +44,7 @@ const sections: ShellSection[] = [
 
 interface Page {
   title: string;
-  view: ComponentChildren;
+  view: ReactNode;
 }
 
 function page_for(parts: string[]): Page {
@@ -159,7 +159,7 @@ function RunningChip() {
   if (runs.length === 0) return null;
   const [first] = runs;
   return (
-    <a class="chip chip-info running-chip" href={runs.length === 1 ? link(["runs", String(first.id)]) : link(["runs"], { state: "running" })}>
+    <a className="chip chip-info running-chip" href={runs.length === 1 ? link(["runs", String(first.id)]) : link(["runs"], { state: "running" })}>
       {runs.length === 1 ? `${first.kind} running on ${first.target_id}` : `${runs.length} runs in progress`}
     </a>
   );
@@ -177,7 +177,7 @@ function StreamState() {
     return () => clearTimeout(timer);
   }, []);
   use_changes(() => set_text(stream_text()));
-  return <p id="stream-state" class="stream-state muted small" role="status">{text}</p>;
+  return <p id="stream-state" className="stream-state muted small" role="status">{text}</p>;
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────
@@ -211,7 +211,7 @@ function Search() {
 
   const items = () => [...(results.current?.querySelectorAll<HTMLAnchorElement>("a") ?? [])];
 
-  function input_key(event: KeyboardEvent): void {
+  function input_key(event: KeyboardEvent<HTMLInputElement>): void {
     if (event.key === "ArrowDown") {
       event.preventDefault();
       items()[0]?.focus();
@@ -222,7 +222,7 @@ function Search() {
     }
   }
 
-  function results_key(event: KeyboardEvent): void {
+  function results_key(event: KeyboardEvent<HTMLDivElement>): void {
     const list = items();
     const at = list.indexOf(document.activeElement as HTMLAnchorElement);
     if (event.key === "ArrowDown") {
@@ -238,7 +238,7 @@ function Search() {
     }
   }
 
-  function picked(event: MouseEvent): void {
+  function picked(event: SyntheticEvent): void {
     if (!(event.target as HTMLElement).closest("a")) return;
     set_found(null);
     set_text("");
@@ -246,22 +246,22 @@ function Search() {
 
   const count = found ? found.repositories.length + found.archives.length : 0;
   return (
-    <div ref={box} class="search" role="search">
+    <div ref={box} className="search" role="search">
       <input ref={input} id="search" type="search" placeholder="Search repositories and archives" aria-label="Search repositories and archives"
-        autocomplete="off" aria-controls="search-results" aria-expanded={open} value={text}
-        onInput={(event) => typed((event.currentTarget as HTMLInputElement).value)} onKeyDown={input_key} />
-      <div ref={results} id="search-results" class="search-results" hidden={!open} onKeyDown={results_key} onClick={picked}>
+        autoComplete="off" aria-controls="search-results" aria-expanded={open} value={text}
+        onChange={(event) => typed(event.currentTarget.value)} onKeyDown={input_key} />
+      <div ref={results} id="search-results" className="search-results" hidden={!open} onKeyDown={results_key} onClick={picked}>
         {found?.repositories.map((repository) => (
-          <a key={`repository-${repository.id}`} href={link(["repositories", repository.id])} class="search-item">
-            <span class="chip">repository</span> {repository.name}
+          <a key={`repository-${repository.id}`} href={link(["repositories", repository.id])} className="search-item">
+            <span className="chip">repository</span> {repository.name}
           </a>
         ))}
         {found?.archives.map((archive) => (
-          <a key={`archive-${archive.target_id}-${archive.name}`} href={link(["repositories", archive.target_id, "archives", archive.name], { tab: "changes" })} class="search-item">
-            <span class="chip">archive</span> {archive.name}<span class="muted small">{` in ${archive.target_id}, ${stamp(archive.epoch)}`}</span>
+          <a key={`archive-${archive.target_id}-${archive.name}`} href={link(["repositories", archive.target_id, "archives", archive.name], { tab: "changes" })} className="search-item">
+            <span className="chip">archive</span> {archive.name}<span className="muted small">{` in ${archive.target_id}, ${stamp(archive.epoch)}`}</span>
           </a>
         ))}
-        {open && count === 0 && <p class="muted search-none">Nothing matches.</p>}
+        {open && count === 0 && <p className="muted search-none">Nothing matches.</p>}
       </div>
     </div>
   );
@@ -269,4 +269,4 @@ function Search() {
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-render(<App />, document.querySelector("#app")!);
+createRoot(document.querySelector("#app")!).render(<App />);

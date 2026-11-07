@@ -1,8 +1,8 @@
 // X-Backups' own badges on the shared ones, the theme choice, and the hook a view listens to the server's changes with.
 
-import { Badge, StateBadge, type Tone } from "@x-tech-laboratories/x-libs/web/preact/badges";
+import { Badge, StateBadge, type Tone } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { theme_choice } from "@x-tech-laboratories/x-libs/web/theme";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef } from "react";
 import type { Change, EventLevel, Level, Run, RunState, Status } from "./api.ts";
 import { on_changes } from "./live.ts";
 

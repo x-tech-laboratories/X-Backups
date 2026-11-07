@@ -1,9 +1,9 @@
 // Runs a repository's actions from any page: what each does, how it is confirmed, and how its outcome is shown.
 
-import { confirm_dialog, Dialog, open_dialog, text_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { confirm_dialog, Dialog, open_dialog, text_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import { api, query, repository_path, type Action, type Run, type Outcome } from "./api.ts";
 
 // One sentence per action on what it does, shown beside its button.
@@ -65,11 +65,11 @@ function CheckDialog({ target, close }: { target: ActionTarget; close: () => voi
   return (
     <Dialog title="Check the repository" on_close={close} buttons={<>
       <button onClick={close}>Cancel</button>
-      <button class="accent solid" onClick={() => { close(); void run_action(target, "check_repo", "Check", { kind }); }}>Start check</button>
+      <button className="accent solid" onClick={() => { close(); void run_action(target, "check_repo", "Check", { kind }); }}>Start check</button>
     </>}>
       <p>{action_descriptions.check_repo}</p>
-      <label class="field">
-        <span class="field-label">What to check</span>
+      <label className="field">
+        <span className="field-label">What to check</span>
         <select aria-label="What to check" value={kind} onChange={(event) => set_kind((event.currentTarget as HTMLSelectElement).value)}>
           {check_kinds.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
         </select>

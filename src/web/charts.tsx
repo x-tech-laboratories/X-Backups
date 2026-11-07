@@ -1,6 +1,6 @@
 // Small SVG charts: lines over time, bars, meters, a donut, a timeline, sparklines and a pass/fail strip, colored from the page's CSS tokens.
 
-import type { ComponentChildren } from "preact";
+import type { CSSProperties, ReactNode } from "react";
 
 export interface Series {
   label: string;
@@ -86,14 +86,14 @@ export function LineChart({ title, series, format, limits = [] }: LineChartProps
         <Tick x={margin.left} y={height - 4} text={new Date(first * 1000).toLocaleDateString()} anchor="start" />
         <Tick x={width - margin.right} y={height - 4} text={new Date(last * 1000).toLocaleDateString()} anchor="end" />
         {limits.map((limit) => (
-          <line key={limit.label} x1={margin.left} y1={y(limit.value).toFixed(1)} x2={width - margin.right} y2={y(limit.value).toFixed(1)} stroke={limit.color} stroke-width={2} stroke-dasharray="6 4">
+          <line key={limit.label} x1={margin.left} y1={y(limit.value).toFixed(1)} x2={width - margin.right} y2={y(limit.value).toFixed(1)} stroke={limit.color} strokeWidth={2} strokeDasharray="6 4">
             <title>{`${limit.label}: ${format(limit.value)}`}</title>
           </line>
         ))}
         {series.map((line) => {
           const drawn = line.points.filter(([, value]) => value !== null) as [number, number][];
           const path = drawn.map(([epoch, value], index) => `${index === 0 ? "M" : "L"}${x(epoch).toFixed(1)},${y(value).toFixed(1)}`).join("");
-          return <path key={line.label} d={path} fill="none" stroke={line.color} stroke-width={2}><title>{line.label}</title></path>;
+          return <path key={line.label} d={path} fill="none" stroke={line.color} strokeWidth={2}><title>{line.label}</title></path>;
         })}
       </svg>
     </Figure>
@@ -191,19 +191,19 @@ export function StackedBarChart({ title, stacks, legend, format }: StackedBarCha
 
 // One labeled bar per row with its value beside the label, such as the time since each repository's last backup.
 export function Meters({ rows, message }: { rows: Meter[]; message: string }) {
-  if (rows.length === 0) return <p class="muted">{message}</p>;
+  if (rows.length === 0) return <p className="muted">{message}</p>;
   return (
-    <ul class="meters">
+    <ul className="meters">
       {rows.map((row, index) => (
         <li key={index} title={row.title ?? undefined}>
-          <div class="meter-head">
+          <div className="meter-head">
             {row.href ? <a href={row.href}>{row.label}</a> : <span>{row.label}</span>}
-            <span class="meter-value">{row.value_text}</span>
+            <span className="meter-value">{row.value_text}</span>
           </div>
-          <div class="meter" role="meter" aria-label={row.label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(row.percent)} aria-valuetext={row.value_text}>
-            {row.behind && <span class="meter-fill meter-behind" style={`width: ${row.behind.percent.toFixed(1)}%; background-color: ${row.behind.color}`} />}
-            <span class="meter-fill" style={`width: ${row.percent.toFixed(1)}%; background-color: ${row.color}`} />
-            {row.marks.map((mark) => <span key={mark} class="meter-mark" style={`left: ${mark.toFixed(1)}%`} />)}
+          <div className="meter" role="meter" aria-label={row.label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(row.percent)} aria-valuetext={row.value_text}>
+            {row.behind && <span className="meter-fill meter-behind" style={{ width: `${row.behind.percent.toFixed(1)}%`, backgroundColor: row.behind.color }} />}
+            <span className="meter-fill" style={{ width: `${row.percent.toFixed(1)}%`, backgroundColor: row.color }} />
+            {row.marks.map((mark) => <span key={mark} className="meter-mark" style={{ left: `${mark.toFixed(1)}%` }} />)}
           </div>
         </li>
       ))}
@@ -245,9 +245,9 @@ export function Donut({ title, parts, center, center_label, message }: DonutProp
         r={donut_radius}
         fill="none"
         stroke={part.color}
-        stroke-width={donut_stroke}
-        stroke-dasharray={`${Math.max(0.5, length - 1.5).toFixed(2)} ${circumference.toFixed(2)}`}
-        stroke-dashoffset={(-start).toFixed(2)}
+        strokeWidth={donut_stroke}
+        strokeDasharray={`${Math.max(0.5, length - 1.5).toFixed(2)} ${circumference.toFixed(2)}`}
+        strokeDashoffset={(-start).toFixed(2)}
       >
         <title>{`${part.label}: ${part.value}`}</title>
       </circle>
@@ -255,20 +255,20 @@ export function Donut({ title, parts, center, center_label, message }: DonutProp
   });
 
   return (
-    <figure class="chart donut">
+    <figure className="chart donut">
       <figcaption>{title}</figcaption>
-      <div class="donut-body">
+      <div className="donut-body">
         <svg viewBox={`0 0 ${donut_size} ${donut_size}`} role="img" aria-label={`${title}: ${center} ${center_label}`}>
-          <circle cx={middle} cy={middle} r={donut_radius} fill="none" class="donut-track" stroke-width={donut_stroke} />
+          <circle cx={middle} cy={middle} r={donut_radius} fill="none" className="donut-track" strokeWidth={donut_stroke} />
           <g transform={`rotate(-90 ${middle} ${middle})`}>{arcs}</g>
-          <text x={middle} y={middle - 4} text-anchor="middle" class="donut-value">{center}</text>
-          <text x={middle} y={middle + 14} text-anchor="middle" class="tick">{center_label}</text>
+          <text x={middle} y={middle - 4} textAnchor="middle" className="donut-value">{center}</text>
+          <text x={middle} y={middle + 14} textAnchor="middle" className="tick">{center_label}</text>
         </svg>
-        <ul class="donut-legend">
+        <ul className="donut-legend">
           {parts.map((part) => (
             <li key={part.label}>
-              <span class="legend" style={`--swatch: ${part.color}`}>{part.label}</span>
-              <span class="meter-value">{`${part.value} · ${Math.round(part.value / total * 100)}%`}</span>
+              <span className="legend" style={swatch(part.color)}>{part.label}</span>
+              <span className="meter-value">{`${part.value} · ${Math.round(part.value / total * 100)}%`}</span>
             </li>
           ))}
         </ul>
@@ -308,15 +308,15 @@ export function Timeline({ title, rows, from, to, legend, message }: TimelinePro
   return (
     <Figure title={title} legend={legend}>
       <svg viewBox={`0 0 ${timeline_width} ${chart_height}`} role="img" aria-label={title}>
-        {days.map((day) => <line key={day} x1={x(day).toFixed(1)} y1={lanes_top} x2={x(day).toFixed(1)} y2={chart_height - margin.bottom} class="axis" />)}
+        {days.map((day) => <line key={day} x1={x(day).toFixed(1)} y1={lanes_top} x2={x(day).toFixed(1)} y2={chart_height - margin.bottom} className="axis" />)}
         {rows.map((row, index) => {
           const middle = lanes_top + index * timeline_row_height + timeline_row_height / 2;
           const name = row.label.length > 22 ? `${row.label.slice(0, 21)}…` : row.label;
-          const text = <text x={timeline_label_width - 8} y={middle.toFixed(1)} text-anchor="end" dominant-baseline="middle" class="lane-label">{name}</text>;
+          const text = <text x={timeline_label_width - 8} y={middle.toFixed(1)} textAnchor="end" dominantBaseline="middle" className="lane-label">{name}</text>;
           return (
             <g key={index}>
               {row.href ? <a href={row.href}>{text}<title>{row.label}</title></a> : text}
-              <line x1={timeline_label_width} y1={middle.toFixed(1)} x2={timeline_width - margin.right} y2={middle.toFixed(1)} class="lane" />
+              <line x1={timeline_label_width} y1={middle.toFixed(1)} x2={timeline_width - margin.right} y2={middle.toFixed(1)} className="lane" />
               {row.marks.map((mark, mark_index) => {
                 const left = x(mark.start);
                 const span = mark.end === null ? 2 : Math.max(3, x(mark.end) - left);
@@ -361,7 +361,7 @@ export function Sparkline({ label, points, top, color }: SparklineProps) {
   return (
     <svg {...frame}>
       <path d={`${path}L${sparkline_width},${sparkline_height}L0,${sparkline_height}Z`} fill={color} opacity={0.15} />
-      <path d={path} fill="none" stroke={color} stroke-width={1.5} />
+      <path d={path} fill="none" stroke={color} strokeWidth={1.5} />
       <title>{label}</title>
     </svg>
   );
@@ -373,11 +373,11 @@ export function Sparkline({ label, points, top, color }: SparklineProps) {
 export function Strip({ title, cells }: { title: string; cells: Cell[] }) {
   if (cells.length === 0) return <EmptyChart title={title} message="No readings yet." />;
   return (
-    <figure class="chart">
+    <figure className="chart">
       <figcaption>{title}</figcaption>
-      <div class="strip">
+      <div className="strip">
         {cells.map((cell, index) => (
-          <span key={index} class={`cell cell-${cell.ok === null ? "none" : cell.ok ? "pass" : "fail"}`} title={`${cell.label}: ${cell.ok === null ? "no verdict" : cell.ok ? "pass" : "fail"}`} />
+          <span key={index} className={`cell cell-${cell.ok === null ? "none" : cell.ok ? "pass" : "fail"}`} title={`${cell.label}: ${cell.ok === null ? "no verdict" : cell.ok ? "pass" : "fail"}`} />
         ))}
       </div>
     </figure>
@@ -386,12 +386,12 @@ export function Strip({ title, cells }: { title: string; cells: Cell[] }) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function Figure({ title, legend, children }: { title: string; legend: Legend; children: ComponentChildren }) {
+function Figure({ title, legend, children }: { title: string; legend: Legend; children: ReactNode }) {
   return (
-    <figure class="chart">
+    <figure className="chart">
       <figcaption>
         {title}
-        {legend.map(([text, color]) => <span key={text} class="legend" style={`--swatch: ${color}`}>{text}</span>)}
+        {legend.map(([text, color]) => <span key={text} className="legend" style={swatch(color)}>{text}</span>)}
       </figcaption>
       {children}
     </figure>
@@ -399,18 +399,23 @@ function Figure({ title, legend, children }: { title: string; legend: Legend; ch
 }
 
 function EmptyChart({ title, message }: { title: string; message: string }) {
-  return <figure class="chart"><figcaption>{title}</figcaption><p class="muted">{message}</p></figure>;
+  return <figure className="chart"><figcaption>{title}</figcaption><p className="muted">{message}</p></figure>;
 }
 
 function AxisLines() {
   return (
     <>
-      <line x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} class="axis" />
-      <line x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} class="axis" />
+      <line x1={margin.left} y1={margin.top} x2={margin.left} y2={height - margin.bottom} className="axis" />
+      <line x1={margin.left} y1={height - margin.bottom} x2={width - margin.right} y2={height - margin.bottom} className="axis" />
     </>
   );
 }
 
 function Tick({ x, y, text, anchor }: { x: number; y: number; text: string; anchor: "start" | "end" }) {
-  return <text x={x.toFixed(1)} y={y.toFixed(1)} text-anchor={anchor} dominant-baseline="middle" class="tick">{text}</text>;
+  return <text x={x.toFixed(1)} y={y.toFixed(1)} textAnchor={anchor} dominantBaseline="middle" className="tick">{text}</text>;
+}
+
+// A legend swatch takes its color from the --swatch property the stylesheet reads.
+function swatch(color: string): CSSProperties {
+  return { "--swatch": color } as CSSProperties;
 }

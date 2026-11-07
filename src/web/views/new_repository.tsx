@@ -1,10 +1,10 @@
 // Adds a repository from the page, when the config mode lets the page manage repositories.
 
-import { Crumbs } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { Crumbs } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import { useRef, useState } from "preact/hooks";
+import { useRef, useState } from "react";
 import { api, ApiError, type ConfigInfo } from "../api.ts";
 import { ConfigForm, type ConfigFormHandle } from "./config_form.tsx";
 
@@ -13,10 +13,10 @@ import { ConfigForm, type ConfigFormHandle } from "./config_form.tsx";
 export function NewRepositoryView() {
   const info = use_resource(() => api<ConfigInfo>("/api/config"), []);
   return (
-    <div class="page">
+    <div className="page">
       <Crumbs items={[["Repositories", link(["repositories"])], ["Add", null]]} />
       <h1>Add a repository</h1>
-      <div class="stack">
+      <div className="stack">
         <Loaded resource={info} lines={6}>
           {(config) => config.editable
             ? <AddForm info={config} />
@@ -47,11 +47,11 @@ function AddForm({ info }: { info: ConfigInfo }) {
   }
 
   return <>
-    <p class="muted">Only name and repo are required. Empty fields take their defaults, which Settings shows.</p>
+    <p className="muted">Only name and repo are required. Empty fields take their defaults, which Settings shows.</p>
     <ConfigForm fields={info.fields} values={{}} adding handle={form} />
-    <div class="form-actions">
-      <button class="accent solid" disabled={busy} onClick={add}>{busy ? "Adding…" : "Add repository"}</button>
-      <a class="button" href={link(["repositories"])}>Cancel</a>
+    <div className="form-actions">
+      <button className="accent solid" disabled={busy} onClick={add}>{busy ? "Adding…" : "Add repository"}</button>
+      <a className="button" href={link(["repositories"])}>Cancel</a>
     </div>
   </>;
 }

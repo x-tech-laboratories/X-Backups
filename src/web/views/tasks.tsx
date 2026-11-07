@@ -1,14 +1,14 @@
 // The tasks of a job or a repository: their schedules in words, when each is next due, its last run and why it waits,
 // with Run now and a switch for an operator.
 
-import { Badge, Chip } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { Switch } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { Empty } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable, type TableColumn } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { Badge, Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { Switch } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { Empty } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable, type TableColumn } from "@x-tech-laboratories/x-libs/web/react/table";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { age, now_seconds, stamp, until } from "@x-tech-laboratories/x-libs/web/format";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import { api, type TaskView } from "../api.ts";
 import { can } from "../session.ts";
 import { RunBadge } from "../ui.tsx";
@@ -51,12 +51,12 @@ export function TasksTable({ tasks, refresh, with_owner = false, empty_hint }: T
     {
       label: "Schedule", cell: (task) => <>
         <span>{task.description}</span>
-        {origin_text[task.origin] && <div class="muted small">{origin_text[task.origin]}</div>}
+        {origin_text[task.origin] && <div className="muted small">{origin_text[task.origin]}</div>}
       </>,
     },
     { label: "Next due", cell: (task) => <NextDue task={task} />, sort: (task) => task.next_due },
     {
-      label: "Last run", cell: (task) => task.last_run === null ? <span class="muted">never</span> : (
+      label: "Last run", cell: (task) => task.last_run === null ? <span className="muted">never</span> : (
         <span>
           <RunBadge state={task.last_run.state} />{" "}
           <a href={link(["runs", String(task.last_run.id)])} title={stamp(task.last_run.started_epoch)}>{age(task.last_run.started_epoch)}</a>
@@ -65,7 +65,7 @@ export function TasksTable({ tasks, refresh, with_owner = false, empty_hint }: T
       sort: (task) => task.last_run?.started_epoch ?? null,
     },
     { label: "Enabled", cell: (task) => <Enabled task={task} refresh={refresh} /> },
-    { label: "", class: "actions-cell", cell: (task) => can("operator") && <span class="row-actions"><RunNow task={task} refresh={refresh} /></span> },
+    { label: "", class: "actions-cell", cell: (task) => can("operator") && <span className="row-actions"><RunNow task={task} refresh={refresh} /></span> },
   ];
   return <div aria-live="polite"><DataTable columns={columns} rows={tasks} row_key={(task) => task.id} caption="Tasks" /></div>;
 }
@@ -73,16 +73,16 @@ export function TasksTable({ tasks, refresh, with_owner = false, empty_hint }: T
 // When the task is next due, or that it runs now or waits, and why.
 function NextDue({ task }: { task: TaskView }) {
   if (task.running) return <Badge tone="info">running</Badge>;
-  if (task.waiting) return <span><Badge tone="warn">waiting</Badge><div class="muted small">{task.waiting}</div></span>;
-  if (!task.enabled) return <span class="muted">switched off</span>;
-  if (task.next_due === null) return <span class="muted">{task.after ? "after the next backup" : "only by hand"}</span>;
+  if (task.waiting) return <span><Badge tone="warn">waiting</Badge><div className="muted small">{task.waiting}</div></span>;
+  if (!task.enabled) return <span className="muted">switched off</span>;
+  if (task.next_due === null) return <span className="muted">{task.after ? "after the next backup" : "only by hand"}</span>;
   return <span title={stamp(task.next_due)}>{task.next_due <= now_seconds() ? "due now" : until(task.next_due)}</span>;
 }
 
 // A switch an operator turns, saying when it differs from the config; a viewer sees the state as text.
 function Enabled({ task, refresh }: { task: TaskView; refresh: Refresh }) {
   const note = task.override && (
-    <div class="muted small">{`${task.override.enabled ? "On" : "Off"} here by ${task.override.changed_by}; the config says ${task.enabled_by_config ? "on" : "off"}`}</div>
+    <div className="muted small">{`${task.override.enabled ? "On" : "Off"} here by ${task.override.changed_by}; the config says ${task.enabled_by_config ? "on" : "off"}`}</div>
   );
   const schedulable = task.schedule !== null || task.after !== null;
   if (!can("operator") || (!schedulable && !task.enabled)) {
@@ -104,7 +104,7 @@ function Enabled({ task, refresh }: { task: TaskView; refresh: Refresh }) {
 
   return (
     <span>
-      <label class="check"><Switch label={`${task_label(task)} of ${task.owner} enabled`} checked={task.enabled} on_change={change} />{task.enabled ? " on" : " off"}</label>
+      <label className="check"><Switch label={`${task_label(task)} of ${task.owner} enabled`} checked={task.enabled} on_change={change} />{task.enabled ? " on" : " off"}</label>
       {task.override && <Chip>changed here</Chip>}
       {note}
     </span>

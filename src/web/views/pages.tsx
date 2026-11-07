@@ -1,14 +1,14 @@
 // The smaller pages: the week of tasks and host timers, the event log, and the settings.
 
-import { ButtonGroup, Segmented, Select } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { Facts, Section, Toolbar } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { Pager } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { ButtonGroup, Segmented, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { Facts, Section, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { Pager } from "@x-tech-laboratories/x-libs/web/react/table";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { now_seconds, stamp } from "@x-tech-laboratories/x-libs/web/format";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
 import type { Theme } from "@x-tech-laboratories/x-libs/web/theme";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "react";
 import { timer_problem } from "../attention.ts";
 import { api, ApiError, query, send, type ConfigInfo, type EventRow, type RepositorySummary, type Setting, type TaskView, type TimerRow, type TimerRun } from "../api.ts";
 import { theme, use_changes } from "../ui.tsx";
@@ -65,14 +65,14 @@ export function SchedulesView() {
     .sort((first, second) => (first.next_epoch ?? Infinity) - (second.next_epoch ?? Infinity));
 
   return (
-    <div class="page">
+    <div className="page">
       <h1>Schedules</h1>
-      <p class="muted">X-Backups starts each job's and repository's tasks when they fall due. Hosts' own systemd timers are read too, for repositories a host fills itself, and missed and failed runs are flagged.</p>
+      <p className="muted">X-Backups starts each job's and repository's tasks when they fall due. Hosts' own systemd timers are read too, for repositories a host fills itself, and missed and failed runs are flagged.</p>
       <Toolbar>
         <span>{schedule.data && <Select label="Host" options={[["", "Any host"], ...hosts.map((name): [string, string] => [name, name])]} value={host} on_change={(value) => { set_host(value); replace_query({ host: value }); }} />}</span>
         <Select label="State" options={[["", "Any state"], ["problem", "Needs attention"]]} value={state} on_change={(value) => { set_state(value); replace_query({ state: value }); }} />
       </Toolbar>
-      <Section title={<span>Week <span class="muted small">{schedule.data ? week_label : ""}</span></span>} tools={
+      <Section title={<span>Week <span className="muted small">{schedule.data ? week_label : ""}</span></span>} tools={
         <ButtonGroup label="Week">{week_steps.map(([step, text]) => <button key={step} onClick={() => step_week(step)}>{text}</button>)}</ButtonGroup>
       }>
         <div>{schedule.data && week_runs.data ? calendar() : week_runs.error !== null ? <Loaded resource={week_runs}>{() => null}</Loaded> : <Skeleton lines={4} />}</div>
@@ -173,22 +173,22 @@ function WeekCalendar({ rows, start, day, on_day }: { rows: CalendarRow[]; start
   const day_class = (date: Date, index: number) => `day-${index}${date.toDateString() === today ? " today" : ""}`;
 
   return (
-    <div class="stack">
+    <div className="stack">
       <Segmented label="Day" class_name="day-switch" choices={days.map((date, index) => ({ value: String(index), label: name(date) }))} value={String(day)} on_change={(value) => on_day(Number(value))} />
-      <div class="table-wrap">
-        <table class="calendar" data-day={day}>
-          <thead><tr><th>Task or timer</th>{days.map((date, index) => <th key={index} class={day_class(date, index)}>{name(date)}</th>)}</tr></thead>
+      <div className="table-wrap">
+        <table className="calendar" data-day={day}>
+          <thead><tr><th>Task or timer</th>{days.map((date, index) => <th key={index} className={day_class(date, index)}>{name(date)}</th>)}</tr></thead>
           <tbody>
             {rows.map((row, row_index) => (
               <tr key={row_index}>
                 <td>
-                  <div>{row.task && <span class="chip">task</span>}{row.task ? " " : null}<a href={row.href}>{row.label}</a></div>
-                  <div class="muted small">{row.detail}</div>
+                  <div>{row.task && <span className="chip">task</span>}{row.task ? " " : null}<a href={row.href}>{row.label}</a></div>
+                  <div className="muted small">{row.detail}</div>
                 </td>
                 {days.map((date, index) => (
-                  <td key={index} class={day_class(date, index)}>
+                  <td key={index} className={day_class(date, index)}>
                     {row.entries.filter((entry) => day_of(entry.epoch) === index).map((entry, entry_index) => (
-                      <span key={entry_index} class={`run run-${entry.kind}`} title={entry.title}>
+                      <span key={entry_index} className={`run run-${entry.kind}`} title={entry.title}>
                         {entry.kind === "missed" ? `${time(entry.epoch)} missed` : entry.kind === "task" ? `${time(entry.epoch)} due` : time(entry.epoch)}
                       </span>
                     ))}
@@ -199,10 +199,10 @@ function WeekCalendar({ rows, start, day, on_day }: { rows: CalendarRow[]; start
           </tbody>
         </table>
       </div>
-      <p class="muted small calendar-key">
-        <span class="run run-task">task due</span><span class="run run-upcoming">timer due</span>
-        <span class="run run-success">ran</span><span class="run run-failed">failed</span>
-        <span class="run run-missed">missed</span>
+      <p className="muted small calendar-key">
+        <span className="run run-task">task due</span><span className="run run-upcoming">timer due</span>
+        <span className="run run-success">ran</span><span className="run run-failed">failed</span>
+        <span className="run run-missed">missed</span>
         {" A task shows when it is next due and its newest run. Past weeks show the timer runs X-Backups saw; its reads are every five minutes, so a timer that ran twice between two reads shows once."}
       </p>
     </div>
@@ -228,7 +228,7 @@ export function EventsView() {
   };
 
   return (
-    <div class="page">
+    <div className="page">
       <h1>Events</h1>
       <Toolbar>
         <span>{repositories.data && <Select label="Repository" options={[["", "Any repository"], ...repositories.data.map((item): [string, string] => [item.id, item.name])]} value={repository} on_change={(value) => refilter(value, level)} />}</span>
@@ -280,15 +280,15 @@ export function SettingsView() {
   useEffect(() => theme.on_change(set_chosen), []);
 
   return (
-    <div class="page">
+    <div className="page">
       <h1>Settings</h1>
       <Section title="Appearance">
         <div>
           <Select label="Theme" options={theme_options} value={chosen} on_change={(value) => theme.set(value)} />
-          <p class="muted small">Kept in this browser only.</p>
+          <p className="muted small">Kept in this browser only.</p>
         </div>
       </Section>
-      <div class="stack"><Loaded resource={config} lines={4}>{(info) => <ConfigurationPanel info={info} saved={() => config.reload(true)} />}</Loaded></div>
+      <div className="stack"><Loaded resource={config} lines={4}>{(info) => <ConfigurationPanel info={info} saved={() => config.reload(true)} />}</Loaded></div>
       <div>{config.data ? <EntityPanels /> : <Skeleton lines={3} />}</div>
     </div>
   );
@@ -329,46 +329,46 @@ function ConfigurationPanel({ info, saved }: { info: ConfigInfo; saved: () => vo
 
   return <>
     <Section title="Configuration">
-      <div class="stack">
+      <div className="stack">
         <Facts rows={[["Mode", title]]} />
-        <p class="muted">{text}</p>
+        <p className="muted">{text}</p>
         {info.shadowed.length > 0 && (
-          <div class="banner" role="note">
+          <div className="banner" role="note">
             <strong>Hidden by the Nix configuration: </strong>{info.shadowed.join(", ")}
             . These were added here, but a declared repository of the same name replaces each one; remove them from the page or rename the declared one.
           </div>
         )}
-        {info.editable && <p class="muted small">Add an entry of the older shape, a host, repository, source and job in one, with <a href={link(["new-repository"])}>Add a repository</a>.</p>}
+        {info.editable && <p className="muted small">Add an entry of the older shape, a host, repository, source and job in one, with <a href={link(["new-repository"])}>Add a repository</a>.</p>}
       </div>
     </Section>
     <Section title="Defaults for every repository">
-      <div class="stack">
-        <p class="muted small">A repository's own setting wins over these. An empty field goes back to the built-in value.</p>
-        <div class="form-rows">
+      <div className="stack">
+        <p className="muted small">A repository's own setting wins over these. An empty field goes back to the built-in value.</p>
+        <div className="form-rows">
           {info.settings.map((setting) => {
             const [label, label_title] = source_text[setting.source];
             const locked = !info.editable || setting.source === "declared";
             return (
-              <div key={setting.name} class="form-row">
-                <label for={`setting-${setting.name}`}><code>{setting.name}</code></label>
+              <div key={setting.name} className="form-row">
+                <label htmlFor={`setting-${setting.name}`}><code>{setting.name}</code></label>
                 <div>
-                  <div class="setting-value">
+                  <div className="setting-value">
                     <input
                       ref={(element) => { if (element) inputs.current.set(setting.name, element); }}
                       id={`setting-${setting.name}`} type="text" readOnly={locked}
                       placeholder={setting.source === "default" ? String(setting.value) : undefined}
                       value={values[setting.name] ?? ""}
-                      onInput={(event) => set_values({ ...values, [setting.name]: (event.currentTarget as HTMLInputElement).value })}
+                      onChange={(event) => set_values({ ...values, [setting.name]: (event.currentTarget as HTMLInputElement).value })}
                     />
-                    <span class={`chip source-${setting.source}`} title={label_title}>{label}</span>
+                    <span className={`chip source-${setting.source}`} title={label_title}>{label}</span>
                   </div>
-                  <p class="muted small">{setting_hints[setting.name] ?? ""}</p>
+                  <p className="muted small">{setting_hints[setting.name] ?? ""}</p>
                 </div>
               </div>
             );
           })}
         </div>
-        {info.editable && <div><button class="accent solid" disabled={busy} onClick={() => void save()}>Save defaults</button><p class="tone-bad small" role="alert">{message}</p></div>}
+        {info.editable && <div><button className="accent solid" disabled={busy} onClick={() => void save()}>Save defaults</button><p className="tone-bad small" role="alert">{message}</p></div>}
       </div>
     </Section>
   </>;

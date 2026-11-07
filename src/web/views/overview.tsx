@@ -3,13 +3,12 @@
 // runs next.
 
 import { age, duration, now_seconds, size, stamp, until } from "@x-tech-laboratories/x-libs/web/format";
-import { Chip } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { Segmented } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { Section, Tile, Tiles } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
+import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { Segmented } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { Section, Tile, Tiles } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
-import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
 import { api, query, repository_path, type History, type HostRow, type HostSample, type Run, type RepositorySummary, type TaskView, type TimerRow } from "../api.ts";
 import { Donut, LineChart, Meters, StackedBarChart, Timeline, type Meter, type Stack } from "../charts.tsx";
@@ -60,16 +59,16 @@ export function OverviewView() {
   const data = fleet.data;
   const [listed, recent, timers, samples, hosts, tasks] = data ?? [];
   // Everything but the tiles waits on a skeleton while the first load runs, and the tiles show why it failed.
-  const when = (build: () => ComponentChildren) => data ? build() : <Skeleton />;
-  const with_history = (build: (by_repository: Map<string, History>) => ComponentChildren) => data && histories ? build(histories) : <Skeleton />;
+  const when = (build: () => ReactNode) => data ? build() : <Skeleton />;
+  const with_history = (build: (by_repository: Map<string, History>) => ReactNode) => data && histories ? build(histories) : <Skeleton />;
 
   return (
-    <div class="page">
+    <div className="page">
       <h1>Overview</h1>
       <div>
         <Loaded resource={fleet}>{() => <OverviewTiles repositories={listed!} timers={timers!} runs={recent!} hosts={hosts!} tasks={tasks!} />}</Loaded>
       </div>
-      <div class="columns">
+      <div className="columns">
         <Section title="Needs attention">
           <div>{when(() => <AttentionList repositories={listed!} timers={timers!} hosts={hosts!} tasks={tasks!} />)}</div>
         </Section>
@@ -78,22 +77,22 @@ export function OverviewView() {
         </Section>
       </div>
       <MapSection />
-      <div class="columns">
-        <Section title="Time since last backup" tools={<span class="muted small">ticks at the warning and max age</span>}>
+      <div className="columns">
+        <Section title="Time since last backup" tools={<span className="muted small">ticks at the warning and max age</span>}>
           <div>{when(() => <BackupAges repositories={listed!} />)}</div>
         </Section>
-        <Section title="Storage per repository" tools={<span class="muted small">{`against its quota or disk; ticks at ${storage_warning_percent}% and ${storage_danger_percent}%`}</span>}>
+        <Section title="Storage per repository" tools={<span className="muted small">{`against its quota or disk; ticks at ${storage_warning_percent}% and ${storage_danger_percent}%`}</span>}>
           <div>{when(() => <StorageBars repositories={listed!} />)}</div>
         </Section>
       </div>
-      <Section title="Activity" tools={<span class="muted small">runs and archives, by the period above</span>}>
+      <Section title="Activity" tools={<span className="muted small">runs and archives, by the period above</span>}>
         <div>{with_history((by_repository) => <ActivityTimeline repositories={listed!} runs={recent!} histories={by_repository} span={span} />)}</div>
       </Section>
-      <Section title="Hosts" tools={<span class="muted small">last 24 hours, read every five minutes</span>}>
+      <Section title="Hosts" tools={<span className="muted small">last 24 hours, read every five minutes</span>}>
         <div>{when(() => <HostHealth samples={samples!} />)}</div>
       </Section>
-      <div class="columns">
-        <div class="stack">
+      <div className="columns">
+        <div className="stack">
           <Section title="Running now" tools={<a href={link(["runs"], { state: "running" })}>All running</a>}>
             <div>{when(() => <RunningList runs={recent!} />)}</div>
           </Section>
@@ -101,12 +100,12 @@ export function OverviewView() {
             <div>{when(() => <UpcomingList timers={timers!} tasks={tasks!} />)}</div>
           </Section>
         </div>
-        <Section title="Stored over time" tools={<span class="muted small">{`last ${stored_span_in_days} days`}</span>}>
+        <Section title="Stored over time" tools={<span className="muted small">{`last ${stored_span_in_days} days`}</span>}>
           <div>{with_history((by_repository) => <StoredChart repositories={listed!} histories={by_repository} />)}</div>
         </Section>
       </div>
       <Section title="Targets" tools={<a href={link(["repositories"])}>Filter and sort</a>}>
-        <div class="grid">
+        <div className="grid">
           {when(() => [...listed!].sort((first, second) => status_rank(first) - status_rank(second) || first.name.localeCompare(second.name))
             .map((repository) => <RepositoryCard key={repository.id} repository={repository} />))}
         </div>
@@ -168,12 +167,12 @@ function AttentionList({ repositories, timers, hosts, tasks }: Omit<TilesProps, 
       return problem ? [{ tone: "warn" as const, href: link(["schedules"]), name: `${timer.unit} on ${timer.host}`, text: problem }] : [];
     }),
   ].sort((first, second) => (first.tone === "bad" ? 0 : 1) - (second.tone === "bad" ? 0 : 1));
-  if (items.length === 0) return <div class="all-good"><span aria-hidden="true">✓ </span>Everything looks healthy.</div>;
+  if (items.length === 0) return <div className="all-good"><span aria-hidden="true">✓ </span>Everything looks healthy.</div>;
   return (
-    <ul class="attention">
+    <ul className="attention">
       {items.map((item, index) => (
-        <li key={index} class={`tone-edge-${item.tone}`}>
-          <span class={`badge tone-${item.tone}`}>{item.tone === "bad" ? "problem" : "warning"}</span>
+        <li key={index} className={`tone-edge-${item.tone}`}>
+          <span className={`badge tone-${item.tone}`}>{item.tone === "bad" ? "problem" : "warning"}</span>
           <a href={item.href}>{item.name}</a>
           <span>{item.text}</span>
         </li>
@@ -255,7 +254,7 @@ function StorageBars({ repositories }: { repositories: RepositorySummary[] }) {
 
 // The outcome donut beside the runs per period.
 function RunPanels({ runs, span }: { runs: Run[]; span: Span }) {
-  return <div class="stack"><OutcomeDonut runs={runs} span={span} /><RunsChart runs={runs} span={span} /></div>;
+  return <div className="stack"><OutcomeDonut runs={runs} span={span} /><RunsChart runs={runs} span={span} /></div>;
 }
 
 // How the finished runs of the period ended, with the share that succeeded in the middle.
@@ -340,13 +339,13 @@ function RunningList({ runs }: { runs: Run[] }) {
   const running = runs.filter((run) => run.state === "running");
   if (running.length === 0) return <Empty title="Nothing is running." />;
   return (
-    <ul class="plain-list">
+    <ul className="plain-list">
       {running.map((run) => (
         <li key={run.id}>
           <RunBadge state={run.state} />{" "}
           <a href={link(["runs", String(run.id)])}>{`${run.kind} #${run.id}`}</a>
-          <span class="muted">{` on ${run.target_id}, started ${age(run.started_epoch)}`}</span>
-          {run.progress && <div class="muted small">{run.progress}</div>}
+          <span className="muted">{` on ${run.target_id}, started ${age(run.started_epoch)}`}</span>
+          {run.progress && <div className="muted small">{run.progress}</div>}
         </li>
       ))}
     </ul>
@@ -363,12 +362,12 @@ function UpcomingList({ timers, tasks }: { timers: TimerRow[]; tasks: TaskView[]
   ].sort((first, second) => first.epoch - second.epoch).slice(0, 8);
   if (next.length === 0) return <Empty title="Nothing scheduled." hint="Tasks show once a job has a schedule, and timers are read from each host's systemd." />;
   return (
-    <ul class="plain-list">
+    <ul className="plain-list">
       {next.map((item, index) => (
         <li key={index}>
           <strong title={stamp(item.epoch)}>{item.epoch <= now_seconds() ? "due now" : until(item.epoch)}</strong>{" "}
           {item.task && <Chip>task</Chip>}{item.task ? " " : null}
-          <span>{item.name}</span><span class="muted">{` · ${item.where}`}</span>
+          <span>{item.name}</span><span className="muted">{` · ${item.where}`}</span>
         </li>
       ))}
     </ul>

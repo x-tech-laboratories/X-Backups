@@ -1,19 +1,18 @@
 // One target of a repository: its header and actions, then tabs for its overview (with the jobs writing to the repository,
 // its other targets and its own tasks), archives, runs, sources, schedule, events and config.
 
-import { Badge, Chip, Verdict } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { SearchBox, Select } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { Crumbs, Facts, Section, Tabs, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, Skeleton, use_resource, type Resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable, Pager, type Sorting } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
-import { Age } from "@x-tech-laboratories/x-libs/web/preact/time";
+import { Badge, Chip, Verdict } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { SearchBox, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { Crumbs, Facts, Section, Tabs, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, Skeleton, use_resource, type Resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable, Pager, type Sorting } from "@x-tech-laboratories/x-libs/web/react/table";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
+import { Age } from "@x-tech-laboratories/x-libs/web/react/time";
 import { age, duration, now_seconds, size, stamp } from "@x-tech-laboratories/x-libs/web/format";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
 import { sorting_from } from "@x-tech-laboratories/x-libs/web/tables";
-import { Fragment, type FunctionComponent } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { Fragment, useEffect, useRef, useState, type FunctionComponent } from "react";
 import { action_descriptions, run_action, start_action, type ActionTarget } from "../actions.tsx";
 import { overdue, repository_reasons } from "../attention.ts";
 import {
@@ -74,13 +73,13 @@ export function RepositoryView({ id, tab }: { id: string; tab: string }) {
   const target: ActionTarget = { target_id: id, repository_name: detail.data?.name ?? id, done: refresh };
   const TabView = tab_views[active];
   return (
-    <div class="page">
+    <div className="page">
       <Crumbs items={[["Repositories", link(["repositories"])], [id, null]]} />
       <div>
         <Loaded resource={detail} lines={2}>{(repository) => <RepositoryHeader repository={repository} target={target} />}</Loaded>
       </div>
       <Tabs active={active} items={tab_list.map(([tab_id, label]) => ({ id: tab_id, label, href: link(["repositories", id, ...(tab_id === "overview" ? [] : [tab_id])]) }))} />
-      <div class="stack">
+      <div className="stack">
         {detail.data === null
           ? <Skeleton lines={6} />
           : <TabView id={id} base={base} repository={detail.data} target={target} refreshes={refreshes} refresh={refresh} />}
@@ -104,31 +103,31 @@ function RepositoryHeader({ repository, target }: { repository: RepositoryDetail
   const reasons = repository_reasons(repository);
   const running = repository.running_run;
   return (
-    <header class="page-head">
-      <div class="page-title">
+    <header className="page-head">
+      <div className="page-title">
         <h1>{repository.name}</h1>
         <StatusBadge status={repository.status} />
         {repository.source === "declared"
           ? <Chip title="Set in the Nix configuration; edit it there">declared</Chip>
           : <Chip title="Added from this page; edit it on its Config tab">added here</Chip>}
-        {running && <a class="chip chip-info" href={link(["runs", String(running.id)])}>{`${running.kind} running${running.progress ? ` · ${running.progress}` : ""}`}</a>}
+        {running && <a className="chip chip-info" href={link(["runs", String(running.id)])}>{`${running.kind} running${running.progress ? ` · ${running.progress}` : ""}`}</a>}
         {repository.downloads.length > 0 && (
-          <a class="chip chip-info" href={link(["repositories", repository.id])}>
+          <a className="chip chip-info" href={link(["repositories", repository.id])}>
             {repository.downloads.length === 1 ? "download running" : `${repository.downloads.length} downloads running`}
           </a>
         )}
       </div>
-      <p class="muted">{target_label(repository)}{repository.repo ? ` · ${repository.repo}` : ""}{` · polled ${age(repository.last_poll_epoch)}`}</p>
+      <p className="muted">{target_label(repository)}{repository.repo ? ` · ${repository.repo}` : ""}{` · polled ${age(repository.last_poll_epoch)}`}</p>
       {can("operator") && (
-        <div class="head-actions">
+        <div className="head-actions">
           {buttons.map((action, index) => <ActionButton key={action.action_id} action={action} target={target} class_name={index === 0 ? "accent solid" : ""} />)}
           <button onClick={() => void poll_now(target)}>Poll now</button>
         </div>
       )}
       {reasons.length > 0 && (
-        <ul class="attention compact">
+        <ul className="attention compact">
           {reasons.map((reason, index) => (
-            <li key={index} class={`tone-edge-${reason.tone}`}>
+            <li key={index} className={`tone-edge-${reason.tone}`}>
               <Badge tone={reason.tone}>{reason.tone === "bad" ? "problem" : "warning"}</Badge><span>{reason.text}</span>
             </li>
           ))}
@@ -141,7 +140,7 @@ function RepositoryHeader({ repository, target }: { repository: RepositoryDetail
 function ActionButton({ action, target, class_name = "" }: { action: Action; target: ActionTarget; class_name?: string }) {
   const busy = action.state === "accent";
   return (
-    <button class={class_name || undefined} disabled={action.state === "disabled" || busy} title={action_descriptions[action.action_id]} onClick={() => start_action(target, action)}>
+    <button className={class_name || undefined} disabled={action.state === "disabled" || busy} title={action_descriptions[action.action_id]} onClick={() => start_action(target, action)}>
       {busy ? `${action.name} (running)` : action.name}
     </button>
   );
@@ -175,15 +174,15 @@ function OverviewTab({ id, base, repository, target, refreshes, refresh }: TabPr
     <DownloadsPanel repository={repository} refresh={refresh} />
     <Section title="Summary"><RepositoryFacts repository={repository} /></Section>
     <Section title={`The repository ${repository.repository}`}><RepositoryShared repository={repository} /></Section>
-    <Section title="Repository tasks" tools={<span class="muted small">compact and check run once for the whole repository</span>}>
+    <Section title="Repository tasks" tools={<span className="muted small">compact and check run once for the whole repository</span>}>
       <TasksTable tasks={repository.tasks} refresh={refresh} empty_hint="Compact and check show here once the repository has them." />
     </Section>
-    <Section title="History" tools={<span class="muted small">last 90 days</span>}>
-      <div class="charts">
+    <Section title="History" tools={<span className="muted small">last 90 days</span>}>
+      <div className="charts">
         <Loaded resource={history} lines={4}>{(answer) => <HistoryCharts repository={repository} {...answer} />}</Loaded>
       </div>
     </Section>
-    {can("operator") && <Section title="Maintenance"><div class="maintenance"><MaintenanceCards repository={repository} target={target} /></div></Section>}
+    {can("operator") && <Section title="Maintenance"><div className="maintenance"><MaintenanceCards repository={repository} target={target} /></div></Section>}
   </>;
 }
 
@@ -203,15 +202,15 @@ function DownloadsPanel({ repository, refresh }: { repository: RepositoryDetail;
   });
   return (
     <Section title="Downloads in progress">
-      <div class="stack">
-        <p class="muted small">Each holds the repository's lock until it ends; a backup that starts meanwhile waits for it.</p>
+      <div className="stack">
+        <p className="muted small">Each holds the repository's lock until it ends; a backup that starts meanwhile waits for it.</p>
         <DataTable<DownloadRecord> rows={repository.downloads} row_key={(download) => download.id} caption="Downloads in progress" columns={[
           { label: "What", cell: (download) => download.what },
           { label: "Who", cell: (download) => download.who },
           { label: "Running", cell: (download) => <span title={stamp(download.started_epoch)}>{duration(now_seconds() - download.started_epoch)}</span> },
           {
             label: "", class: "actions-cell",
-            cell: (download) => can("operator") && <span class="row-actions"><button class="danger" onClick={() => stop(download)}>Stop</button></span>,
+            cell: (download) => can("operator") && <span className="row-actions"><button className="danger" onClick={() => stop(download)}>Stop</button></span>,
           },
         ]} />
       </div>
@@ -237,10 +236,10 @@ function RepositoryFacts({ repository }: { repository: RepositoryDetail }) {
           : repository.storage ? `${size(repository.storage.available)} free of ${size(repository.storage.size)}` : "—"],
         ["Saved", original && stored ? `${(original / stored).toFixed(1)}× smaller` : "—"],
       ]} />
-      <div class="verdicts">
+      <div className="verdicts">
         <Verdict ok={repository.checks_passed} label="checks" />
         <Verdict ok={repository.canary?.ok} label="restore canary" />
-        {repository.canary && <span class="muted small">{`canary checked ${age(repository.canary.checked_epoch)}`}</span>}
+        {repository.canary && <span className="muted small">{`canary checked ${age(repository.canary.checked_epoch)}`}</span>}
       </div>
     </div>
   );
@@ -250,7 +249,7 @@ function RepositoryFacts({ repository }: { repository: RepositoryDetail }) {
 function RepositoryShared({ repository }: { repository: RepositoryDetail }) {
   const others = repository.repository_targets;
   return (
-    <div class="stack">
+    <div className="stack">
       <p>
         {repository.writers.length === 0 ? "No job writes here; it is only watched." : <>
           {"Written by "}
@@ -274,8 +273,8 @@ function MaintenanceCards({ repository, target }: { repository: RepositoryDetail
   const actions = repository.actions.filter((action) => !header_actions.has(action.action_id) && action.state !== "hidden");
   if (actions.length === 0) return <Empty title="No maintenance actions for this repository." hint="Prune, delete and purge appear once allow_delete or allow_purge is set in its config." />;
   return <>{actions.map((action) => (
-    <div key={action.action_id} class={`maintenance-card${action.confirm ? " risky" : ""}`}>
-      <div><strong>{action.name}</strong><p class="muted small">{action_descriptions[action.action_id] ?? ""}</p></div>
+    <div key={action.action_id} className={`maintenance-card${action.confirm ? " risky" : ""}`}>
+      <div><strong>{action.name}</strong><p className="muted small">{action_descriptions[action.action_id] ?? ""}</p></div>
       <ActionButton action={action} target={target} class_name={action.confirm ? "danger" : ""} />
     </div>
   ))}</>;
@@ -360,7 +359,7 @@ function ArchivesTab({ repository, target }: TabProps) {
     const pages = Math.max(1, Math.ceil(sorted.length / page_size));
     const at = Math.min(page, pages);
     return <>
-      <p class="muted small" role="status">{`${shown.length} of ${repository.archives.length} archives`}</p>
+      <p className="muted small" role="status">{`${shown.length} of ${repository.archives.length} archives`}</p>
       <ArchivesTable repository={repository} archives={sorted.slice((at - 1) * page_size, at * page_size)} sorting={sorting} target={target} on_sort={(next) => {
         set_sorting(next);
         replace_query({ sort: next.key, dir: next.descending ? "desc" : null });
@@ -424,10 +423,10 @@ function ArchivesTable({ repository, archives, sorting, on_sort, target }: Archi
       { label: "Files", class: "number", cell: (archive) => archive.nfiles?.toLocaleString() ?? "—", sort: () => 0 },
       {
         label: "", class: "actions-cell", cell: (archive) => (
-          <span class="row-actions">
-            {can("operator") && archive.name !== oldest && <a class="button" href={archive_link(archive, "changes")}>Changes</a>}
-            {can("operator") && <a class="button" href={archive_link(archive, "files")}>Files</a>}
-            {can("operator") && repository.allow_delete && <button class="danger" onClick={() => delete_archive(target, archive.name)}>Delete</button>}
+          <span className="row-actions">
+            {can("operator") && archive.name !== oldest && <a className="button" href={archive_link(archive, "changes")}>Changes</a>}
+            {can("operator") && <a className="button" href={archive_link(archive, "files")}>Files</a>}
+            {can("operator") && repository.allow_delete && <button className="danger" onClick={() => delete_archive(target, archive.name)}>Delete</button>}
           </span>
         ),
       },
@@ -440,7 +439,7 @@ export function delete_archive(target: ActionTarget, archive: string, after?: ()
     title: `Delete ${archive}?`,
     message: <div>
       <p>{`This deletes the archive ${archive} from ${target.repository_name}. It cannot be undone.`}</p>
-      <p class="muted">Data other archives share stays; run Compact afterwards to free what only this archive held.</p>
+      <p className="muted">Data other archives share stays; run Compact afterwards to free what only this archive held.</p>
     </div>,
     confirm_label: "Delete archive",
     busy_label: "Deleting…",
@@ -499,18 +498,18 @@ function SourcesTab({ repository }: TabProps) {
     <Section title="Kept">
       {retention.length > 0
         ? <Facts layout="rows" rows={retention.map(([key, value]): Fact => [key.replace("keep_", "").replace("_", " "), String(value)])} />
-        : <p class="muted">No retention is set, so nothing is pruned.</p>}
+        : <p className="muted">No retention is set, so nothing is pruned.</p>}
     </Section>
     <Section title="Changes between archives">
-      <p class="muted">Open an archive's Changes tab to see what changed since the one before it. <a href={link(["repositories", repository.id, "archives"])}>Archives</a></p>
+      <p className="muted">Open an archive's Changes tab to see what changed since the one before it. <a href={link(["repositories", repository.id, "archives"])}>Archives</a></p>
     </Section>
   </>;
 }
 
 function PathList({ items, none }: { items: string[]; none: string }) {
   return items.length > 0
-    ? <ul class="paths">{items.map((item) => <li key={item}><code>{item}</code></li>)}</ul>
-    : <p class="muted">{none}</p>;
+    ? <ul className="paths">{items.map((item) => <li key={item}><code>{item}</code></li>)}</ul>
+    : <p className="muted">{none}</p>;
 }
 
 // ── Schedule tab ─────────────────────────────────────────────────────────────
@@ -576,7 +575,7 @@ function ConfigTab({ base, refreshes }: TabProps) {
   }, [refreshes]);
 
   return (
-    <div class="stack">
+    <div className="stack">
       <Loaded resource={loaded} lines={6}>
         {(answer) => answer.config.editable
           ? <ConfigEditor key={load_key(answer)} base={base} config={answer.config} info={answer.info} reload={() => loaded.reload(true)} />
@@ -588,7 +587,7 @@ function ConfigTab({ base, refreshes }: TabProps) {
 
 function ConfigLocked({ config }: { config: RepositoryConfig }) {
   return <>
-    <div class="banner" role="note">
+    <div className="banner" role="note">
       {config.source === "declared"
         ? <><strong>Declared in the Nix configuration.</strong> Change it there, under services.x-backups.repositories or the job, sources and host it is built from, and switch the system to apply it.</>
         : config.config_mode !== "declarative"
@@ -624,7 +623,7 @@ function ConfigEditor({ base, config, info, reload }: { base: string; config: Re
       title: `Stop watching ${name}?`,
       message: <div>
         <p>X-Backups stops polling it and takes it off this page. The borg repository and its archives are not touched.</p>
-        <p class="muted">Its history stays in X-Backups' state, and adding it again under the same name brings that back.</p>
+        <p className="muted">Its history stays in X-Backups' state, and adding it again under the same name brings that back.</p>
       </div>,
       confirm_label: "Stop watching",
       busy_label: "Removing…",
@@ -639,13 +638,13 @@ function ConfigEditor({ base, config, info, reload }: { base: string; config: Re
   }
 
   return <>
-    <div class="banner" role="note"><strong>Added from this page.</strong> Saving applies the change at once; nothing restarts.</div>
+    <div className="banner" role="note"><strong>Added from this page.</strong> Saving applies the change at once; nothing restarts.</div>
     <ConfigTools fields={config.fields} />
     <ConfigForm fields={info.fields} values={config.fields} adding={false} handle={form} />
-    <div class="form-actions">
-      <button class="accent solid" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+    <div className="form-actions">
+      <button className="accent solid" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
       <button onClick={reload}>Discard changes</button>
-      <button class="danger" onClick={stop_watching}>Stop watching</button>
+      <button className="danger" onClick={stop_watching}>Stop watching</button>
     </div>
   </>;
 }

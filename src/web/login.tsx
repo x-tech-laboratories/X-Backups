@@ -1,7 +1,7 @@
 // The login page: a user name and password, then the code from an authenticator app when the account asks for one, or single sign-on.
 
 import { current_route } from "@x-tech-laboratories/x-libs/web/router";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { api, ApiError } from "./api.ts";
 
 // ── Login ────────────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ export function Login({ on_login }: { on_login: () => Promise<void> }) {
     if (asks_code) code_input.current?.focus();
   }, [asks_code]);
 
-  async function submit(event: Event): Promise<void> {
+  async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     set_busy(true);
     set_message("");
@@ -49,32 +49,32 @@ export function Login({ on_login }: { on_login: () => Promise<void> }) {
     }
   }
 
-  const text = (event: Event) => (event.currentTarget as HTMLInputElement).value;
+  const text = (event: ChangeEvent<HTMLInputElement>) => event.currentTarget.value;
 
   return (
-    <form class="login" onSubmit={submit}>
+    <form className="login" onSubmit={submit}>
       <h1>X-Backups</h1>
-      <label class="field">
-        <span class="field-label">User name</span>
-        <input ref={name_input} type="text" name="username" autocomplete="username" aria-label="User name" autocapitalize="none"
-          placeholder={info?.admin_name} value={name} onInput={(event) => set_name(text(event))} />
+      <label className="field">
+        <span className="field-label">User name</span>
+        <input ref={name_input} type="text" name="username" autoComplete="username" aria-label="User name" autoCapitalize="none"
+          placeholder={info?.admin_name} value={name} onChange={(event) => set_name(text(event))} />
       </label>
-      <label class="field">
-        <span class="field-label">Password</span>
-        <input ref={password_input} type="password" name="password" autocomplete="current-password" required aria-label="Password"
-          value={password} onInput={(event) => set_password(text(event))} />
+      <label className="field">
+        <span className="field-label">Password</span>
+        <input ref={password_input} type="password" name="password" autoComplete="current-password" required aria-label="Password"
+          value={password} onChange={(event) => set_password(text(event))} />
       </label>
-      <label class="field" hidden={!asks_code}>
-        <span class="field-label">Code from your authenticator app, or a recovery code</span>
-        <input ref={code_input} type="text" name="one-time-code" autocomplete="one-time-code" inputMode="numeric" aria-label="Code from your authenticator app"
-          value={code} onInput={(event) => set_code(text(event))} />
+      <label className="field" hidden={!asks_code}>
+        <span className="field-label">Code from your authenticator app, or a recovery code</span>
+        <input ref={code_input} type="text" name="one-time-code" autoComplete="one-time-code" inputMode="numeric" aria-label="Code from your authenticator app"
+          value={code} onChange={(event) => set_code(text(event))} />
       </label>
-      <button type="submit" class="accent solid" disabled={busy}>Log in</button>
-      <p class="tone-bad" role="alert">{message}</p>
+      <button type="submit" className="accent solid" disabled={busy}>Log in</button>
+      <p className="tone-bad" role="alert">{message}</p>
       <div>
         {info?.oidc && <>
-          <p class="muted small">or</p>
-          <a class="button" href="/api/auth/oidc/start">{`Log in with ${info.oidc.label}`}</a>
+          <p className="muted small">or</p>
+          <a className="button" href="/api/auth/oidc/start">{`Log in with ${info.oidc.label}`}</a>
         </>}
       </div>
     </form>

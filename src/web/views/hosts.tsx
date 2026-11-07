@@ -2,15 +2,15 @@
 // running there, its runs and timers, and for an admin, enrolling and revoking its agent.
 
 import { age, now_seconds, plural, size, stamp } from "@x-tech-laboratories/x-libs/web/format";
-import { Badge, Chip, type Tone } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { Select } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { confirm_dialog, Dialog, open_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { Crumbs, Facts, Section, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable, type Sorting } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { Badge, Chip, type Tone } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { Select } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { confirm_dialog, Dialog, open_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { Crumbs, Facts, Section, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable, type Sorting } from "@x-tech-laboratories/x-libs/web/react/table";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import { api, query, send, type HostRow, type HostSample, type RepositorySummary, type Run, type SourceRow, type TimerRow } from "../api.ts";
 import { Sparkline } from "../charts.tsx";
 import { can } from "../session.ts";
@@ -70,8 +70,8 @@ export function HostsView() {
   use_changes((changes) => { if (touches(changes, null, ["hosts", "config"])) answer.reload(true); });
 
   return (
-    <div class="page">
-      <div class="page-title spread"><h1>Hosts</h1>{can("admin") && <a class="button" href={link(["settings", "new", "hosts"])}>Add host</a>}</div>
+    <div className="page">
+      <div className="page-title spread"><h1>Hosts</h1>{can("admin") && <a className="button" href={link(["settings", "new", "hosts"])}>Add host</a>}</div>
       <Toolbar>
         <Select label="Agent" options={state_filters} value={state} on_change={(value) => { set_state(value); replace_query({ state: value }); }} />
       </Toolbar>
@@ -97,7 +97,7 @@ function HostsTable({ hosts, samples }: { hosts: HostRow[]; samples: HostSample[
       { label: "Host", cell: (host) => <a href={link(["hosts", host.name])}>{host.name}</a>, sort: (host) => host.name },
       { label: "Kind", cell: (host) => host.kind === "storage-only" ? "storage-only" : host.own ? "managed, this server" : "managed", sort: (host) => host.kind },
       { label: "Agent", cell: (host) => <AgentBadge host={host} />, sort: (host) => agent_state(host) },
-      { label: "Version", cell: (host) => host.agent_version ?? <span class="muted">—</span> },
+      { label: "Version", cell: (host) => host.agent_version ?? <span className="muted">—</span> },
       { label: "Last seen", cell: (host) => <LastSeen host={host} />, sort: (host) => host.last_seen_epoch },
       { label: "Load, memory, disk", cell: (host) => <HealthSparklines samples={samples.filter((sample) => sample.host === host.name)} /> },
       { label: "Sources", class: "number", cell: (host) => host.sources.length, sort: (host) => host.sources.length },
@@ -108,13 +108,13 @@ function HostsTable({ hosts, samples }: { hosts: HostRow[]; samples: HostSample[
 
 function LastSeen({ host }: { host: HostRow }) {
   if (host.built_in) return <>now</>;
-  if (host.last_seen_epoch === null) return <span class="muted">never</span>;
+  if (host.last_seen_epoch === null) return <span className="muted">never</span>;
   return <span title={stamp(host.last_seen_epoch)}>{host.connected ? "now" : age(host.last_seen_epoch)}</span>;
 }
 
 // The newest load against the CPUs, memory in use and root disk full, with one small line of the last day for each once there are two readings to draw.
 function HealthSparklines({ samples }: { samples: HostSample[] }) {
-  if (samples.length === 0) return <span class="muted">no readings</span>;
+  if (samples.length === 0) return <span className="muted">no readings</span>;
   const latest = samples.at(-1)!;
   const load = samples.map((sample): [number, number] => [sample.epoch, sample.load1 / sample.cpus * 100]);
   const memory = samples.map((sample): [number, number] => [sample.epoch, (1 - sample.memory_available / sample.memory_total) * 100]);
@@ -123,13 +123,13 @@ function HealthSparklines({ samples }: { samples: HostSample[] }) {
   return (
     <div>
       {samples.length > 1 && (
-        <div class="row-actions">
+        <div className="row-actions">
           <Sparkline label={texts[0]} points={load} top={100} color="var(--series-1)" />
           <Sparkline label={texts[1]} points={memory} top={100} color="var(--series-2)" />
           <Sparkline label={texts[2]} points={disk} top={100} color="var(--series-3)" />
         </div>
       )}
-      <div class="muted small">{texts.join(" · ")}</div>
+      <div className="muted small">{texts.join(" · ")}</div>
     </div>
   );
 }
@@ -140,10 +140,10 @@ const reading_tone = (percent: number) => percent >= reading_danger_percent ? "v
 
 function Reading({ name, points, text }: { name: string; points: [number, number][]; text: string }) {
   return (
-    <div class="host-reading">
-      <span class="reading-label">{name}</span>
+    <div className="host-reading">
+      <span className="reading-label">{name}</span>
       <Sparkline label={`${name}: ${text}`} points={points} top={100} color={reading_tone(points.at(-1)![1])} />
-      <span class="meter-value">{text}</span>
+      <span className="meter-value">{text}</span>
     </div>
   );
 }
@@ -154,7 +154,7 @@ export function HostHealth({ samples }: { samples: HostSample[] }) {
   const by_host = new Map<string, HostSample[]>();
   for (const sample of samples) by_host.set(sample.host, [...(by_host.get(sample.host) ?? []), sample]);
   return (
-    <div class="hosts">
+    <div className="hosts">
       {[...by_host].sort(([first], [second]) => first.localeCompare(second)).map(([host, readings]) => {
         const latest = readings.at(-1)!;
         const load = readings.map((sample): [number, number] => [sample.epoch, sample.load1 / sample.cpus * 100]);
@@ -191,7 +191,7 @@ export function HostView({ name }: { name: string }) {
   const found = answer.data === null || host !== undefined;
 
   return (
-    <div class="page">
+    <div className="page">
       <Crumbs items={[["Hosts", link(["hosts"])], [name, null]]} />
       <div>
         <Loaded resource={answer} lines={2}>
@@ -200,7 +200,7 @@ export function HostView({ name }: { name: string }) {
             : <HostHeader host={host} refresh={refresh} />}
         </Loaded>
       </div>
-      <Section title="Health" tools={<span class="muted small">last 24 hours</span>}>
+      <Section title="Health" tools={<span className="muted small">last 24 hours</span>}>
         <div>
           {found && (
             <Loaded resource={samples} lines={2}>
@@ -213,7 +213,7 @@ export function HostView({ name }: { name: string }) {
           )}
         </div>
       </Section>
-      <div class="columns">
+      <div className="columns">
         <Section title="Sources">
           <div>
             {found && <Loaded resource={answer} lines={2}>{([, all_sources]) => <SourcesList sources={all_sources.filter((source) => source.host === name)} />}</Loaded>}
@@ -244,7 +244,7 @@ export function HostView({ name }: { name: string }) {
           {found && <Loaded resource={runs} lines={3}>{(rows) => <RunsTable runs={rows} with_repository refresh={refresh} />}</Loaded>}
         </div>
       </Section>
-      <Section title="Host timers" tools={<span class="muted small">read where systemd has them</span>}>
+      <Section title="Host timers" tools={<span className="muted small">read where systemd has them</span>}>
         <div>
           {found && <Loaded resource={timers} lines={2}>{(all) => <TimersTable timers={all.filter((timer) => timer.host === name)} with_host={false} />}</Loaded>}
         </div>
@@ -264,9 +264,9 @@ function HostHeader({ host, refresh }: { host: HostRow; refresh: Refresh }) {
     ["Repositories", `${host.repositories.length} ${host.repositories.length === 1 ? "repository" : "repositories"}`],
   ];
   return (
-    <header class="page-head">
-      <div class="page-title"><h1>{host.name}</h1><AgentBadge host={host} />{host.own && <Chip>this server</Chip>}</div>
-      <p class="muted" role="status" aria-live="polite">
+    <header className="page-head">
+      <div className="page-title"><h1>{host.name}</h1><AgentBadge host={host} />{host.own && <Chip>this server</Chip>}</div>
+      <p className="muted" role="status" aria-live="polite">
         {host.kind === "storage-only" ? "Storage-only: holds repositories reached through borg serve." : host.address ?? "This server's own machine."}
         {host.agent_version ? ` · agent ${host.agent_version}` : ""}
         {host.connected_epoch ? ` · connected ${age(host.connected_epoch)}` : ""}
@@ -274,16 +274,16 @@ function HostHeader({ host, refresh }: { host: HostRow; refresh: Refresh }) {
       </p>
       <Facts rows={rows} />
       {state === "never_enrolled" && (
-        <div class="banner" role="note">
+        <div className="banner" role="note">
           <strong>Enrol this host's agent.</strong> Until it connects, backups and tasks on this host wait.
           {can("admin") ? "" : " An admin issues its token."}
         </div>
       )}
       {can("admin") && host.kind === "managed" && !host.own && (
-        <div class="head-actions">
-          {host.agent_key === null && <button class={host.enrolled ? undefined : "accent solid"} onClick={() => enrol(host, refresh)}>{host.enrolled ? "Issue a new token" : "Enrol agent"}</button>}
-          {host.enrolled && <button class="danger" onClick={() => revoke(host, refresh)}>Revoke token</button>}
-          <a class="button" href={link(["settings", "hosts", host.name])}>Config</a>
+        <div className="head-actions">
+          {host.agent_key === null && <button className={host.enrolled ? undefined : "accent solid"} onClick={() => enrol(host, refresh)}>{host.enrolled ? "Issue a new token" : "Enrol agent"}</button>}
+          {host.enrolled && <button className="danger" onClick={() => revoke(host, refresh)}>Revoke token</button>}
+          <a className="button" href={link(["settings", "hosts", host.name])}>Config</a>
         </div>
       )}
     </header>
@@ -299,11 +299,11 @@ function login_text(host: HostRow): string {
 function SourcesList({ sources }: { sources: SourceRow[] }) {
   if (sources.length === 0) return <Empty title="No sources on this host." />;
   return (
-    <ul class="plain-list">
+    <ul className="plain-list">
       {sources.map((source) => (
         <li key={source.name}>
           <a href={link(["sources", source.name])}>{source.name}</a>
-          <span class="muted">{` · ${source.paths.join(", ")}`}</span>
+          <span className="muted">{` · ${source.paths.join(", ")}`}</span>
         </li>
       ))}
     </ul>
@@ -314,13 +314,13 @@ function SourcesList({ sources }: { sources: SourceRow[] }) {
 function StoredList({ host, targets }: { host: HostRow; targets: RepositorySummary[] }) {
   if (host.repositories.length === 0) return <Empty title="No repositories stored here." />;
   return (
-    <ul class="plain-list">
+    <ul className="plain-list">
       {host.repositories.map((repository) => {
         const target = targets.find((item) => item.repository === repository);
         return (
           <li key={repository}>
             {target ? <a href={link(["repositories", target.id])}>{repository}</a> : repository}
-            {target && <span class="muted">{` · last backup ${age(target.last_backup_epoch)}`}</span>}
+            {target && <span className="muted">{` · last backup ${age(target.last_backup_epoch)}`}</span>}
           </li>
         );
       })}
@@ -377,18 +377,18 @@ function TokenDialog({ host, token, close }: { host: string; token: string; clos
     <div><button onClick={() => void navigator.clipboard?.writeText(text).then(() => toast(`${what} copied.`))}>{label}</button></div>
   );
   return (
-    <Dialog title={`${host}'s agent token`} on_close={close} wide buttons={<button class="accent solid" onClick={close}>I have saved it</button>}>
-      <div class="stack">
+    <Dialog title={`${host}'s agent token`} on_close={close} wide buttons={<button className="accent solid" onClick={close}>I have saved it</button>}>
+      <div className="stack">
         <p>Shown this once. Put it in a file on the host, readable only by root.</p>
-        <pre class="output secret-once">{token}</pre>
+        <pre className="output secret-once">{token}</pre>
         {copy(token, "Token", "Copy token")}
         <p>On NixOS, enable the flake's agent module:</p>
-        <pre class="output">{nix}</pre>
+        <pre className="output">{nix}</pre>
         {copy(nix, "Nix", "Copy the Nix")}
         <p>Elsewhere, run the agent package with:</p>
-        <pre class="output">{environment}</pre>
+        <pre className="output">{environment}</pre>
         {copy(environment, "Variables", "Copy the variables")}
-        {location.protocol !== "https:" && <p class="tone-warn small">The agent needs wss:// to reach a server on another machine; serve this page over HTTPS for the URL above to work.</p>}
+        {location.protocol !== "https:" && <p className="tone-warn small">The agent needs wss:// to reach a server on another machine; serve this page over HTTPS for the URL above to work.</p>}
       </div>
     </Dialog>
   );
@@ -399,7 +399,7 @@ function revoke(host: HostRow, refresh: Refresh): void {
     title: `Revoke ${host.name}'s token?`,
     message: <div>
       <p>{`Its agent is hung up on and cannot connect again. Backups and tasks on ${host.name} wait until it is enrolled again.`}</p>
-      <p class="muted">Runs it has going carry on there and are followed again once it reconnects with a new token.</p>
+      <p className="muted">Runs it has going carry on there and are followed again once it reconnects with a new token.</p>
     </div>,
     confirm_label: "Revoke token",
     busy_label: "Revoking…",

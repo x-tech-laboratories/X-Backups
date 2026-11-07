@@ -1,10 +1,9 @@
 // A host's, repository's, source's or job's config as a form built from the fields the server lists, or read-only with
 // its source named.
 
-import { text_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { Facts, Section, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import type { ComponentChildren, RefObject } from "preact";
-import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import { text_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { Facts, Section, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { SECRET_MASK, type FieldKind, type FieldSpec } from "../api.ts";
 
 // The fields in groups, in the order a reader looks for them; anything unlisted lands in Other.
@@ -77,7 +76,7 @@ interface ConfigFormProps {
   // Lines under fields that read differently on this kind, over the usual ones.
   hints?: Record<string, string>;
   // Filled with the form's handle while it is shown.
-  handle: RefObject<ConfigFormHandle>;
+  handle: RefObject<ConfigFormHandle | null>;
 }
 
 // The fields in their groups; the inputs keep what is typed themselves, so the page reads them only when it saves.
@@ -114,30 +113,30 @@ export function ConfigForm({ fields, values, adding, choices, hints, handle }: C
   const listed = new Set(field_groups.flatMap(([, names]) => names));
   const other = fields.map((field) => field.name).filter((name) => !listed.has(name));
   return (
-    <div class="stack">
-      <div ref={banner} class="failure" role="alert" hidden={error === null || error.field !== null}>{error?.field === null ? error.message : ""}</div>
+    <div className="stack">
+      <div ref={banner} className="failure" role="alert" hidden={error === null || error.field !== null}>{error?.field === null ? error.message : ""}</div>
       {[...field_groups, ["Other", other] as [string, string[]]].map(([title, names]) => {
         const present = names.filter((name) => kinds.has(name));
         if (present.length === 0) return null;
         const has_values = present.some((name) => values[name] !== undefined && values[name] !== null);
         return (
-          <details key={title} class="panel form-group" open={open_groups.has(title) || (!adding && has_values)}>
+          <details key={title} className="panel form-group" open={open_groups.has(title) || (!adding && has_values)}>
             <summary><h2>{title}</h2></summary>
-            <div class="form-rows">
+            <div className="form-rows">
               {present.map((name) => {
                 const id = `field-${name}`;
                 const at_fault = error?.field === name;
                 const choice = choices?.[name];
                 const hint = hints?.[name] ?? field_hints[name];
                 return (
-                  <div key={name} class="form-row">
-                    <label for={id}><code>{name}</code></label>
+                  <div key={name} className="form-row">
+                    <label htmlFor={id}><code>{name}</code></label>
                     <div>
                       {choice
                         ? <ChoiceInput name={name} choice={choice} value={values[name]} id={id} at_fault={at_fault} />
                         : <FieldInput name={name} kind={kinds.get(name)!} value={values[name]} id={id} adding={adding} at_fault={at_fault} />}
-                      {hint && <p class="muted small">{hint}</p>}
-                      <p class="field-error tone-bad small" id={`${id}-error`} hidden={!at_fault}>{at_fault ? error.message : ""}</p>
+                      {hint && <p className="muted small">{hint}</p>}
+                      <p className="field-error tone-bad small" id={`${id}-error`} hidden={!at_fault}>{at_fault ? error.message : ""}</p>
                     </div>
                   </div>
                 );
@@ -155,10 +154,10 @@ function FieldInput({ name, kind, value, id, adding, at_fault }: { name: string;
   const described = at_fault ? `${id}-error` : undefined;
   if (kind === "boolean") {
     return (
-      <select id={id} aria-describedby={described}>
-        <option value="" selected={value === undefined}>default</option>
-        <option value="true" selected={value === true}>yes</option>
-        <option value="false" selected={value === false}>no</option>
+      <select id={id} aria-describedby={described} defaultValue={value === true ? "true" : value === false ? "false" : ""}>
+        <option value="">default</option>
+        <option value="true">yes</option>
+        <option value="false">no</option>
       </select>
     );
   }
@@ -173,7 +172,7 @@ function FieldInput({ name, kind, value, id, adding, at_fault }: { name: string;
     <input
       id={id}
       type={secret ? "password" : kind === "number" ? "number" : "text"}
-      autocomplete={secret ? "new-password" : "off"}
+      autoComplete={secret ? "new-password" : "off"}
       placeholder={kind_placeholders[kind]}
       // A name names archives and units, so an existing repository keeps it.
       readOnly={name === "name" && !adding}
@@ -190,18 +189,18 @@ function ChoiceInput({ name, choice, value, id, at_fault }: { name: string; choi
   const described = at_fault ? `${id}-error` : undefined;
   if (!choice.multiple) {
     return (
-      <select id={id} aria-describedby={described}>
-        <option value="" selected={current.length === 0}>none</option>
-        {options.map((option) => <option key={option} value={option} selected={current.includes(option)}>{option}</option>)}
+      <select id={id} aria-describedby={described} defaultValue={current[0] ?? ""}>
+        <option value="">none</option>
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     );
   }
   return (
-    <fieldset class="check-group" id={id} tabIndex={-1} aria-describedby={described}>
-      <legend class="visually-hidden">{name}</legend>
+    <fieldset className="check-group" id={id} tabIndex={-1} aria-describedby={described}>
+      <legend className="visually-hidden">{name}</legend>
       {options.length === 0
-        ? <p class="muted small">None to pick from yet.</p>
-        : options.map((option) => <label key={option} class="check"><input type="checkbox" value={option} defaultChecked={current.includes(option)} />{` ${option}`}</label>)}
+        ? <p className="muted small">None to pick from yet.</p>
+        : options.map((option) => <label key={option} className="check"><input type="checkbox" value={option} defaultChecked={current.includes(option)} />{` ${option}`}</label>)}
     </fieldset>
   );
 }
@@ -260,9 +259,9 @@ export function ConfigReadOnly({ fields }: { fields: Record<string, unknown> }) 
     ))}</>;
 }
 
-function config_value(value: unknown): ComponentChildren {
-  if (value === SECRET_MASK) return <span class="muted">set, not shown</span>;
-  if (Array.isArray(value)) return value.length === 0 ? "none" : <ul class="paths">{value.map((item, index) => <li key={index}><code>{String(item)}</code></li>)}</ul>;
+function config_value(value: unknown): ReactNode {
+  if (value === SECRET_MASK) return <span className="muted">set, not shown</span>;
+  if (Array.isArray(value)) return value.length === 0 ? "none" : <ul className="paths">{value.map((item, index) => <li key={index}><code>{String(item)}</code></li>)}</ul>;
   if (typeof value === "object" && value !== null) return <code>{JSON.stringify(value)}</code>;
   if (typeof value === "boolean") return value ? "yes" : "no";
   return <code>{String(value)}</code>;

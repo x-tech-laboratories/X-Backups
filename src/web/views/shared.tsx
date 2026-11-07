@@ -1,11 +1,11 @@
 // What several pages show the same way: repository cards, the runs table, the events list, the timers table and the run filters.
 
-import { Chip, Chips, Verdict } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { Empty } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable, type Sorting, type TableColumn } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
-import { Age } from "@x-tech-laboratories/x-libs/web/preact/time";
+import { Chip, Chips, Verdict } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { Empty } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable, type Sorting, type TableColumn } from "@x-tech-laboratories/x-libs/web/react/table";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
+import { Age } from "@x-tech-laboratories/x-libs/web/react/time";
 import { age, duration, now_seconds, size, stamp, until } from "@x-tech-laboratories/x-libs/web/format";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
 import { show_outcome } from "../actions.tsx";
@@ -64,17 +64,17 @@ export function RepositoryCard({ repository }: { repository: RepositorySummary }
   const late = repository.last_poll_epoch !== null && overdue(repository);
   const running = repository.running_run;
   return (
-    <a class={`card tone-edge-${level_tone[repository.level]}`} href={link(["repositories", repository.id])}>
-      <div class="card-head"><strong>{repository.repository}</strong><StatusBadge status={repository.status} /></div>
-      <div class="muted card-host">{repository.job === null ? `watched from ${repository.host}` : `${repository.job} from ${repository.host}`}</div>
+    <a className={`card tone-edge-${level_tone[repository.level]}`} href={link(["repositories", repository.id])}>
+      <div className="card-head"><strong>{repository.repository}</strong><StatusBadge status={repository.status} /></div>
+      <div className="muted card-host">{repository.job === null ? `watched from ${repository.host}` : `${repository.job} from ${repository.host}`}</div>
       <dl>
         <dt>Last backup</dt>
-        <dd class={late ? "tone-bad" : ""}>{age(repository.last_backup_epoch)}{late ? " · overdue" : ""}</dd>
+        <dd className={late ? "tone-bad" : ""}>{age(repository.last_backup_epoch)}{late ? " · overdue" : ""}</dd>
         <dt>Archives</dt><dd>{repository.archive_count ?? "—"}</dd>
         <dt>Stored</dt><dd>{size(repository.stats?.deduplicated_size)}</dd>
         <dt>Original</dt><dd>{size(repository.stats?.original_size)}</dd>
       </dl>
-      <div class="verdicts"><Verdict ok={repository.checks_passed} label="checks" /><Verdict ok={repository.canary?.ok} label="canary" /></div>
+      <div className="verdicts"><Verdict ok={repository.checks_passed} label="checks" /><Verdict ok={repository.canary?.ok} label="canary" /></div>
       <Chips>
         {repository.source === "declared"
           ? <Chip title="Set in the Nix configuration; edit it there">declared</Chip>
@@ -95,11 +95,11 @@ export function RepositoriesTable({ repositories, sorting, on_sort }: Repositori
   const columns: TableColumn<RepositorySummary>[] = [
     { label: "Name", cell: (row) => <a href={link(["repositories", row.id])}>{row.repository}</a>, sort: (row) => row.name.toLowerCase() },
     { label: "Status", cell: (row) => <StatusBadge status={row.status} />, sort: (row) => status_rank(row) },
-    { label: "Job", cell: (row) => row.job === null ? <span class="muted">watched only</span> : <a href={link(["jobs", row.job])}>{row.job}</a>, sort: (row) => row.job ?? "" },
+    { label: "Job", cell: (row) => row.job === null ? <span className="muted">watched only</span> : <a href={link(["jobs", row.job])}>{row.job}</a>, sort: (row) => row.job ?? "" },
     { label: "Host", cell: (row) => <a href={link(["hosts", row.host])}>{row.host}</a>, sort: (row) => row.host },
     {
       label: "Last backup", sort: (row) => row.last_backup_epoch ?? 0,
-      cell: (row) => <span class={row.last_poll_epoch !== null && overdue(row) ? "tone-bad" : ""} title={row.last_backup_epoch ? stamp(row.last_backup_epoch) : undefined}>{age(row.last_backup_epoch)}</span>,
+      cell: (row) => <span className={row.last_poll_epoch !== null && overdue(row) ? "tone-bad" : ""} title={row.last_backup_epoch ? stamp(row.last_backup_epoch) : undefined}>{age(row.last_backup_epoch)}</span>,
     },
     { label: "Archives", class: "number", cell: (row) => row.archive_count ?? "—", sort: (row) => row.archive_count },
     { label: "Stored", class: "number", cell: (row) => size(row.stats?.deduplicated_size), sort: (row) => row.stats?.deduplicated_size ?? null },
@@ -139,9 +139,9 @@ function DurationBar({ run, median }: { run: Run; median: number | undefined }) 
   const share = Math.min(100, took / median * 50);
   const tone = took > median * 2 ? "warn" : "info";
   return (
-    <span class="duration" title={`Usually ${duration(median)}`}>
-      <span class="duration-text">{text}</span>
-      <span class="duration-track" aria-hidden="true"><span class={`duration-fill tone-fill-${tone}`} style={`width: ${share.toFixed(0)}%`} /></span>
+    <span className="duration" title={`Usually ${duration(median)}`}>
+      <span className="duration-text">{text}</span>
+      <span className="duration-track" aria-hidden="true"><span className={`duration-fill tone-fill-${tone}`} style={{ width: `${share.toFixed(0)}%` }} /></span>
     </span>
   );
 }
@@ -159,11 +159,11 @@ export function RunsTable({ runs, with_repository, refresh, usual }: RunsTablePr
   const columns: TableColumn<Run>[] = [
     ...(with_repository ? [{ label: "Target", cell: (run: Run) => <a href={link(["repositories", run.target_id])}>{run.target_id}</a> }] : []),
     { label: "Run", cell: (run) => <a href={link(["runs", String(run.id)])}>{`${run.kind} #${run.id}`}</a> },
-    { label: "Task", cell: (run) => run.task === null ? <span class="muted">by hand</span> : <a href={link(["runs"], { task: run.task })}>{run.task}</a> },
+    { label: "Task", cell: (run) => run.task === null ? <span className="muted">by hand</span> : <a href={link(["runs"], { task: run.task })}>{run.task}</a> },
     {
       label: "State", cell: (run) => <>
         <RunStateBadge run={run} />
-        {run.progress && run.state === "running" && run.condition === null && <span class="muted">{` ${run.progress}`}</span>}
+        {run.progress && run.state === "running" && run.condition === null && <span className="muted">{` ${run.progress}`}</span>}
       </>,
     },
     { label: "Started", cell: (run) => <Age epoch={run.started_epoch} /> },
@@ -176,8 +176,8 @@ export function RunsTable({ runs, with_repository, refresh, usual }: RunsTablePr
 export function RunButtons({ run, refresh }: { run: Run; refresh: Refresh }) {
   if (!can("operator")) return null;
   return (
-    <span class="row-actions">
-      {run.state === "running" && <button class="danger" onClick={() => cancel_run(run, refresh)}>Cancel</button>}
+    <span className="row-actions">
+      {run.state === "running" && <button className="danger" onClick={() => cancel_run(run, refresh)}>Cancel</button>}
       {run.retry && <button onClick={() => retry_run(run, refresh)}>Retry</button>}
     </span>
   );
@@ -220,13 +220,13 @@ export function retry_run(run: Run, refresh: Refresh): void {
 export function EventsList({ events, with_repository }: { events: EventRow[]; with_repository: boolean }) {
   if (events.length === 0) return <Empty title="Nothing logged here." hint="Warnings, errors and actions show up here as they happen." />;
   return (
-    <ul class="events">
+    <ul className="events">
       {events.map((event) => (
-        <li key={event.id} class={`level-${event.level.toLowerCase()}`}>
-          <span class="muted event-time" title={stamp(event.epoch)}>{age(event.epoch)}</span>
+        <li key={event.id} className={`level-${event.level.toLowerCase()}`}>
+          <span className="muted event-time" title={stamp(event.epoch)}>{age(event.epoch)}</span>
           <LevelBadge level={event.level} />
           {with_repository && <a href={link(["repositories", event.target_id])}>{event.target_id}</a>}
-          <span class="event-message">{event.message}</span>
+          <span className="event-message">{event.message}</span>
         </li>
       ))}
     </ul>
@@ -245,7 +245,7 @@ export function TimersTable({ timers, with_host }: { timers: TimerRow[]; with_ho
     {
       label: "State", cell: (timer) => {
         const problem = timer_problem(timer);
-        return <span class={`badge tone-${problem ? "bad" : "good"}`}>{problem ?? "ok"}</span>;
+        return <span className={`badge tone-${problem ? "bad" : "good"}`}>{problem ?? "ok"}</span>;
       },
     },
   ];

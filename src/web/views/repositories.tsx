@@ -1,12 +1,12 @@
 // Every target, a job's backups from one host to one repository or a repository only watched, as cards or a table,
 // searched, filtered and sorted, with the choices kept in the URL.
 
-import { Segmented, SearchBox, Select } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { Toolbar } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
+import { Segmented, SearchBox, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
 import { sorting_from, type Sorting } from "@x-tech-laboratories/x-libs/web/tables";
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import { failing, overdue, repository_reasons } from "../attention.ts";
 import { api, type ConfigInfo, type RepositorySummary } from "../api.ts";
 import { use_changes } from "../ui.tsx";
@@ -61,10 +61,10 @@ export function RepositoriesView() {
   const hosts = [...new Set((repositories.data ?? []).map((repository) => repository.host))].sort();
 
   return (
-    <div class="page">
-      <div class="page-title spread">
+    <div className="page">
+      <div className="page-title spread">
         <h1>Repositories</h1>
-        <span>{adding && <a class="button accent solid" href={link(["new-repository"])}>Add repository</a>}</span>
+        <span>{adding && <a className="button accent solid" href={link(["new-repository"])}>Add repository</a>}</span>
       </div>
       <Toolbar>
         <SearchBox label="Search by repository, job or host" value={text} on_input={(value) => { set_text(value); replace_query({ q: value }); }} />
@@ -81,16 +81,16 @@ export function RepositoriesView() {
           {(all) => {
             if (all.length === 0) {
               return <Empty title="No repositories yet." hint={adding
-                ? <a class="button accent solid" href={link(["new-repository"])}>Add the first one</a>
+                ? <a className="button accent solid" href={link(["new-repository"])}>Add the first one</a>
                 : "Hosts, repositories, sources and jobs are declared in the Nix configuration under services.x-backups, or added in Settings when the config mode allows it."} />;
             }
             const shown = all.filter((repository) => matches(repository, text, status, host));
-            if (shown.length === 0) return <Empty title="No repository matches these filters." hint={<button class="link" onClick={clear}>Clear the filters</button>} />;
+            if (shown.length === 0) return <Empty title="No repository matches these filters." hint={<button className="link" onClick={clear}>Clear the filters</button>} />;
             return <>
-              <p class="muted small" role="status">{`${shown.length} of ${all.length} shown`}</p>
+              <p className="muted small" role="status">{`${shown.length} of ${all.length} shown`}</p>
               {layout === "table"
                 ? <RepositoriesTable repositories={shown} sorting={sorting} on_sort={sort} />
-                : <div class="grid">{sort_cards(shown, sorting).map((repository) => <RepositoryCard key={repository.id} repository={repository} />)}</div>}
+                : <div className="grid">{sort_cards(shown, sorting).map((repository) => <RepositoryCard key={repository.id} repository={repository} />)}</div>}
             </>;
           }}
         </Loaded>

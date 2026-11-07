@@ -2,11 +2,11 @@
 // the middle, and the repositories they write to on the right, under the hosts that store them; every box opens its page.
 
 import { age } from "@x-tech-laboratories/x-libs/web/format";
-import { ButtonGroup } from "@x-tech-laboratories/x-libs/web/preact/controls";
-import { Section } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
+import { ButtonGroup } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { Section } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { api, type BackupMap, type MapTarget } from "../api.ts";
 import { use_changes } from "../ui.tsx";
 import { touches } from "./shared.tsx";
@@ -182,12 +182,12 @@ function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
 
   return (
     <>
-      <g class="flows">
+      <g className="flows">
         {feeds.map((feed) => {
           const key = `${feed.source}>${feed.job}`;
           const source = placed.sources.get(feed.source)!;
           return (
-            <path key={key} class={`flow map-tone-${worst(feed.targets)}`} d={flow_path(source.box, feed_out.get(key)!, job_box(feed.job), feed_in.get(key)!)} {...lit_by(feed.targets)}>
+            <path key={key} className={`flow map-tone-${worst(feed.targets)}`} d={flow_path(source.box, feed_out.get(key)!, job_box(feed.job), feed_in.get(key)!)} {...lit_by(feed.targets)}>
               <title>{`${host_of(feed.source.split(":")[0])} ${source.path} → ${feed.job}`}</title>
             </path>
           );
@@ -197,7 +197,7 @@ function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
           const retention = [...new Set(write.targets.map((index) => keeps(map.targets[index].retention)).filter(Boolean))];
           const stored_on = host_of(placed.repositories.get(write.repository)!.stored_on);
           return (
-            <path key={key} class={`flow map-tone-${worst(write.targets)}`} d={flow_path(job_box(write.job), write_out.get(key)!, repository_box(write.repository), write_in.get(key)!)} {...lit_by(write.targets)}>
+            <path key={key} className={`flow map-tone-${worst(write.targets)}`} d={flow_path(job_box(write.job), write_out.get(key)!, repository_box(write.repository), write_in.get(key)!)} {...lit_by(write.targets)}>
               <title>{`${write.job} → ${write.repository} on ${stored_on}${retention.length > 0 ? `, keeps ${retention.join(" / ")}` : ""}`}</title>
             </path>
           );
@@ -210,7 +210,7 @@ function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
           const host_page = map.links?.hosts[host.id];
           const name = <Text class_name="map-host-name" x={host.box.x + padding} y={host.box.y + 22} content={host.name} />;
           return [
-            <rect key={`${host.id}-box`} class="map-host" x={host.box.x} y={host.box.y} width={host.box.width} height={host.box.height} rx={10} />,
+            <rect key={`${host.id}-box`} className="map-host" x={host.box.x} y={host.box.y} width={host.box.width} height={host.box.height} rx={10} />,
             host_page
               ? <a key={`${host.id}-name`} href={link(["hosts", host_page])}>{name}<title>{`${host_page}: open its page`}</title></a>
               : <Text key={`${host.id}-name`} class_name="map-host-name" x={host.box.x + padding} y={host.box.y + 22} content={host.name} />,
@@ -226,8 +226,8 @@ function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
             <title>{source_page ? `${source.path}, in the source ${source_page}` : source.path}</title>
           </>;
           return source_page
-            ? <a key={id} class="map-node map-source" {...lit_by(source.targets)} href={link(["sources", source_page])}>{children}</a>
-            : <g key={id} class="map-node map-source" {...lit_by(source.targets)} tabindex={0}>{children}</g>;
+            ? <a key={id} className="map-node map-source" {...lit_by(source.targets)} href={link(["sources", source_page])}>{children}</a>
+            : <g key={id} className="map-node map-source" {...lit_by(source.targets)} tabIndex={0}>{children}</g>;
         })}
         {[...placed.jobs].map(([id, job]) => {
           const { box } = job;
@@ -237,14 +237,14 @@ function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
           const node_class = `map-node map-job map-tone-${worst(job.targets)}`;
           const children = <>
             <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
-            <circle class="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
+            <circle className="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
             <Text class_name="map-name" x={box.x + 24} y={box.y + 21} content={clip(id, box.width - 34, 7.8)} />
             <Text class_name="map-detail" x={box.x + 10} y={box.y + 37} content={clip(detail, box.width - 20)} />
             <title>{`${id}\n${detail}`}</title>
           </>;
           return map.links?.jobs.includes(id)
-            ? <a key={id} class={node_class} {...lit_by(job.targets)} href={link(["jobs", id])}>{children}</a>
-            : <g key={id} class={node_class} {...lit_by(job.targets)} tabindex={0}>{children}</g>;
+            ? <a key={id} className={node_class} {...lit_by(job.targets)} href={link(["jobs", id])}>{children}</a>
+            : <g key={id} className={node_class} {...lit_by(job.targets)} tabIndex={0}>{children}</g>;
         })}
         {[...placed.repositories].map(([id, repository]) => {
           const { box } = repository;
@@ -253,9 +253,9 @@ function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
           const detail = written.length === 0 ? `watched only · last backup ${age(Number.isFinite(last) ? last : null)}` : `last backup ${age(Number.isFinite(last) ? last : null)}`;
           const reasons = repository.targets.flatMap((index) => map.targets[index].reasons.map((reason) => reason.text));
           return (
-            <a key={id} class={`map-node map-repository map-tone-${worst(repository.targets)}`} href={link(["repositories", map.targets[repository.targets[0]].id])} {...lit_by(repository.targets)}>
+            <a key={id} className={`map-node map-repository map-tone-${worst(repository.targets)}`} href={link(["repositories", map.targets[repository.targets[0]].id])} {...lit_by(repository.targets)}>
               <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
-              <circle class="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
+              <circle className="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
               <Text class_name="map-name" x={box.x + 24} y={box.y + 21} content={clip(id, box.width - 34, 7.8)} />
               <Text class_name="map-path" x={box.x + 10} y={box.y + 37} content={clip(repository.path, box.width - 20, 7.4)} />
               <Text class_name="map-detail" x={box.x + 10} y={box.y + 51} content={clip(detail, box.width - 20)} />
@@ -307,8 +307,8 @@ function FlowMap({ map, view_box, controls }: { map: BackupMap; view_box: { curr
   }, []);
 
   return (
-    <figure class="chart flow-map-frame">
-      <svg ref={drawing} class="flow-map" role="img" aria-label="Which folders each job backs up, and the repositories it writes them to">{content}</svg>
+    <figure className="chart flow-map-frame">
+      <svg ref={drawing} className="flow-map" role="img" aria-label="Which folders each job backs up, and the repositories it writes them to">{content}</svg>
     </figure>
   );
 }
@@ -425,7 +425,7 @@ function clip(label: string, width: number, char_width = 6.2): string {
 }
 
 function Text({ class_name, x, y, content }: { class_name: string; x: number; y: number; content: string }) {
-  return <text class={class_name} x={x} y={y}>{content}</text>;
+  return <text className={class_name} x={x} y={y}>{content}</text>;
 }
 
 // ── Section ──────────────────────────────────────────────────────────────────
@@ -452,9 +452,9 @@ export function MapSection() {
             ? <Empty title="No repositories yet." hint="Repositories appear here once they are configured." />
             : <>
               <FlowMap map={answer} view_box={view_box} controls={controls} />
-              <p class="muted small flow-map-legend">
+              <p className="muted small flow-map-legend">
                 {(["ok", "warning", "critical", "running"] as const).map((tone) => (
-                  <span key={tone} class={`legend map-swatch-${tone}`}>{tone === "ok" ? "OK" : tone.charAt(0).toUpperCase() + tone.slice(1)}</span>
+                  <span key={tone} className={`legend map-swatch-${tone}`}>{tone === "ok" ? "OK" : tone.charAt(0).toUpperCase() + tone.slice(1)}</span>
                 ))}
                 <span>Drag to pan, Ctrl or ⌘ and scroll to zoom. Hover a box to follow its lines.</span>
               </p>

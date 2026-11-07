@@ -1,11 +1,11 @@
 // Every source: the paths and excludes on one managed host, and the jobs backing them up; and one source's page.
 
-import { Chip } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { Crumbs, Facts, Section, type Fact } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable } from "@x-tech-laboratories/x-libs/web/preact/table";
+import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { Crumbs, Facts, Section, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable } from "@x-tech-laboratories/x-libs/web/react/table";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import { Fragment } from "preact";
+import { Fragment } from "react";
 import { api, type SourceRow } from "../api.ts";
 import { can } from "../session.ts";
 import { use_changes } from "../ui.tsx";
@@ -17,8 +17,8 @@ export function SourcesView() {
   const sources = use_resource(() => api<SourceRow[]>("/api/sources"), []);
   use_changes((changes) => { if (touches(changes, null, ["config"])) sources.reload(true); });
   return (
-    <div class="page">
-      <div class="page-title spread"><h1>Sources</h1>{can("admin") && <a class="button" href={link(["settings", "new", "sources"])}>Add source</a>}</div>
+    <div className="page">
+      <div className="page-title spread"><h1>Sources</h1>{can("admin") && <a className="button" href={link(["settings", "new", "sources"])}>Add source</a>}</div>
       <div>
         <Loaded resource={sources} lines={5}>
           {(rows) => rows.length === 0
@@ -41,17 +41,17 @@ export function SourceView({ name }: { name: string }) {
   const source = use_resource(() => api<SourceRow>(`/api/sources/${encodeURIComponent(name)}`), [name]);
   use_changes((changes) => { if (touches(changes, null, ["config"])) source.reload(true); });
   return (
-    <div class="page">
+    <div className="page">
       <Crumbs items={[["Sources", link(["sources"])], [name, null]]} />
-      <div class="stack">
+      <div className="stack">
         <Loaded resource={source} lines={5}>
           {(row) => {
             const settings = Object.entries(row.settings).filter(([field]) => field !== "source_paths" && field !== "exclude");
             return <>
-              <header class="page-head">
-                <div class="page-title"><h1>{row.name}</h1><OriginChip entity={row} /></div>
-                <p class="muted">On <a href={link(["hosts", row.host])}>{row.host}</a></p>
-                {can("admin") && <div class="head-actions"><a class="button" href={config_link(row)}>Config</a></div>}
+              <header className="page-head">
+                <div className="page-title"><h1>{row.name}</h1><OriginChip entity={row} /></div>
+                <p className="muted">On <a href={link(["hosts", row.host])}>{row.host}</a></p>
+                {can("admin") && <div className="head-actions"><a className="button" href={config_link(row)}>Config</a></div>}
               </header>
               <Section title="Backed up"><PathList items={row.paths} none="No paths." /></Section>
               <Section title="Excluded"><PathList items={row.exclude} none="Nothing is excluded." /></Section>
@@ -63,7 +63,7 @@ export function SourceView({ name }: { name: string }) {
               <Section title="Jobs backing it up">
                 {row.jobs.length === 0
                   ? <Empty title="No job uses this source yet." hint="Add it to a job's sources to back it up." />
-                  : <ul class="plain-list">{row.jobs.map((job) => <li key={job}><a href={link(["jobs", job])}>{job}</a></li>)}</ul>}
+                  : <ul className="plain-list">{row.jobs.map((job) => <li key={job}><a href={link(["jobs", job])}>{job}</a></li>)}</ul>}
               </Section>
             </>;
           }}
@@ -90,7 +90,7 @@ export function OriginChip({ entity }: { entity: { source: "declared" | "page"; 
 }
 
 export function JobLinks({ jobs }: { jobs: string[] }) {
-  if (jobs.length === 0) return <span class="muted">none</span>;
+  if (jobs.length === 0) return <span className="muted">none</span>;
   return <>{jobs.map((job, index) => <Fragment key={job}>{index > 0 && ", "}<a href={link(["jobs", job])}>{job}</a></Fragment>)}</>;
 }
 
@@ -101,6 +101,6 @@ function PathsInline({ paths }: { paths: string[] }) {
 
 function PathList({ items, none }: { items: string[]; none: string }) {
   return items.length > 0
-    ? <ul class="paths">{items.map((item) => <li key={item}><code>{item}</code></li>)}</ul>
-    : <p class="muted">{none}</p>;
+    ? <ul className="paths">{items.map((item) => <li key={item}><code>{item}</code></li>)}</ul>
+    : <p className="muted">{none}</p>;
 }

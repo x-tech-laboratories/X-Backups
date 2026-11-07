@@ -1,15 +1,14 @@
 // Who may log in: an admin's list of users and API tokens, and each user's own password and second factor.
 
-import { Chip } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { confirm_dialog, Dialog, open_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { Facts, Section } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { DataTable } from "@x-tech-laboratories/x-libs/web/preact/table";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
-import { Age } from "@x-tech-laboratories/x-libs/web/preact/time";
+import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { confirm_dialog, Dialog, open_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { Facts, Section } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { DataTable } from "@x-tech-laboratories/x-libs/web/react/table";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
+import { Age } from "@x-tech-laboratories/x-libs/web/react/time";
 import { age, stamp } from "@x-tech-laboratories/x-libs/web/format";
-import type { ComponentChildren } from "preact";
-import { useRef, useState } from "preact/hooks";
+import { useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { api, ApiError, send, type RepositorySummary } from "../api.ts";
 import { can, load_me, me, type Grant, type Me, type Role } from "../session.ts";
 import type { Refresh } from "./shared.tsx";
@@ -51,11 +50,11 @@ const tokens_path = "/api/tokens";
 export function UsersView() {
   if (!can("admin")) {
     return (
-      <div class="page">
-        <div class="page-title spread"><h1>Users</h1></div>
+      <div className="page">
+        <div className="page-title spread"><h1>Users</h1></div>
         <Section title="Users"><div><Empty title="Only an admin manages users." /></div></Section>
         <Section title="API tokens">
-          <div class="stack">
+          <div className="stack">
             <TokensNote />
             <div><button onClick={() => token_dialog(() => {})}>Create token</button></div>
             <div />
@@ -68,7 +67,7 @@ export function UsersView() {
 }
 
 function TokensNote() {
-  return <p class="muted small">A token reads what a viewer of everything reads, and the Prometheus metrics at /metrics; it changes nothing. Send it as Authorization: Bearer &lt;token&gt;.</p>;
+  return <p className="muted small">A token reads what a viewer of everything reads, and the Prometheus metrics at /metrics; it changes nothing. Send it as Authorization: Bearer &lt;token&gt;.</p>;
 }
 
 function AdminUsers() {
@@ -79,16 +78,16 @@ function AdminUsers() {
   const choices = grantable.data ?? { jobs: [], repositories: [] };
 
   return (
-    <div class="page">
-      <div class="page-title spread">
+    <div className="page">
+      <div className="page-title spread">
         <h1>Users</h1>
-        <button class="accent solid" onClick={() => user_dialog(null, choices, refresh)}>Add user</button>
+        <button className="accent solid" onClick={() => user_dialog(null, choices, refresh)}>Add user</button>
       </div>
       <Section title="Users">
         <div><Loaded resource={users} lines={4}>{(rows) => <UsersTable users={rows} grantable={choices} refresh={refresh} />}</Loaded></div>
       </Section>
       <Section title="API tokens">
-        <div class="stack">
+        <div className="stack">
           <TokensNote />
           <div><button onClick={() => token_dialog(refresh)}>Create token</button></div>
           <div><Loaded resource={tokens} lines={2}>{(rows) => <TokensTable tokens={rows} refresh={refresh} />}</Loaded></div>
@@ -124,21 +123,21 @@ function grants_text(grants: Grant[] | null): string {
 function UsersTable({ users, grantable, refresh }: { users: User[]; grantable: Grantable; refresh: Refresh }) {
   return (
     <DataTable<User> rows={users} row_key={(user) => user.name} caption="Users" columns={[
-      { label: "Name", cell: (user) => <><strong>{user.name}</strong>{user.name === me()?.name && <span class="muted small"> (you)</span>}</> },
+      { label: "Name", cell: (user) => <><strong>{user.name}</strong>{user.name === me()?.name && <span className="muted small"> (you)</span>}</> },
       { label: "Role", cell: (user) => <Chip title={role_text[user.role]}>{user.role}</Chip> },
       { label: "Access", cell: (user) => grants_text(user.grants) },
-      { label: "Second factor", cell: (user) => user.totp_enabled ? "on" : <span class="muted">off</span> },
+      { label: "Second factor", cell: (user) => user.totp_enabled ? "on" : <span className="muted">off</span> },
       {
         label: "Login", cell: (user) => user.source === "declared"
           ? <Chip title="Its password is the hash file X-Backups is deployed with">declared</Chip>
-          : user.has_password ? "password" : <span class="muted">single sign-on only</span>,
+          : user.has_password ? "password" : <span className="muted">single sign-on only</span>,
       },
       {
         label: "", class: "actions-cell", cell: (user) => (
-          <span class="row-actions">
+          <span className="row-actions">
             {user.source === "page" && <button onClick={() => user_dialog(user, grantable, refresh)}>Edit</button>}
             {user.totp_enabled && <button onClick={() => reset_totp(user, refresh)}>Reset second factor</button>}
-            {user.source === "page" && user.name !== me()?.name && <button class="danger" onClick={() => remove_user(user, refresh)}>Remove</button>}
+            {user.source === "page" && user.name !== me()?.name && <button className="danger" onClick={() => remove_user(user, refresh)}>Remove</button>}
           </span>
         ),
       },
@@ -184,8 +183,8 @@ function UserDialog({ user, grantable, refresh, close }: UserDialogProps) {
     else next.delete(value);
     set_picks(next);
   };
-  const checked = (event: Event) => (event.currentTarget as HTMLInputElement).checked;
-  const typed = (event: Event) => (event.currentTarget as HTMLInputElement).value;
+  const checked = (event: ChangeEvent<HTMLInputElement>) => event.currentTarget.checked;
+  const typed = (event: ChangeEvent<HTMLInputElement>) => event.currentTarget.value;
 
   async function save(): Promise<void> {
     const body = {
@@ -213,13 +212,13 @@ function UserDialog({ user, grantable, refresh, close }: UserDialogProps) {
   return (
     <Dialog title={user ? `Edit ${user.name}` : "Add a user"} on_close={close} buttons={<>
       <button onClick={close}>Cancel</button>
-      <button class="accent solid" disabled={busy} onClick={() => void save()}>{user ? "Save" : "Add user"}</button>
+      <button className="accent solid" disabled={busy} onClick={() => void save()}>{user ? "Save" : "Add user"}</button>
     </>}>
-      <div class="form-rows">
+      <div className="form-rows">
         <FormRow label="Name">
           <div>
-            <input type="text" value={name} readOnly={user !== null} autocomplete="off" autocapitalize="none" aria-label="User name" autoFocus={user === null} onInput={(event) => set_name(typed(event))} />
-            <p class="muted small">Lowercase letters, digits, '.', '_' or '-'. Single sign-on matches it against the provider's user name.</p>
+            <input type="text" value={name} readOnly={user !== null} autoComplete="off" autoCapitalize="none" aria-label="User name" autoFocus={user === null} onChange={(event) => set_name(typed(event))} />
+            <p className="muted small">Lowercase letters, digits, '.', '_' or '-'. Single sign-on matches it against the provider's user name.</p>
           </div>
         </FormRow>
         <FormRow label="Role">
@@ -227,29 +226,29 @@ function UserDialog({ user, grantable, refresh, close }: UserDialogProps) {
             <select aria-label="Role" value={role} autoFocus={user !== null} onChange={(event) => set_role((event.currentTarget as HTMLSelectElement).value as Role)}>
               {(["viewer", "operator", "admin"] as Role[]).map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
-            <p class="muted small">{role_text[role]}</p>
+            <p className="muted small">{role_text[role]}</p>
           </div>
         </FormRow>
         <FormRow label="Access">
           <div>
-            <label class="check"><input type="checkbox" checked={all} onChange={(event) => set_all(checked(event))} /> Everything, including jobs added later</label>
-            <p class="muted small">A job shows its targets, runs and archives, and the sources, repositories and hosts it uses. Compacting, checking or deleting from a repository needs every job writing there.</p>
-            <div class="check-list" hidden={all}>
-              <fieldset class="check-group">
+            <label className="check"><input type="checkbox" checked={all} onChange={(event) => set_all(checked(event))} /> Everything, including jobs added later</label>
+            <p className="muted small">A job shows its targets, runs and archives, and the sources, repositories and hosts it uses. Compacting, checking or deleting from a repository needs every job writing there.</p>
+            <div className="check-list" hidden={all}>
+              <fieldset className="check-group">
                 <legend>Jobs</legend>
-                {jobs.length === 0 ? <p class="muted small">No jobs are configured.</p> : jobs.map((job) => (
-                  <label key={job.name} class="check">
+                {jobs.length === 0 ? <p className="muted small">No jobs are configured.</p> : jobs.map((job) => (
+                  <label key={job.name} className="check">
                     <input type="checkbox" value={job.name} checked={picked_jobs.has(job.name)} onChange={(event) => toggle(picked_jobs, set_picked_jobs, job.name, checked(event))} />
                     {` ${job.name}`}
-                    {job.repositories.length > 0 && <span class="muted small">{` to ${job.repositories.join(", ")}`}</span>}
+                    {job.repositories.length > 0 && <span className="muted small">{` to ${job.repositories.join(", ")}`}</span>}
                   </label>
                 ))}
               </fieldset>
               {repositories.length > 0 && (
-                <fieldset class="check-group">
+                <fieldset className="check-group">
                   <legend>Repositories no job writes to</legend>
                   {repositories.map((repository) => (
-                    <label key={repository} class="check">
+                    <label key={repository} className="check">
                       <input type="checkbox" value={repository} checked={picked_repositories.has(repository)} onChange={(event) => toggle(picked_repositories, set_picked_repositories, repository, checked(event))} />
                       {` ${repository}`}
                     </label>
@@ -260,9 +259,9 @@ function UserDialog({ user, grantable, refresh, close }: UserDialogProps) {
           </div>
         </FormRow>
         <FormRow label="Password">
-          <input type="password" autocomplete="new-password" aria-label="Password" placeholder={user ? "leave empty to keep it" : "at least 12 characters, or empty for single sign-on only"} value={password} onInput={(event) => set_password(typed(event))} />
+          <input type="password" autoComplete="new-password" aria-label="Password" placeholder={user ? "leave empty to keep it" : "at least 12 characters, or empty for single sign-on only"} value={password} onChange={(event) => set_password(typed(event))} />
         </FormRow>
-        <p class="tone-bad small" role="alert">{message}</p>
+        <p className="tone-bad small" role="alert">{message}</p>
       </div>
     </Dialog>
   );
@@ -306,10 +305,10 @@ function TokensTable({ tokens, refresh }: { tokens: Token[]; refresh: Refresh })
     <DataTable<Token> rows={tokens} row_key={(token) => token.id} caption="API tokens" columns={[
       { label: "Name", cell: (token) => token.name },
       { label: "Created", cell: (token) => <span title={stamp(token.created_epoch)}>{`${age(token.created_epoch)} by ${token.created_by}`}</span> },
-      { label: "Last used", cell: (token) => token.last_used_epoch ? <Age epoch={token.last_used_epoch} /> : <span class="muted">never</span> },
+      { label: "Last used", cell: (token) => token.last_used_epoch ? <Age epoch={token.last_used_epoch} /> : <span className="muted">never</span> },
       {
         label: "", class: "actions-cell", cell: (token) => (
-          <button class="danger" onClick={() => confirm_dialog({
+          <button className="danger" onClick={() => confirm_dialog({
             title: `Revoke ${token.name}?`,
             message: "Whatever uses it is refused from now on.",
             confirm_label: "Revoke",
@@ -348,13 +347,13 @@ function TokenDialog({ refresh, close }: { refresh: () => void; close: () => voi
   return (
     <Dialog title="Create an API token" on_close={close} buttons={<>
       <button onClick={close}>Cancel</button>
-      <button class="accent solid" onClick={() => void create()}>Create</button>
+      <button className="accent solid" onClick={() => void create()}>Create</button>
     </>}>
       <div>
         <FormRow label="Name">
-          <input type="text" placeholder="such as prometheus" aria-label="Token name" autoFocus value={name} onInput={(event) => set_name((event.currentTarget as HTMLInputElement).value)} />
+          <input type="text" placeholder="such as prometheus" aria-label="Token name" autoFocus value={name} onChange={(event) => set_name((event.currentTarget as HTMLInputElement).value)} />
         </FormRow>
-        <p class="tone-bad small" role="alert">{message}</p>
+        <p className="tone-bad small" role="alert">{message}</p>
       </div>
     </Dialog>
   );
@@ -366,9 +365,9 @@ function show_once(title: string, note: string, lines: string[]): void {
   open_dialog((close) => (
     <Dialog title={title} on_close={close} buttons={<>
       <button onClick={() => void navigator.clipboard?.writeText(text).then(() => toast("Copied."))}>Copy</button>
-      <button class="accent solid" onClick={close}>I have saved it</button>
+      <button className="accent solid" onClick={close}>I have saved it</button>
     </>}>
-      <div><p>{note}</p><pre class="output secret-once">{text}</pre></div>
+      <div><p>{note}</p><pre className="output secret-once">{text}</pre></div>
     </Dialog>
   ));
 }
@@ -378,9 +377,9 @@ function show_once(title: string, note: string, lines: string[]): void {
 export function AccountView() {
   const who = use_resource(load_me, []);
   return (
-    <div class="page">
+    <div className="page">
       <h1>Your account</h1>
-      <div class="stack">
+      <div className="stack">
         <Loaded resource={who} lines={4}>{(account) => <AccountPanels who={account} refresh={() => who.reload(true)} />}</Loaded>
       </div>
     </div>
@@ -399,7 +398,7 @@ function AccountPanels({ who, refresh }: { who: Me; refresh: () => void }) {
     </Section>
     <Section title="Password">
       {who.source === "declared"
-        ? <p class="muted">Your password is the hash file X-Backups is deployed with; change it there with npm run hash-password.</p>
+        ? <p className="muted">Your password is the hash file X-Backups is deployed with; change it there with npm run hash-password.</p>
         : <PasswordForm />}
     </Section>
     <Section title="Second factor"><TotpPanel key={String(who.totp_enabled)} enabled={who.totp_enabled} refresh={refresh} /></Section>
@@ -411,7 +410,7 @@ function PasswordForm() {
   const [next, set_next] = useState("");
   const [repeat, set_repeat] = useState("");
   const [message, set_message] = useState<{ text: string; tone: "good" | "bad" } | null>(null);
-  const typed = (event: Event) => (event.currentTarget as HTMLInputElement).value;
+  const typed = (event: ChangeEvent<HTMLInputElement>) => event.currentTarget.value;
 
   async function save(): Promise<void> {
     if (next !== repeat) {
@@ -431,13 +430,13 @@ function PasswordForm() {
   }
 
   return (
-    <div class="form-rows">
-      <FormRow label="Current password"><input type="password" autocomplete="current-password" aria-label="Current password" value={current} onInput={(event) => set_current(typed(event))} /></FormRow>
-      <FormRow label="New password"><input type="password" autocomplete="new-password" aria-label="New password" value={next} onInput={(event) => set_next(typed(event))} /></FormRow>
-      <FormRow label="New password again"><input type="password" autocomplete="new-password" aria-label="New password again" value={repeat} onInput={(event) => set_repeat(typed(event))} /></FormRow>
+    <div className="form-rows">
+      <FormRow label="Current password"><input type="password" autoComplete="current-password" aria-label="Current password" value={current} onChange={(event) => set_current(typed(event))} /></FormRow>
+      <FormRow label="New password"><input type="password" autoComplete="new-password" aria-label="New password" value={next} onChange={(event) => set_next(typed(event))} /></FormRow>
+      <FormRow label="New password again"><input type="password" autoComplete="new-password" aria-label="New password again" value={repeat} onChange={(event) => set_repeat(typed(event))} /></FormRow>
       <div>
-        <button class="accent solid" onClick={() => void save()}>Change password</button>
-        <p class={message ? `small tone-${message.tone}` : "small"} role="status">{message?.text ?? ""}</p>
+        <button className="accent solid" onClick={() => void save()}>Change password</button>
+        <p className={message ? `small tone-${message.tone}` : "small"} role="status">{message?.text ?? ""}</p>
       </div>
     </div>
   );
@@ -450,8 +449,8 @@ function TotpPanel({ enabled, refresh }: { enabled: boolean; refresh: () => void
   const code_input = useRef<HTMLInputElement>(null);
 
   const code_field = (
-    <input ref={code_input} type="text" inputMode="numeric" autocomplete="one-time-code" aria-label="Code from your authenticator app" value={code}
-      onInput={(event) => set_code((event.currentTarget as HTMLInputElement).value)} />
+    <input ref={code_input} type="text" inputMode="numeric" autoComplete="one-time-code" aria-label="Code from your authenticator app" value={code}
+      onChange={(event) => set_code((event.currentTarget as HTMLInputElement).value)} />
   );
   const failed = (error: unknown) => {
     if (!(error instanceof ApiError)) throw error;
@@ -485,26 +484,26 @@ function TotpPanel({ enabled, refresh }: { enabled: boolean; refresh: () => void
 
   if (enabled) {
     return (
-      <div class="stack">
+      <div className="stack">
         <p>On. Logging in asks for a code from your authenticator app, or one of your recovery codes.</p>
         <FormRow label="Code to turn it off">{code_field}</FormRow>
-        <div><button class="danger" onClick={() => void turn_off()}>Turn off</button></div>
-        <p class="tone-bad small" role="alert">{message}</p>
+        <div><button className="danger" onClick={() => void turn_off()}>Turn off</button></div>
+        <p className="tone-bad small" role="alert">{message}</p>
       </div>
     );
   }
   return (
-    <div class="stack">
-      <p class="muted">Off. A second factor asks for a code from your phone after the password.</p>
-      <div><button class="accent solid" hidden={setup !== null} onClick={() => void start()}>Set up</button></div>
-      <div class="stack">
+    <div className="stack">
+      <p className="muted">Off. A second factor asks for a code from your phone after the password.</p>
+      <div><button className="accent solid" hidden={setup !== null} onClick={() => void start()}>Set up</button></div>
+      <div className="stack">
         {setup && <>
           <p>Add this key to your authenticator app (such as Aegis, 2FAS or a password manager), or open the link on the phone that has it:</p>
-          <pre class="output secret-once">{setup.secret.match(/.{1,4}/g)!.join(" ")}</pre>
+          <pre className="output secret-once">{setup.secret.match(/.{1,4}/g)!.join(" ")}</pre>
           <p><a href={setup.uri}>Open in an authenticator app</a></p>
           <FormRow label="Code it shows now">{code_field}</FormRow>
-          <div><button class="accent solid" onClick={() => void confirm()}>Confirm</button></div>
-          <p class="tone-bad small" role="alert">{message}</p>
+          <div><button className="accent solid" onClick={() => void confirm()}>Confirm</button></div>
+          <p className="tone-bad small" role="alert">{message}</p>
         </>}
       </div>
     </div>
@@ -513,6 +512,6 @@ function TotpPanel({ enabled, refresh }: { enabled: boolean; refresh: () => void
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function FormRow({ label, children }: { label: string; children: ComponentChildren }) {
-  return <div class="form-row"><label>{label}</label><div>{children}</div></div>;
+function FormRow({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="form-row"><label>{label}</label><div>{children}</div></div>;
 }

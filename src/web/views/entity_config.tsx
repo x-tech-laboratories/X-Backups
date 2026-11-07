@@ -2,15 +2,14 @@
 // and page modes with a job's sources and repositories picked from lists and its tasks edited with their schedules in
 // words, or read-only with its source named.
 
-import { Chip } from "@x-tech-laboratories/x-libs/web/preact/badges";
-import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
-import { Crumbs, Section } from "@x-tech-laboratories/x-libs/web/preact/layout";
-import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
-import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
+import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
+import { Crumbs, Section } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { stamp } from "@x-tech-laboratories/x-libs/web/format";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import type { RefObject } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState, type ChangeEvent, type RefObject } from "react";
 import { api, ApiError, query, send, type EntityConfig, type EntityEntry, type EntityKind, type HostRow, type SchedulePreview, type SourceRow } from "../api.ts";
 import { use_changes } from "../ui.tsx";
 import { ConfigForm, ConfigReadOnly, ConfigTools, load_key, type Choice, type ConfigFormHandle } from "./config_form.tsx";
@@ -58,17 +57,17 @@ function entity_page(kind: EntityKind, name: string): string {
 export function EntityPanels() {
   const all = use_resource(() => Promise.all(kinds.map((kind) => api<EntityConfig>(`/api/config/${kind}`))), []);
   return (
-    <div class="stack">
+    <div className="stack">
       <Loaded resource={all} lines={4}>
         {(infos) => infos.map((info) => (
           <Section key={info.kind} title={labels[info.kind][1]}>
-            <div class="stack">
-              <p class="muted small">{kind_text[info.kind]}</p>
+            <div className="stack">
+              <p className="muted small">{kind_text[info.kind]}</p>
               {info.entries.length === 0
-                ? <p class="muted">{`No ${labels[info.kind][1].toLowerCase()} written yet.`}</p>
-                : <ul class="plain-list">{info.entries.map((entry) => <li key={entry.name}><a href={entry_link(info.kind, entry)}>{entry.name}</a> <SourceChip entry={entry} /></li>)}</ul>}
+                ? <p className="muted">{`No ${labels[info.kind][1].toLowerCase()} written yet.`}</p>
+                : <ul className="plain-list">{info.entries.map((entry) => <li key={entry.name}><a href={entry_link(info.kind, entry)}>{entry.name}</a> <SourceChip entry={entry} /></li>)}</ul>}
             </div>
-            {info.editable && <a class="button" href={link(["settings", "new", info.kind])}>{`Add ${labels[info.kind][0]}`}</a>}
+            {info.editable && <a className="button" href={link(["settings", "new", info.kind])}>{`Add ${labels[info.kind][0]}`}</a>}
           </Section>
         ))}
       </Loaded>
@@ -114,10 +113,10 @@ export function EntityView({ kind: kind_text_given, name }: { kind: string; name
   use_changes((changes) => { if (!editing && touches(changes, null, ["config"])) loaded.reload(true); });
 
   return (
-    <div class="page">
+    <div className="page">
       <Crumbs items={[["Settings", link(["settings"])], [kind ? labels[kind][1] : kind_text_given, null], [title, null]]} />
       <h1>{title}</h1>
-      <div class="stack">
+      <div className="stack">
         <Loaded resource={loaded} lines={6}>
           {(answer) => {
             if (answer === null || kind === undefined) return <Empty title={`No kind ${kind_text_given}.`} hint={<a href={link(["settings"])}>Settings</a>} />;
@@ -125,7 +124,7 @@ export function EntityView({ kind: kind_text_given, name }: { kind: string; name
             const entry = shown!.entry;
             if (shown!.show === "missing") return <Empty title={`No ${labels[kind][0]} named ${name} is written in the config.`} hint={<a href={link(["settings"])}>Settings</a>} />;
             if (shown!.show === "flat") {
-              return <div class="banner" role="note">This repository is an entry of the older shape, a host, repository, source and job in one, so it is changed on <a href={entry_link(kind, entry!)}>its Config tab</a>.</div>;
+              return <div className="banner" role="note">This repository is an entry of the older shape, a host, repository, source and job in one, so it is changed on <a href={entry_link(kind, entry!)}>its Config tab</a>.</div>;
             }
             if (shown!.show === "declarative") {
               return <Empty title={`The config is declarative here, so ${labels[kind][1].toLowerCase()} are added in the Nix configuration.`}
@@ -155,8 +154,8 @@ function shown_for(name: string | null, info: EntityConfig): Shown {
 function ReadOnly({ kind, entry }: { kind: EntityKind; entry: EntityEntry }) {
   return <>
     {entry.source === "declared"
-      ? <div class="banner" role="note"><strong>Declared in the Nix configuration.</strong>{` Change it under services.x-backups.${kind}.${entry.name} and switch the system to apply it.`}</div>
-      : <div class="banner" role="note"><strong>Added from this page,</strong> but the config is declarative now, so the page shows it read-only.</div>}
+      ? <div className="banner" role="note"><strong>Declared in the Nix configuration.</strong>{` Change it under services.x-backups.${kind}.${entry.name} and switch the system to apply it.`}</div>
+      : <div className="banner" role="note"><strong>Added from this page,</strong> but the config is declarative now, so the page shows it read-only.</div>}
     <ConfigTools fields={entry.fields} kind={kind} />
     <ConfigReadOnly fields={entry.fields} />
   </>;
@@ -220,7 +219,7 @@ function Editor({ kind, info, entry, choices, reload }: EditorProps) {
       title: `Remove the ${label} ${removed.name}?`,
       message: <div>
         <p>{`X-Backups forgets this ${label}. Nothing on disk is touched: borg repositories and their archives stay.`}</p>
-        <p class="muted">Anything still naming it must be changed first; the history it made stays in X-Backups' state.</p>
+        <p className="muted">Anything still naming it must be changed first; the history it made stays in X-Backups' state.</p>
       </div>,
       confirm_label: `Remove ${label}`,
       busy_label: "Removing…",
@@ -239,15 +238,15 @@ function Editor({ kind, info, entry, choices, reload }: EditorProps) {
   }
 
   return <>
-    {entry?.shadowed && <div class="banner" role="note"><strong>Hidden.</strong> A declared entry of the same name replaces this one; remove it here or rename the declared one.</div>}
-    <p class="muted">{kind_text[kind]}{adding ? " Empty fields take their defaults." : " Saving applies the change at once; nothing restarts."}</p>
+    {entry?.shadowed && <div className="banner" role="note"><strong>Hidden.</strong> A declared entry of the same name replaces this one; remove it here or rename the declared one.</div>}
+    <p className="muted">{kind_text[kind]}{adding ? " Empty fields take their defaults." : " Saving applies the change at once; nothing restarts."}</p>
     {entry && <ConfigTools fields={entry.fields} kind={kind} />}
     <ConfigForm fields={info.fields} values={values} adding={adding} choices={choices} hints={entity_hints} handle={form} />
     {has_tasks && <TasksEditor allowed={info.tasks} written={(values.tasks ?? {}) as Record<string, unknown>} handle={tasks} />}
-    <div class="form-actions">
-      <button class="accent solid" disabled={busy} onClick={save}>{busy ? "Saving…" : adding ? `Add ${label}` : "Save"}</button>
+    <div className="form-actions">
+      <button className="accent solid" disabled={busy} onClick={save}>{busy ? "Saving…" : adding ? `Add ${label}` : "Save"}</button>
       <button onClick={reload}>Discard changes</button>
-      {!adding && <button class="danger" onClick={() => remove(entry)}>{`Remove ${label}`}</button>}
+      {!adding && <button className="danger" onClick={() => remove(entry)}>{`Remove ${label}`}</button>}
     </div>
   </>;
 }
@@ -289,7 +288,7 @@ function read_draft(draft: TaskDraft): Record<string, unknown> | undefined {
 interface TasksEditorProps {
   allowed: EntityConfig["tasks"];
   written: Record<string, unknown>;
-  handle: RefObject<TasksHandle>;
+  handle: RefObject<TasksHandle | null>;
 }
 
 // A row per task the kind takes, and one per check with a button to add another: its schedule with presets and its
@@ -323,23 +322,23 @@ function TasksEditor({ allowed, written, handle }: TasksEditorProps) {
   };
 
   return (
-    <section class="panel">
-      <div class="panel-head"><h2>Tasks</h2></div>
-      <p class="muted small">{"Each takes a duration from its last run, hourly, daily, weekly, monthly, daily HH:MM, weekly <day> HH:MM or a cron line."}</p>
-      <p ref={note} class="field-error tone-bad small" role="alert" hidden={error === null}>{error}</p>
+    <section className="panel">
+      <div className="panel-head"><h2>Tasks</h2></div>
+      <p className="muted small">{"Each takes a duration from its last run, hourly, daily, weekly, monthly, daily HH:MM, weekly <day> HH:MM or a cron line."}</p>
+      <p ref={note} className="field-error tone-bad small" role="alert" hidden={error === null}>{error}</p>
       <datalist id="schedule-presets">{schedule_presets.map((preset) => <option key={preset} value={preset} />)}</datalist>
-      <div class="form-rows">
+      <div className="form-rows">
         {allowed.kinds.map((kind) => kind !== "check"
           ? <TaskRow key={kind} kind={kind} id={`task-${kind}`} draft={drafts[kind]} allowed={allowed} on_change={(draft) => set_drafts({ ...drafts, [kind]: draft })} />
           : (
-            <div key={kind} class="stack">
-              <div class="form-rows">
+            <div key={kind} className="stack">
+              <div className="form-rows">
                 {checks.map((draft, index) => (
                   <TaskRow key={index} kind={kind} id={`task-check-${index}`} draft={draft} allowed={allowed}
                     on_change={(next) => set_checks(checks.map((other, at) => at === index ? next : other))} />
                 ))}
               </div>
-              <div class="toolbar"><button type="button" onClick={() => set_checks([...checks, draft_of(undefined)])}>Add a check</button></div>
+              <div className="toolbar"><button type="button" onClick={() => set_checks([...checks, draft_of(undefined)])}>Add a check</button></div>
             </div>
           ))}
       </div>
@@ -358,17 +357,17 @@ interface TaskRowProps {
 // One task's row: its schedule, whether it is switched on, and whether it runs after a backup or what it checks.
 function TaskRow({ kind, id, draft, allowed, on_change }: TaskRowProps) {
   const change = (part: Partial<TaskDraft>) => on_change({ ...draft, ...part });
-  const value = (event: Event) => (event.currentTarget as HTMLInputElement | HTMLSelectElement).value;
+  const value = (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => event.currentTarget.value;
   return (
-    <div class="form-row">
-      <label for={id}><code>{kind}</code></label>
-      <div class="stack">
-        <input id={id} type="text" list="schedule-presets" autocomplete="off" placeholder="such as daily 02:00, 6h or a cron line"
-          aria-describedby={`${id}-preview`} value={draft.schedule} onInput={(event) => change({ schedule: value(event) })} />
+    <div className="form-row">
+      <label htmlFor={id}><code>{kind}</code></label>
+      <div className="stack">
+        <input id={id} type="text" list="schedule-presets" autoComplete="off" placeholder="such as daily 02:00, 6h or a cron line"
+          aria-describedby={`${id}-preview`} value={draft.schedule} onChange={(event) => change({ schedule: value(event) })} />
         <SchedulePreviewLine id={`${id}-preview`} text={draft.schedule.trim()} />
-        <div class="toolbar">
-          <label class="field">
-            <span class="field-label">Switched</span>
+        <div className="toolbar">
+          <label className="field">
+            <span className="field-label">Switched</span>
             <select aria-label={`${kind} enabled`} value={draft.enabled} onChange={(event) => change({ enabled: value(event) as TaskDraft["enabled"] })}>
               <option value="">on when scheduled</option>
               <option value="true">on</option>
@@ -376,14 +375,14 @@ function TaskRow({ kind, id, draft, allowed, on_change }: TaskRowProps) {
             </select>
           </label>
           {(kind === "prune" || kind === "compact") && (
-            <label class="check">
+            <label className="check">
               <input type="checkbox" checked={draft.after} aria-label={`${kind} after each backup`} onChange={(event) => change({ after: (event.currentTarget as HTMLInputElement).checked })} />
               {" Also after each successful backup"}
             </label>
           )}
           {kind === "check" && (
-            <label class="field">
-              <span class="field-label">Checks</span>
+            <label className="field">
+              <span className="field-label">Checks</span>
               <select aria-label="What the check checks" value={draft.check} onChange={(event) => change({ check: value(event) })}>
                 <option value="">default</option>
                 {allowed.check_kinds.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -418,5 +417,5 @@ function SchedulePreviewLine({ id, text }: { id: string; text: string }) {
       clearTimeout(timer);
     };
   }, [text]);
-  return <p class={preview.bad ? "tone-bad small" : "muted small"} id={id} aria-live="polite">{preview.text}</p>;
+  return <p className={preview.bad ? "tone-bad small" : "muted small"} id={id} aria-live="polite">{preview.text}</p>;
 }
