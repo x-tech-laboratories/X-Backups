@@ -1,5 +1,7 @@
 // The shapes the server answers with, and one fetch helper that notices when a login is needed.
 
+import { LoginNeeded } from "@x-tech-laboratories/x-libs/web/states";
+
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
 // The target a row belongs to and the host, job and repository it is built from; null on an older row of a target since removed.
@@ -398,7 +400,7 @@ export interface Change {
 
 // ── Requests ─────────────────────────────────────────────────────────────────
 
-export class LoginNeeded extends Error {}
+export { LoginNeeded } from "@x-tech-laboratories/x-libs/web/states";
 
 // A refused request, naming the config field at fault when the server gave one.
 export class ApiError extends Error {

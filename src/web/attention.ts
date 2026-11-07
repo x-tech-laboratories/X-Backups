@@ -1,7 +1,7 @@
 // Why a repository or a timer needs a look, one reason per line.
 
 import type { RepositorySummary, TimerRow } from "./api.ts";
-import { now_seconds } from "./dom.ts";
+import { now_seconds } from "@x-tech-laboratories/x-libs/web/format";
 
 export interface Reason {
   tone: "bad" | "warn";

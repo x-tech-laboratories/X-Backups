@@ -11,14 +11,20 @@ const batch_window_in_milliseconds = 300;
 type Listener = (changes: Change[] | null) => void;
 
 let source: EventSource | null = null;
-let listener: Listener = () => {};
+const listeners = new Set<Listener>();
 let fallback_timer: number | undefined;
 let batch: Change[] = [];
 let batch_timer: number | undefined;
 let was_down = false;
 
-export function on_changes(next: Listener): void {
-  listener = next;
+// Hands each batch of changes to the listener until the returned function is called.
+export function on_changes(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
+}
+
+function tell(changes: Change[] | null): void {
+  for (const listener of listeners) listener(changes);
 }
 
 // Opens the stream once logged in; reopening while it is open does nothing.
@@ -28,7 +34,7 @@ export function connect(): void {
   source.onopen = () => {
     stop_fallback();
     // Whatever changed while the stream was down was missed, so everything is fetched again, unless a deploy replaced this page.
-    if (was_down) void reload_if_replaced().then((replaced) => replaced || listener(null));
+    if (was_down) void reload_if_replaced().then((replaced) => replaced || tell(null));
     was_down = false;
   };
   source.onmessage = (message) => {
@@ -37,7 +43,7 @@ export function connect(): void {
     batch_timer = window.setTimeout(() => {
       const changes = batch;
       batch = [];
-      listener(changes);
+      tell(changes);
     }, batch_window_in_milliseconds);
   };
   source.onerror = () => {
@@ -74,7 +80,7 @@ async function reload_if_replaced(): Promise<boolean> {
 function start_fallback(): void {
   if (fallback_timer !== undefined) return;
   fallback_timer = window.setInterval(() => {
-    if (document.visibilityState === "visible") listener(null);
+    if (document.visibilityState === "visible") tell(null);
   }, fallback_interval_in_milliseconds);
 }
 
@@ -85,5 +91,5 @@ function stop_fallback(): void {
 
 // A page brought back into view may have missed changes while the browser held its timers back.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && source !== null) listener(null);
+  if (document.visibilityState === "visible" && source !== null) tell(null);
 });

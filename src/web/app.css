@@ -1,0 +1,193 @@
+/* X-Backups' own page styles, on top of Halon's tokens and component sheet. */
+
+/* ── Search and the runs in progress ─────────────────────────────────────── */
+
+.search { position: relative; flex: 1; max-width: 420px; margin-left: var(--space-6); }
+.search input { width: 100%; }
+.search-results {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  right: 0;
+  z-index: var(--layer-menu);
+  max-height: 60vh;
+  overflow: auto;
+  padding: 5px;
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-default);
+  background-color: var(--surface-default);
+  box-shadow: var(--shadow-floating);
+}
+.search-item {
+  display: block;
+  min-height: var(--row-height);
+  padding: var(--space-3) 9px;
+  border-radius: var(--radius-small);
+  color: var(--text-body);
+  font-size: var(--text-control);
+  line-height: var(--line-height-ui);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-item:hover, .search-item:focus { background-color: var(--surface-secondary); }
+.search-none { margin: var(--space-3) 9px; font-size: var(--text-control); }
+.running-chip { margin-left: auto; text-decoration: none; }
+.running-chip:not([hidden]) + #theme { margin-left: 0; }
+.stream-state { margin: auto 0 0; padding: 0 var(--space-4); }
+
+/* A card is a block, so its chips keep their own space below the facts. */
+.card .chips { margin-top: var(--space-4); }
+
+/* ── Repository ───────────────────────────────────────────────────────────── */
+
+.maintenance { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-5); }
+.maintenance-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-default);
+  font-size: var(--text-control);
+}
+.maintenance-card p { margin: var(--space-1) 0 0; }
+.maintenance-card.risky { border-left: 3px solid var(--status-danger); }
+
+.paths { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--space-1); }
+.secret-once { font-size: var(--text-h3); letter-spacing: var(--letter-spacing-caps); user-select: all; }
+
+/* ── Runs ─────────────────────────────────────────────────────────────────── */
+
+.result-bar { padding: var(--space-5) var(--space-6); border-radius: var(--radius-default); font-weight: 600; }
+.duration { display: inline-flex; align-items: center; gap: var(--space-4); }
+.duration-text { min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* A meter is 6px thick and rounds at half that; the tick marks the median. */
+.duration-track { position: relative; width: 80px; height: 6px; border-radius: 3px; background-color: var(--surface-secondary); overflow: hidden; }
+.duration-track::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background-color: var(--text-tertiary); }
+.duration-fill { display: block; height: 100%; border-radius: 3px; transition: width var(--duration-slow); }
+.duration-fill.tone-fill-info { background-color: var(--accent); }
+.duration-fill.tone-fill-warn { background-color: var(--status-warning); }
+/* ── Charts: series by --series-*, outcomes by status tokens ──────────────── */
+
+.charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: var(--space-5); }
+.chart {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-5) var(--space-6);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-default);
+  background-color: var(--surface-default);
+}
+.panel .chart { border: none; padding: 0; }
+.chart figcaption { display: flex; gap: var(--space-5); flex-wrap: wrap; align-items: center; margin-bottom: var(--space-2); color: var(--text-heading); font-size: var(--text-control); font-weight: 600; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart .axis { stroke: var(--border-default); }
+.chart .tick { fill: var(--text-tertiary); font-size: var(--text-label); }
+.legend { display: inline-flex; align-items: center; color: var(--text-secondary); font-size: var(--text-caption); font-weight: 400; }
+.legend::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: var(--space-2); border-radius: 2px; background-color: var(--swatch); }
+.strip { display: flex; gap: 2px; flex-wrap: wrap; }
+.cell { width: 8px; height: 20px; border-radius: 2px; }
+.cell-pass { background-color: var(--status-success); }
+.cell-fail { background-color: var(--status-danger); }
+.cell-none { background-color: var(--border-default); }
+.meters { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.meter-head { display: flex; gap: var(--space-4); justify-content: space-between; margin-bottom: var(--space-1); font-size: var(--text-control); }
+.meter-value { color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.meter { position: relative; height: 6px; border-radius: 3px; background-color: var(--border-default); }
+.meter-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 3px; }
+.meter-behind { opacity: 0.35; }
+.donut-body { display: flex; gap: var(--space-6); align-items: center; flex-wrap: wrap; }
+.donut svg { width: 140px; flex: none; }
+.donut-track { stroke: var(--border-default); }
+.donut-value { fill: var(--text-heading); font-size: 20px; font-weight: 700; }
+.donut-legend { display: grid; gap: var(--space-2); flex: 1; min-width: 160px; margin: 0; padding: 0; list-style: none; }
+.donut-legend li { display: flex; justify-content: space-between; gap: var(--space-4); }
+.hosts { display: grid; grid-template-columns: minmax(100px, 1fr) repeat(3, auto); gap: var(--space-4) var(--space-6); align-items: center; font-size: var(--text-control); }
+.host-reading { display: flex; gap: var(--space-3); align-items: center; }
+.host-reading .reading-label { min-width: 56px; color: var(--text-secondary); font-size: var(--text-caption); }
+.host-reading .meter-value { min-width: 72px; }
+.sparkline { width: 120px; height: 28px; flex: none; }
+.chart .lane { stroke: var(--border-default); stroke-dasharray: 2 3; }
+.chart .lane-label { fill: var(--text-secondary); font-size: var(--text-label); }
+.chart a .lane-label { fill: var(--accent); }
+.meter-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background-color: var(--text-tertiary); }
+
+/* ── Map: hosts as boxes, a line per folder a repository backs up ─────────── */
+
+.flow-map-frame { padding: 0; overflow: hidden; }
+.flow-map-frame svg.flow-map { max-height: 75vh; cursor: grab; touch-action: none; user-select: none; }
+.flow-map.panning { cursor: grabbing; }
+.map-tone-ok { --tone: var(--text-tertiary); }
+.map-tone-warning { --tone: var(--status-warning); }
+.map-tone-critical { --tone: var(--status-danger); }
+.map-tone-running { --tone: var(--accent); }
+.map-host { fill: var(--surface-secondary); stroke: var(--border-default); }
+.map-host-name { fill: var(--text-heading); font-size: var(--text-prose); font-weight: 600; }
+.map-group { fill: var(--text-tertiary); font-size: var(--text-label); letter-spacing: var(--letter-spacing-caps); text-transform: uppercase; }
+.map-node rect { fill: var(--surface-default); stroke: var(--border-hover); }
+.map-node:focus { outline: none; }
+.map-node:focus-visible rect { stroke: var(--border-focus); stroke-width: 2; }
+.map-repository rect { stroke: var(--tone); }
+.map-repository:hover rect { stroke-width: 2; }
+.map-dot { fill: var(--tone); }
+.map-tone-ok .map-dot { fill: var(--status-success); }
+.map-name { fill: var(--accent); font-size: var(--text-control); font-weight: 600; }
+.map-path { fill: var(--text-body); font-family: var(--font-family-monospace); font-size: var(--text-caption); }
+.map-detail { fill: var(--text-secondary); font-size: var(--text-label); }
+.flow { fill: none; stroke: var(--tone); stroke-width: 1.75; opacity: .75; transition: opacity var(--duration-fast); }
+.flow.map-tone-running { stroke-dasharray: 6 4; animation: map-flow 1s linear infinite; }
+@keyframes map-flow { to { stroke-dashoffset: -10; } }
+.flow-map.focused .flow:not(.lit) { opacity: .12; }
+.flow-map.focused .map-node:not(.lit) { opacity: .45; }
+.flow.lit { stroke-width: 2.5; opacity: 1; }
+.flow-map-legend { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); margin-top: var(--space-4); }
+.map-swatch-ok { --swatch: var(--text-tertiary); }
+.map-swatch-warning { --swatch: var(--status-warning); }
+.map-swatch-critical { --swatch: var(--status-danger); }
+.map-swatch-running { --swatch: var(--accent); }
+
+/* ── Week calendar: a run's state by its fill and its outline ─────────────── */
+
+.calendar td { vertical-align: top; }
+.calendar th.today, .calendar td.today { background-color: var(--surface-secondary); }
+.calendar th.today { color: var(--accent); }
+.run { display: inline-block; margin: 0 var(--space-1) var(--space-1) 0; padding: 1px var(--space-2); border: var(--border-width) solid transparent; border-radius: var(--radius-small); font-size: var(--text-caption); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-success { background-color: var(--status-success); color: var(--text-on-fill); }
+.run-failed { background-color: var(--status-danger); color: var(--text-on-fill); }
+.run-missed { border-color: var(--status-danger); border-style: dashed; color: var(--status-danger); }
+.run-upcoming { border-color: var(--accent); color: var(--accent); }
+.run-unknown { background-color: var(--border-default); color: var(--text-secondary); }
+.run-task { border-color: var(--accent); border-style: dotted; background-color: var(--surface-secondary); color: var(--accent); }
+.calendar-key .run { margin-right: var(--space-2); }
+.day-switch { display: none; flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .charts { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  .running-chip { display: none; }
+  .search { order: 5; flex-basis: 100%; max-width: none; margin-left: 0; }
+  .running-chip:not([hidden]) + #theme { margin-left: auto; }
+}
+@media (max-width: 640px) {
+  .day-switch { display: flex; }
+  .hosts { grid-template-columns: 1fr; gap: var(--space-2); }
+  .hosts > strong:not(:first-child) { margin-top: var(--space-4); }
+  .calendar:not([data-day="0"]) .day-0, .calendar:not([data-day="1"]) .day-1, .calendar:not([data-day="2"]) .day-2,
+  .calendar:not([data-day="3"]) .day-3, .calendar:not([data-day="4"]) .day-4, .calendar:not([data-day="5"]) .day-5,
+  .calendar:not([data-day="6"]) .day-6 { display: none; }
+}
+
+/* ── Restore target ───────────────────────────────────────────────────────── */
+
+.restore-folder { display: grid; margin: var(--space-5) 0 var(--space-3); }
+.restore-folder input { width: 100%; }
+.choice-stack { display: grid; gap: var(--space-3); margin-bottom: var(--space-3); }
+
+/* ── Settings: where a value comes from ───────────────────────────────────── */
+
+.chip.source-saved { background-color: var(--status-success); color: var(--text-on-fill); }
+.chip.source-declared { background-color: var(--status-info); color: var(--text-on-fill); }

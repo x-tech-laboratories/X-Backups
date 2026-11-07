@@ -6,39 +6,7 @@
     <title>X-Backups</title>
   </head>
   <body class="logged-out">
-    <a class="skip" href="#main" id="skip">Skip to content</a>
-    <header class="topbar">
-      <button id="menu" class="icon menu-button" aria-label="Open the menu" aria-expanded="false" aria-controls="sidebar">☰</button>
-      <a href="#/" class="brand">X-Backups</a>
-      <div class="search" role="search">
-        <input id="search" type="search" placeholder="Search repositories and archives" aria-label="Search repositories and archives"
-          autocomplete="off" aria-controls="search-results" aria-expanded="false" />
-        <div id="search-results" class="search-results" hidden></div>
-      </div>
-      <a id="running" class="chip chip-info running-chip" href="#/runs?state=running" hidden></a>
-      <button id="theme" class="icon" aria-label="Theme"></button>
-      <a id="account" class="account-link" href="#/account" title="Your account"></a>
-      <button id="logout">Log out</button>
-    </header>
-    <div class="layout">
-      <nav id="sidebar" class="sidebar" aria-label="Main">
-        <a href="#/" data-section="">Overview</a>
-        <a href="#/hosts" data-section="hosts">Hosts</a>
-        <a href="#/repositories" data-section="repositories">Repositories</a>
-        <a href="#/sources" data-section="sources">Sources</a>
-        <a href="#/jobs" data-section="jobs">Jobs</a>
-        <a href="#/runs" data-section="runs">Runs</a>
-        <a href="#/schedules" data-section="schedules">Schedules</a>
-        <a href="#/events" data-section="events">Events</a>
-        <a href="#/settings" data-section="settings">Settings</a>
-        <a href="#/users" data-section="users" id="nav-users" hidden>Users</a>
-        <a href="#/account" data-section="account">Account</a>
-        <p id="stream-state" class="stream-state muted small" role="status"></p>
-      </nav>
-      <div id="scrim" class="scrim" hidden></div>
-      <main id="main" tabindex="-1"></main>
-    </div>
-    <div id="toasts" class="toasts"></div>
-    <script type="module" src="./main.ts"></script>
+    <div id="app"></div>
+    <script type="module" src="./main.tsx"></script>
   </body>
 </html>

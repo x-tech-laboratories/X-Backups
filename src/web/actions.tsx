@@ -1,9 +1,10 @@
 // Runs a repository's actions from any page: what each does, how it is confirmed, and how its outcome is shown.
 
+import { confirm_dialog, Dialog, open_dialog, text_dialog } from "@x-tech-laboratories/x-libs/web/preact/dialog";
+import { toast } from "@x-tech-laboratories/x-libs/web/preact/toasts";
+import { link } from "@x-tech-laboratories/x-libs/web/router";
+import { useState } from "preact/hooks";
 import { api, query, repository_path, type Action, type Run, type Outcome } from "./api.ts";
-import { h } from "./dom.ts";
-import { link } from "./router.ts";
-import { confirm_dialog, open_dialog, text_dialog, toast } from "./ui.ts";
 
 // One sentence per action on what it does, shown beside its button.
 export const action_descriptions: Record<string, string> = {
@@ -34,7 +35,7 @@ export interface ActionTarget {
   target_id: string;
   repository_name: string;
   // Called once the action has answered, so the page can refresh what it shows.
-  done?: () => void;
+  done?: () => Promise<unknown> | void;
 }
 
 // Starts the action the button stands for, asking first when the action says it needs asking.
@@ -56,14 +57,25 @@ export function start_action(target: ActionTarget, action: Action): void {
 }
 
 function choose_check(target: ActionTarget): void {
-  const kind = h("select", { "aria-label": "What to check" }, ...check_kinds.map(([value, text]) => h("option", { value }, text)));
-  open_dialog("Check the repository", h("div", {},
-    h("p", {}, action_descriptions.check_repo),
-    h("label", { class: "field" }, h("span", { class: "field-label" }, "What to check"), kind),
-  ), (close) => [
-    h("button", { onclick: close }, "Cancel"),
-    h("button", { class: "accent solid", onclick: () => { close(); void run_action(target, "check_repo", "Check", { kind: kind.value }); } }, "Start check"),
-  ]);
+  open_dialog((close) => <CheckDialog target={target} close={close} />);
+}
+
+function CheckDialog({ target, close }: { target: ActionTarget; close: () => void }) {
+  const [kind, set_kind] = useState(check_kinds[0][0]);
+  return (
+    <Dialog title="Check the repository" on_close={close} buttons={<>
+      <button onClick={close}>Cancel</button>
+      <button class="accent solid" onClick={() => { close(); void run_action(target, "check_repo", "Check", { kind }); }}>Start check</button>
+    </>}>
+      <p>{action_descriptions.check_repo}</p>
+      <label class="field">
+        <span class="field-label">What to check</span>
+        <select aria-label="What to check" value={kind} onChange={(event) => set_kind((event.currentTarget as HTMLSelectElement).value)}>
+          {check_kinds.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+        </select>
+      </label>
+    </Dialog>
+  );
 }
 
 export async function run_action(target: ActionTarget, action_id: string, name: string, body: object = {}): Promise<void> {
@@ -73,7 +85,7 @@ export async function run_action(target: ActionTarget, action_id: string, name: 
   } catch (error) {
     toast(`${name} failed: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
   }
-  target.done?.();
+  await target.done?.();
 }
 
 // A short answer becomes a toast, linking to the run it started; a long one, such as a preview, opens in a dialog.

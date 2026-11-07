@@ -1,11 +1,15 @@
 // The Overview's map of the backup flow in three columns: each host's folders on the left, the jobs that back them up in
 // the middle, and the repositories they write to on the right, under the hosts that store them; every box opens its page.
 
-import { api, type BackupMap, type Change, type MapTarget } from "../api.ts";
-import { age, h } from "../dom.ts";
-import { link } from "../router.ts";
-import { attempt, empty, section, skeleton } from "../ui.ts";
-import { touches } from "./shared.ts";
+import { age } from "@x-tech-laboratories/x-libs/web/format";
+import { ButtonGroup } from "@x-tech-laboratories/x-libs/web/preact/controls";
+import { Section } from "@x-tech-laboratories/x-libs/web/preact/layout";
+import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/preact/states";
+import { link } from "@x-tech-laboratories/x-libs/web/router";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
+import { api, type BackupMap, type MapTarget } from "../api.ts";
+import { use_changes } from "../ui.tsx";
+import { touches } from "./shared.tsx";
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 
@@ -150,67 +154,17 @@ function ports(lines: { key: string; at: string; other_y: number }[], box_of: (i
 
 // ── Drawing ──────────────────────────────────────────────────────────────────
 
-function draw(map: BackupMap, view_box: { current: Box | null }): { figure: HTMLElement; fit: () => void; zoom: (factor: number) => void } {
-  const placed = place(map);
-  const whole: Box = { x: 0, y: 0, width: placed.width, height: placed.height };
-  const drawing = svg("svg", { class: "flow-map", role: "img", "aria-label": "Which folders each job backs up, and the repositories it writes them to" });
-  const lines = svg("g", { class: "flows" });
-  const boxes = svg("g", {});
+interface Controls {
+  fit: () => void;
+  zoom: (factor: number) => void;
+}
+
+// The boxes and lines of the map, without its view box, which the map's handlers move.
+function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
   const tones = map.targets.map(tone_of);
   const worst = (indexes: number[]): Tone => indexes.map((index) => tones[index]).sort((left, right) => tone_rank[right] - tone_rank[left])[0] ?? "ok";
   const lit_by = (indexes: number[]) => ({ "data-targets": indexes.join(" ") });
   const host_of = (id: string) => placed.hosts.find((host) => host.id === id)?.name ?? id;
-
-  for (const [index, title] of ["Sources", "Jobs", "Repositories"].entries()) {
-    boxes.append(text("map-group", placed.columns[index], padding + 14, title));
-  }
-
-  for (const host of placed.hosts) {
-    boxes.append(svg("rect", { class: "map-host", x: host.box.x, y: host.box.y, width: host.box.width, height: host.box.height, rx: 10 }));
-    // A configured host's name opens its page.
-    const host_page = map.links?.hosts[host.id];
-    const name = text("map-host-name", host.box.x + padding, host.box.y + 22, host.name);
-    boxes.append(host_page ? svg("a", { href: link(["hosts", host_page]) }, name, svg("title", {}, `${host_page}: open its page`)) : name);
-  }
-
-  for (const [id, source] of placed.sources) {
-    const { box } = source;
-    // A folder of a configured source opens the source's page.
-    const source_page = map.links?.sources[id];
-    boxes.append(svg(source_page ? "a" : "g", { class: "map-node map-source", ...lit_by(source.targets), ...(source_page ? { href: link(["sources", source_page]) } : { tabindex: 0 }) },
-      svg("rect", { x: box.x, y: box.y, width: box.width, height: box.height, rx: 6 }),
-      text("map-path", box.x + 10, box.y + 18, clip(source.path, box.width - 20, 7.4)),
-      svg("title", {}, source_page ? `${source.path}, in the source ${source_page}` : source.path)));
-  }
-
-  for (const [id, job] of placed.jobs) {
-    const { box } = job;
-    const folders = new Set(job.targets.flatMap((index) => map.targets[index].sources)).size;
-    const writes_to = new Set(job.targets.map((index) => map.targets[index].repository)).size;
-    const detail = `${folders} ${folders === 1 ? "folder" : "folders"} → ${writes_to} ${writes_to === 1 ? "repository" : "repositories"}`;
-    const page = map.links?.jobs.includes(id);
-    boxes.append(svg(page ? "a" : "g", { class: `map-node map-job map-tone-${worst(job.targets)}`, ...lit_by(job.targets), ...(page ? { href: link(["jobs", id]) } : { tabindex: 0 }) },
-      svg("rect", { x: box.x, y: box.y, width: box.width, height: box.height, rx: 6 }),
-      svg("circle", { class: "map-dot", cx: box.x + 14, cy: box.y + 17, r: 4 }),
-      text("map-name", box.x + 24, box.y + 21, clip(id, box.width - 34, 7.8)),
-      text("map-detail", box.x + 10, box.y + 37, clip(detail, box.width - 20)),
-      svg("title", {}, `${id}\n${detail}`)));
-  }
-
-  for (const [id, repository] of placed.repositories) {
-    const { box } = repository;
-    const written = repository.targets.filter((index) => map.targets[index].job !== null);
-    const last = Math.max(...repository.targets.map((index) => map.targets[index].last_backup_epoch ?? -Infinity));
-    const detail = written.length === 0 ? `watched only · last backup ${age(Number.isFinite(last) ? last : null)}` : `last backup ${age(Number.isFinite(last) ? last : null)}`;
-    const reasons = repository.targets.flatMap((index) => map.targets[index].reasons.map((reason) => reason.text));
-    boxes.append(svg("a", { class: `map-node map-repository map-tone-${worst(repository.targets)}`, href: link(["repositories", map.targets[repository.targets[0]].id]), ...lit_by(repository.targets) },
-      svg("rect", { x: box.x, y: box.y, width: box.width, height: box.height, rx: 6 }),
-      svg("circle", { class: "map-dot", cx: box.x + 14, cy: box.y + 17, r: 4 }),
-      text("map-name", box.x + 24, box.y + 21, clip(id, box.width - 34, 7.8)),
-      text("map-path", box.x + 10, box.y + 37, clip(repository.path, box.width - 20, 7.4)),
-      text("map-detail", box.x + 10, box.y + 51, clip(detail, box.width - 20)),
-      svg("title", {}, [id, `${repository.path} on ${host_of(repository.stored_on)}`, detail, ...new Set(reasons)].join("\n"))));
-  }
 
   // One line from each folder to each job that backs it up, and one from each job to each repository it writes to.
   const centre = (box: Box) => box.y + box.height / 2;
@@ -226,44 +180,142 @@ function draw(map: BackupMap, view_box: { current: Box | null }): { figure: HTML
   const write_out = ports(writes.map((write) => ({ key: `${write.job}>${write.repository}`, at: write.job, other_y: centre(repository_box(write.repository)) })), job_box);
   const write_in = ports(writes.map((write) => ({ key: `${write.job}>${write.repository}`, at: write.repository, other_y: centre(job_box(write.job)) })), repository_box);
 
-  for (const feed of feeds) {
-    const key = `${feed.source}>${feed.job}`;
-    const source = placed.sources.get(feed.source)!;
-    lines.append(svg("path", { class: `flow map-tone-${worst(feed.targets)}`, d: flow_path(source.box, feed_out.get(key)!, job_box(feed.job), feed_in.get(key)!), ...lit_by(feed.targets) },
-      svg("title", {}, `${host_of(feed.source.split(":")[0])} ${source.path} → ${feed.job}`)));
-  }
-  for (const write of writes) {
-    const key = `${write.job}>${write.repository}`;
-    const retention = [...new Set(write.targets.map((index) => keeps(map.targets[index].retention)).filter(Boolean))];
-    const stored_on = host_of(placed.repositories.get(write.repository)!.stored_on);
-    lines.append(svg("path", { class: `flow map-tone-${worst(write.targets)}`, d: flow_path(job_box(write.job), write_out.get(key)!, repository_box(write.repository), write_in.get(key)!), ...lit_by(write.targets) },
-      svg("title", {}, `${write.job} → ${write.repository} on ${stored_on}${retention.length > 0 ? `, keeps ${retention.join(" / ")}` : ""}`)));
-  }
+  return (
+    <>
+      <g class="flows">
+        {feeds.map((feed) => {
+          const key = `${feed.source}>${feed.job}`;
+          const source = placed.sources.get(feed.source)!;
+          return (
+            <path key={key} class={`flow map-tone-${worst(feed.targets)}`} d={flow_path(source.box, feed_out.get(key)!, job_box(feed.job), feed_in.get(key)!)} {...lit_by(feed.targets)}>
+              <title>{`${host_of(feed.source.split(":")[0])} ${source.path} → ${feed.job}`}</title>
+            </path>
+          );
+        })}
+        {writes.map((write) => {
+          const key = `${write.job}>${write.repository}`;
+          const retention = [...new Set(write.targets.map((index) => keeps(map.targets[index].retention)).filter(Boolean))];
+          const stored_on = host_of(placed.repositories.get(write.repository)!.stored_on);
+          return (
+            <path key={key} class={`flow map-tone-${worst(write.targets)}`} d={flow_path(job_box(write.job), write_out.get(key)!, repository_box(write.repository), write_in.get(key)!)} {...lit_by(write.targets)}>
+              <title>{`${write.job} → ${write.repository} on ${stored_on}${retention.length > 0 ? `, keeps ${retention.join(" / ")}` : ""}`}</title>
+            </path>
+          );
+        })}
+      </g>
+      <g>
+        {["Sources", "Jobs", "Repositories"].map((title, index) => <Text key={title} class_name="map-group" x={placed.columns[index]} y={padding + 14} content={title} />)}
+        {placed.hosts.map((host) => {
+          // A configured host's name opens its page.
+          const host_page = map.links?.hosts[host.id];
+          const name = <Text class_name="map-host-name" x={host.box.x + padding} y={host.box.y + 22} content={host.name} />;
+          return [
+            <rect key={`${host.id}-box`} class="map-host" x={host.box.x} y={host.box.y} width={host.box.width} height={host.box.height} rx={10} />,
+            host_page
+              ? <a key={`${host.id}-name`} href={link(["hosts", host_page])}>{name}<title>{`${host_page}: open its page`}</title></a>
+              : <Text key={`${host.id}-name`} class_name="map-host-name" x={host.box.x + padding} y={host.box.y + 22} content={host.name} />,
+          ];
+        })}
+        {[...placed.sources].map(([id, source]) => {
+          const { box } = source;
+          // A folder of a configured source opens the source's page.
+          const source_page = map.links?.sources[id];
+          const children = <>
+            <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
+            <Text class_name="map-path" x={box.x + 10} y={box.y + 18} content={clip(source.path, box.width - 20, 7.4)} />
+            <title>{source_page ? `${source.path}, in the source ${source_page}` : source.path}</title>
+          </>;
+          return source_page
+            ? <a key={id} class="map-node map-source" {...lit_by(source.targets)} href={link(["sources", source_page])}>{children}</a>
+            : <g key={id} class="map-node map-source" {...lit_by(source.targets)} tabindex={0}>{children}</g>;
+        })}
+        {[...placed.jobs].map(([id, job]) => {
+          const { box } = job;
+          const folders = new Set(job.targets.flatMap((index) => map.targets[index].sources)).size;
+          const writes_to = new Set(job.targets.map((index) => map.targets[index].repository)).size;
+          const detail = `${folders} ${folders === 1 ? "folder" : "folders"} → ${writes_to} ${writes_to === 1 ? "repository" : "repositories"}`;
+          const node_class = `map-node map-job map-tone-${worst(job.targets)}`;
+          const children = <>
+            <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
+            <circle class="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
+            <Text class_name="map-name" x={box.x + 24} y={box.y + 21} content={clip(id, box.width - 34, 7.8)} />
+            <Text class_name="map-detail" x={box.x + 10} y={box.y + 37} content={clip(detail, box.width - 20)} />
+            <title>{`${id}\n${detail}`}</title>
+          </>;
+          return map.links?.jobs.includes(id)
+            ? <a key={id} class={node_class} {...lit_by(job.targets)} href={link(["jobs", id])}>{children}</a>
+            : <g key={id} class={node_class} {...lit_by(job.targets)} tabindex={0}>{children}</g>;
+        })}
+        {[...placed.repositories].map(([id, repository]) => {
+          const { box } = repository;
+          const written = repository.targets.filter((index) => map.targets[index].job !== null);
+          const last = Math.max(...repository.targets.map((index) => map.targets[index].last_backup_epoch ?? -Infinity));
+          const detail = written.length === 0 ? `watched only · last backup ${age(Number.isFinite(last) ? last : null)}` : `last backup ${age(Number.isFinite(last) ? last : null)}`;
+          const reasons = repository.targets.flatMap((index) => map.targets[index].reasons.map((reason) => reason.text));
+          return (
+            <a key={id} class={`map-node map-repository map-tone-${worst(repository.targets)}`} href={link(["repositories", map.targets[repository.targets[0]].id])} {...lit_by(repository.targets)}>
+              <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
+              <circle class="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
+              <Text class_name="map-name" x={box.x + 24} y={box.y + 21} content={clip(id, box.width - 34, 7.8)} />
+              <Text class_name="map-path" x={box.x + 10} y={box.y + 37} content={clip(repository.path, box.width - 20, 7.4)} />
+              <Text class_name="map-detail" x={box.x + 10} y={box.y + 51} content={clip(detail, box.width - 20)} />
+              <title>{[id, `${repository.path} on ${host_of(repository.stored_on)}`, detail, ...new Set(reasons)].join("\n")}</title>
+            </a>
+          );
+        })}
+      </g>
+    </>
+  );
+}
 
-  drawing.append(lines, boxes);
-  highlight_on_hover(drawing);
+// The drawn map, which keeps the reader's zoom across a redraw after a change and hands its zoom and fit to the section's buttons.
+function FlowMap({ map, view_box, controls }: { map: BackupMap; view_box: { current: Box | null }; controls: { current: Controls | null } }) {
+  const drawing = useRef<SVGSVGElement>(null);
+  const snapshot = JSON.stringify(map);
+  const placed = useMemo(() => place(map), [snapshot]);
+  // A refresh that changes nothing leaves the drawing, and whatever is lit, alone.
+  const content = useMemo(() => <Drawing map={map} placed={placed} />, [snapshot]);
+  const whole = useRef<Box>({ x: 0, y: 0, width: placed.width, height: placed.height });
+  whole.current = { x: 0, y: 0, width: placed.width, height: placed.height };
+
   const set_view = (box: Box) => {
     view_box.current = box;
-    drawing.setAttribute("viewBox", `${box.x} ${box.y} ${box.width} ${box.height}`);
+    drawing.current?.setAttribute("viewBox", `${box.x} ${box.y} ${box.width} ${box.height}`);
   };
-  // A redraw after a change keeps the reader's zoom.
-  set_view(view_box.current ?? whole);
   const zoom = (factor: number, centre?: { x: number; y: number }) => {
     const box = view_box.current!;
-    const width = Math.min(whole.width * 2, Math.max(whole.width / 8, box.width * factor));
+    const width = Math.min(whole.current.width * 2, Math.max(whole.current.width / 8, box.width * factor));
     const height = width * box.height / box.width;
     const point = centre ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     set_view({ x: point.x - (point.x - box.x) * width / box.width, y: point.y - (point.y - box.y) * height / box.height, width, height });
   };
-  pan_and_zoom(drawing, () => view_box.current!, set_view, zoom);
 
-  const figure = h("figure", { class: "chart flow-map-frame" }, drawing);
-  return { figure, fit: () => set_view(whole), zoom };
+  useLayoutEffect(() => {
+    set_view(view_box.current ?? whole.current);
+    controls.current = { fit: () => set_view(whole.current), zoom };
+  }, [snapshot]);
+
+  useEffect(() => {
+    const element = drawing.current!;
+    const stop_highlight = highlight_on_hover(element);
+    const stop_panning = pan_and_zoom(element, () => view_box.current!, set_view, zoom);
+    return () => {
+      stop_highlight();
+      stop_panning();
+      controls.current = null;
+    };
+  }, []);
+
+  return (
+    <figure class="chart flow-map-frame">
+      <svg ref={drawing} class="flow-map" role="img" aria-label="Which folders each job backs up, and the repositories it writes them to">{content}</svg>
+    </figure>
+  );
 }
 
 // Lights every line and box that shares a target with whatever the pointer or focus is on, which follows a folder through
 // its jobs to the repositories it lands in, and back; the rest dims.
-function highlight_on_hover(drawing: SVGElement): void {
+function highlight_on_hover(drawing: SVGElement): () => void {
   const light = (target: Element | null) => {
     for (const lit of drawing.querySelectorAll(".lit")) lit.classList.remove("lit");
     const node = target?.closest<SVGElement>(".map-node");
@@ -274,10 +326,18 @@ function highlight_on_hover(drawing: SVGElement): void {
       if (item === node || targets_of(item).some((index) => targets.has(index))) item.classList.add("lit");
     }
   };
-  drawing.addEventListener("pointerover", (event) => light(event.target as Element));
-  drawing.addEventListener("pointerleave", () => light(null));
-  drawing.addEventListener("focusin", (event) => light(event.target as Element));
-  drawing.addEventListener("focusout", () => light(null));
+  const over = (event: Event) => light(event.target as Element);
+  const away = () => light(null);
+  drawing.addEventListener("pointerover", over);
+  drawing.addEventListener("pointerleave", away);
+  drawing.addEventListener("focusin", over);
+  drawing.addEventListener("focusout", away);
+  return () => {
+    drawing.removeEventListener("pointerover", over);
+    drawing.removeEventListener("pointerleave", away);
+    drawing.removeEventListener("focusin", over);
+    drawing.removeEventListener("focusout", away);
+  };
 }
 
 function targets_of(element: SVGElement): string[] {
@@ -285,26 +345,26 @@ function targets_of(element: SVGElement): string[] {
 }
 
 // Dragging pans and Ctrl or ⌘ with the wheel zooms about the pointer; a drag never counts as a click on a repository.
-function pan_and_zoom(drawing: SVGElement, view: () => Box, set_view: (box: Box) => void, zoom: (factor: number, centre: { x: number; y: number }) => void): void {
+function pan_and_zoom(drawing: SVGElement, view: () => Box, set_view: (box: Box) => void, zoom: (factor: number, centre: { x: number; y: number }) => void): () => void {
   const to_map = (event: { clientX: number; clientY: number }) => {
     const bounds = drawing.getBoundingClientRect();
     const box = view();
     return { x: box.x + (event.clientX - bounds.left) / bounds.width * box.width, y: box.y + (event.clientY - bounds.top) / bounds.height * box.height };
   };
-  drawing.addEventListener("wheel", (event) => {
+  const wheel = (event: WheelEvent) => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     zoom(Math.exp(event.deltaY * 0.002), to_map(event));
-  }, { passive: false });
+  };
 
   let start: { x: number; y: number; box: Box } | null = null;
   let dragged = false;
-  drawing.addEventListener("pointerdown", (event) => {
+  const down = (event: PointerEvent) => {
     if (event.button !== 0) return;
     start = { x: event.clientX, y: event.clientY, box: view() };
     dragged = false;
-  });
-  drawing.addEventListener("pointermove", (event) => {
+  };
+  const move = (event: PointerEvent) => {
     if (!start) return;
     const [dx, dy] = [event.clientX - start.x, event.clientY - start.y];
     if (!dragged && Math.hypot(dx, dy) < 4) return;
@@ -313,18 +373,31 @@ function pan_and_zoom(drawing: SVGElement, view: () => Box, set_view: (box: Box)
     drawing.classList.add("panning");
     const bounds = drawing.getBoundingClientRect();
     set_view({ ...start.box, x: start.box.x - dx / bounds.width * start.box.width, y: start.box.y - dy / bounds.height * start.box.height });
-  });
+  };
   const stop = () => {
     start = null;
     drawing.classList.remove("panning");
   };
-  drawing.addEventListener("pointerup", stop);
-  drawing.addEventListener("pointercancel", stop);
-  drawing.addEventListener("click", (event) => {
+  const click = (event: MouseEvent) => {
     if (!dragged) return;
     event.preventDefault();
     dragged = false;
-  }, true);
+  };
+
+  drawing.addEventListener("wheel", wheel, { passive: false });
+  drawing.addEventListener("pointerdown", down);
+  drawing.addEventListener("pointermove", move);
+  drawing.addEventListener("pointerup", stop);
+  drawing.addEventListener("pointercancel", stop);
+  drawing.addEventListener("click", click, true);
+  return () => {
+    drawing.removeEventListener("wheel", wheel);
+    drawing.removeEventListener("pointerdown", down);
+    drawing.removeEventListener("pointermove", move);
+    drawing.removeEventListener("pointerup", stop);
+    drawing.removeEventListener("pointercancel", stop);
+    drawing.removeEventListener("click", click, true);
+  };
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
@@ -351,57 +424,43 @@ function clip(label: string, width: number, char_width = 6.2): string {
   return label.length <= room ? label : `${label.slice(0, Math.max(1, room - 1))}…`;
 }
 
-function text(class_name: string, x: number, y: number, content: string): SVGElement {
-  return svg("text", { class: class_name, x, y }, content);
-}
-
-function svg(tag: string, attributes: Record<string, string | number>, ...children: (SVGElement | string)[]): SVGElement {
-  const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
-  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, String(value));
-  element.append(...children);
-  return element;
+function Text({ class_name, x, y, content }: { class_name: string; x: number; y: number; content: string }) {
+  return <text class={class_name} x={x} y={y}>{content}</text>;
 }
 
 // ── Section ──────────────────────────────────────────────────────────────────
 
-export function map_section(): { root: HTMLElement; update: (changes: Change[] | null) => Promise<void> } {
-  const body = h("div", {}, skeleton(6));
-  const view_box: { current: Box | null } = { current: null };
-  let controls: ReturnType<typeof draw> | null = null;
-  let drawn = "";
+export function MapSection() {
+  const map = use_resource(() => api<BackupMap>("/api/map"), []);
+  use_changes((changes) => { if (touches(changes, null, ["repository", "run", "config"])) map.reload(true); });
+  const view_box = useRef<Box | null>(null);
+  const controls = useRef<Controls | null>(null);
 
-  const tools = h("div", { class: "segmented", role: "group", "aria-label": "Zoom" },
-    h("button", { type: "button", "aria-label": "Zoom out", onclick: () => controls?.zoom(1.25) }, "−"),
-    h("button", { type: "button", "aria-label": "Zoom in", onclick: () => controls?.zoom(0.8) }, "+"),
-    h("button", { type: "button", onclick: () => controls?.fit() }, "Fit"));
+  const tools = (
+    <ButtonGroup label="Zoom">
+      <button type="button" aria-label="Zoom out" onClick={() => controls.current?.zoom(1.25)}>−</button>
+      <button type="button" aria-label="Zoom in" onClick={() => controls.current?.zoom(0.8)}>+</button>
+      <button type="button" onClick={() => controls.current?.fit()}>Fit</button>
+    </ButtonGroup>
+  );
 
-  const update = async (quiet: boolean): Promise<void> => {
-    const map = await attempt(body, quiet, () => api<BackupMap>("/api/map"), () => void update(false));
-    if (map === null) return;
-    // A refresh that changes nothing leaves the drawing, and whatever is lit, alone.
-    const snapshot = JSON.stringify(map);
-    if (snapshot === drawn) return;
-    drawn = snapshot;
-    if (map.targets.length === 0) {
-      controls = null;
-      body.replaceChildren(empty("No repositories yet.", "Repositories appear here once they are configured."));
-      return;
-    }
-    controls = draw(map, view_box);
-    body.replaceChildren(
-      controls.figure,
-      h("p", { class: "muted small flow-map-legend" },
-        ...(["ok", "warning", "critical", "running"] as const).map((tone) => h("span", { class: `legend map-swatch-${tone}` }, tone === "ok" ? "OK" : tone.charAt(0).toUpperCase() + tone.slice(1))),
-        h("span", {}, "Drag to pan, Ctrl or ⌘ and scroll to zoom. Hover a box to follow its lines."),
-      ),
-    );
-  };
-  void update(false);
-
-  return {
-    root: section("What is backed up where", body, tools),
-    update: async (changes) => {
-      if (touches(changes, null, ["repository", "run", "config"])) await update(true);
-    },
-  };
+  return (
+    <Section title="What is backed up where" tools={tools}>
+      <div>
+        <Loaded resource={map} lines={6}>
+          {(answer) => answer.targets.length === 0
+            ? <Empty title="No repositories yet." hint="Repositories appear here once they are configured." />
+            : <>
+              <FlowMap map={answer} view_box={view_box} controls={controls} />
+              <p class="muted small flow-map-legend">
+                {(["ok", "warning", "critical", "running"] as const).map((tone) => (
+                  <span key={tone} class={`legend map-swatch-${tone}`}>{tone === "ok" ? "OK" : tone.charAt(0).toUpperCase() + tone.slice(1)}</span>
+                ))}
+                <span>Drag to pan, Ctrl or ⌘ and scroll to zoom. Hover a box to follow its lines.</span>
+              </p>
+            </>}
+        </Loaded>
+      </div>
+    </Section>
+  );
 }
