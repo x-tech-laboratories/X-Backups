@@ -351,7 +351,7 @@ interface SparklineProps {
 
 // A small line of readings over time with no axes, scaled from zero to top or the highest reading if that is higher.
 export function Sparkline({ label, points, top, color }: SparklineProps) {
-  const frame = { viewBox: `0 0 ${sparkline_width} ${sparkline_height}`, class: "sparkline", role: "img" as const, "aria-label": label };
+  const frame = { viewBox: `0 0 ${sparkline_width} ${sparkline_height}`, className: "sparkline", role: "img" as const, "aria-label": label };
   if (points.length < 2) return <svg {...frame} />;
   const [first, last] = [points[0][0], points.at(-1)![0]];
   const highest = Math.max(top, ...points.map(([, value]) => value)) || 1;
