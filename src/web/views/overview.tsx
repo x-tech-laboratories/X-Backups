@@ -2,6 +2,7 @@
 // backup flow from folders through jobs to repositories, backup ages and sizes, runs and archives over time, and what
 // runs next.
 
+import { start_of_day } from "@x-tech-laboratories/x-libs/dates";
 import { age, duration, now_seconds, size, stamp, until } from "@x-tech-laboratories/x-libs/web/format";
 import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { Segmented } from "@x-tech-laboratories/x-libs/web/react/controls";
@@ -311,7 +312,7 @@ function RunsChart({ runs, span }: { runs: Run[]; span: Span }) {
   const bucket = hours ? 3600 : day_in_seconds;
   const count = hours ? 24 : 7;
   const now = now_seconds();
-  const start = hours ? Math.floor(now / bucket) * bucket - (count - 1) * bucket : start_of_day(now) - (count - 1) * day_in_seconds;
+  const start = hours ? Math.floor(now / bucket) * bucket - (count - 1) * bucket : day_start(now) - (count - 1) * day_in_seconds;
   const stacks: Stack[] = Array.from({ length: count }, (_, index) => {
     const from = start + index * bucket;
     const inside = runs.filter((run) => run.started_epoch >= from && run.started_epoch < from + bucket);
@@ -327,10 +328,8 @@ function RunsChart({ runs, span }: { runs: Run[]; span: Span }) {
   );
 }
 
-function start_of_day(epoch: number): number {
-  const date = new Date(epoch * 1000);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime() / 1000;
+function day_start(epoch: number): number {
+  return start_of_day(new Date(epoch * 1000)).getTime() / 1000;
 }
 
 // ── Next ─────────────────────────────────────────────────────────────────────
@@ -388,7 +387,7 @@ async function fetch_histories(repositories: RepositorySummary[]): Promise<Map<s
 function StoredChart({ repositories, histories: by_repository }: { repositories: RepositorySummary[]; histories: Map<string, History> }) {
   const histories = repositories.map((repository) => by_repository.get(repository.id) ?? { polls: [], archives: [] });
   const days = new Set<number>();
-  for (const history of histories) for (const poll of history.polls) days.add(start_of_day(poll.epoch));
+  for (const history of histories) for (const poll of history.polls) days.add(day_start(poll.epoch));
   const ordered = [...days].sort((first, second) => first - second);
   const sums = (field: "deduplicated_size" | "original_size") => ordered.map((day): [number, number | null] => {
     let total = 0;

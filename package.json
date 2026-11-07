@@ -1,7 +1,7 @@
 {
   "name": "x-backups",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A web platform for managing borg backups",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -25,7 +25,7 @@
     "@fastify/static": "^10.1.7",
     "@fastify/websocket": "^11.3.4",
     "@x-tech-laboratories/halon": "^0.1.1",
-    "@x-tech-laboratories/x-libs": "^0.5.0",
+    "@x-tech-laboratories/x-libs": "^0.6.0",
     "fastify": "^5.12.7",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

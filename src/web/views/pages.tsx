@@ -1,5 +1,6 @@
 // The smaller pages: the week of tasks and host timers, the event log, and the settings.
 
+import { add_days, start_of_day } from "@x-tech-laboratories/x-libs/dates";
 import { ButtonGroup, Segmented, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { Facts, Section, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
@@ -118,10 +119,8 @@ interface CalendarRow {
 
 // Midnight starting the Monday of the week `offset` weeks from this one.
 function week_start(offset: number): number {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - (date.getDay() + 6) % 7 + offset * 7);
-  return date.getTime() / 1000;
+  const today = start_of_day(new Date());
+  return add_days(today, -((today.getDay() + 6) % 7) + offset * 7).getTime() / 1000;
 }
 
 // A task's row: when it is next due on each of its targets, and its newest run.
@@ -161,11 +160,7 @@ function calendar_entries(timer: TimerRow, runs: TimerRun[]): CalendarEntry[] {
 // A row per task and timer and a column per day of the week, each cell holding that day's runs; on phones one day shows at a time.
 function WeekCalendar({ rows, start, day, on_day }: { rows: CalendarRow[]; start: number; day: number; on_day: (day: number) => void }) {
   if (rows.length === 0) return <Empty title="Nothing scheduled." hint="Tasks show once a job or repository has one, and timers are read from each host's systemd." />;
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(start * 1000);
-    date.setDate(date.getDate() + index);
-    return date;
-  });
+  const days = Array.from({ length: 7 }, (_, index) => add_days(new Date(start * 1000), index));
   const today = new Date().toDateString();
   const day_of = (epoch: number) => days.findIndex((date) => date.toDateString() === new Date(epoch * 1000).toDateString());
   const time = (epoch: number) => new Date(epoch * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
