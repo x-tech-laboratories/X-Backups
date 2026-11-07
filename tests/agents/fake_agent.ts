@@ -50,7 +50,9 @@ export class FakeAgent implements Agent {
     return [...this.polls.keys()].map((run_id) => ({ run_id, pid: 1, started_epoch: 0, state: "running", exit_code: null }));
   }
 
-  async health(): Promise<HealthSample> {
+  // Answers the one request of X-Backups' own, a health sample.
+  async request(type: string): Promise<HealthSample> {
+    if (type !== "health") throw new AgentError(`This agent does not know the request '${type}'.`);
     return SAMPLE;
   }
 }

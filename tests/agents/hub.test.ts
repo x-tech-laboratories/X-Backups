@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { Writable } from "node:stream";
 import fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { start_agent, type RunningAgent } from "../../src/agent/agent.ts";
-import { encode_message, key_host_header, protocol_version } from "../../src/shared/agent_protocol.ts";
+import { encode_message } from "@x-tech-laboratories/x-libs/agent/protocol";
+import { LocalAgent } from "@x-tech-laboratories/x-libs/server/agents/local";
+import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
+import { command_runner, start_agent, type RunningAgent } from "../../src/agent/agent.ts";
+import { key_host_header, x_backups_app } from "../../src/shared/agent_protocol.ts";
 import { AgentHub, close_codes } from "../../src/server/agents/hub.ts";
-import { LocalAgent } from "../../src/server/agents/local.ts";
-import { register_agent_route } from "../../src/server/agents/route.ts";
 import { AgentTokens } from "../../src/server/agents/tokens.ts";
 import { Store } from "../../src/server/store.ts";
 import { make_key } from "./test_keys.ts";
@@ -239,7 +240,7 @@ describe("agent hub", () => {
     const token = hub.issue_token("thor");
     const socket = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } });
     socket.addEventListener("open", () => {
-      socket.send(encode_message({ type: "hello", protocol: protocol_version + 1, host: "thor", agent_version: "9", runs: [] }));
+      socket.send(encode_message({ type: "hello", protocol: x_backups_app.protocol_version + 1, host: "thor", agent_version: "9", runs: [] }, x_backups_app));
     });
     const [event] = await once(socket, "close") as [CloseEvent];
     expect(event.code).toBe(close_codes.protocol);
@@ -268,7 +269,7 @@ describe("agent hub", () => {
   });
 
   it("moves its built-in agent to the host the config names as the server's own", async () => {
-    const local = new AgentHub(new AgentTokens(new Store(":memory:")), { local: { host: "local", agent: new LocalAgent(state_directory) } });
+    const local = new AgentHub(new AgentTokens(new Store(":memory:")), { local: { host: "local", agent: new LocalAgent(state_directory, { runner: command_runner }) } });
 
     local.set_local_host("heimdall");
 
@@ -344,7 +345,7 @@ describe("agent key login", () => {
       expect(challenge).toMatchObject({ type: "challenge", nonce: expect.any(String) });
       const ended = new Promise<CloseEvent>((resolve) => socket.addEventListener("close", resolve, { once: true }));
 
-      socket.send(encode_message({ type: "hello", protocol: protocol_version, host: "odin", agent_version: "test", runs: [], signature }));
+      socket.send(encode_message({ type: "hello", protocol: x_backups_app.protocol_version, host: "odin", agent_version: "test", runs: [], signature }, x_backups_app));
 
       expect((await ended).code).toBe(close_codes.bad_key);
       expect(hub.is_connected("odin")).toBe(false);

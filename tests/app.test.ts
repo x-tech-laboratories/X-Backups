@@ -16,7 +16,7 @@ import { Poller } from "../src/server/poller.ts";
 import { ConfigSources } from "../src/server/sources.ts";
 import { Store } from "../src/server/store.ts";
 import { FakeAgent, SAMPLE } from "./agents/fake_agent.ts";
-import { key_fingerprint } from "../src/shared/agent_keys.ts";
+import { key_fingerprint } from "@x-tech-laboratories/x-libs/agent/keys";
 import { make_key } from "./agents/test_keys.ts";
 
 const password_hash = hash_password("correct horse");
@@ -102,7 +102,7 @@ describe("health check", () => {
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({
       status: "critical",
-      repositories: [{ id: "odin", poll: "failed", level: "critical", reasons: [{ level: "critical", text: expect.stringMatching(/^last backup .* ago, limit 1 Day$/) }] }],
+      repositories: [{ id: "odin", poll: "failed", level: "critical", reasons: [{ level: "critical", text: expect.stringMatching(/^last backup .* ago, limit 1 day$/) }] }],
     });
   });
 

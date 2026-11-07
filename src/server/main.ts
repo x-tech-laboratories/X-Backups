@@ -2,8 +2,11 @@
 
 import { join } from "node:path";
 
+import { LocalAgent } from "@x-tech-laboratories/x-libs/server/agents/local";
+
+import { command_runner } from "../agent/agent.ts";
+import { read_health } from "../agent/health.ts";
 import { AgentHub } from "./agents/hub.ts";
-import { LocalAgent } from "./agents/local.ts";
 import { AgentTokens } from "./agents/tokens.ts";
 import { build_app } from "./app.ts";
 import { load_password_hash, type ProxyLogin } from "./auth.ts";
@@ -38,7 +41,7 @@ const store = Store.open_from_environment();
 // The server's own host is the managed one with no address, whose commands the built-in agent runs here; its long runs
 // keep their output under the state folder, so they outlive a restart of the server.
 const agents = new AgentHub(new AgentTokens(store), {
-  local: { host: own_host(config.entities), agent: new LocalAgent(join(state_directory, "agent")) },
+  local: { host: own_host(config.entities), agent: new LocalAgent(join(state_directory, "agent"), { runner: command_runner, requests: { health: () => read_health() } }) },
 });
 const poller = new Poller(config, store, agents);
 // Starts every task when it falls due, reading calendar schedules in X_BACKUPS_TIMEZONE or the server's own zone.

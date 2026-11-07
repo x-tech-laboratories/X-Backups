@@ -197,7 +197,8 @@ writing there; the server refuses it otherwise. A grant on a repository from an 
 becomes grants on the jobs writing there on the first start.
 
 Anyone can turn on a second factor (an authenticator app, with recovery codes) on the Account
-page. Five wrong passwords for one name from one address lock that pair out for five minutes.
+page. One name may be tried from one address five times in five minutes, right or wrong; then
+that pair waits.
 
 API tokens, made on the Users page, read like a viewer of everything and nothing more:
 send one as `Authorization: Bearer <token>`. `/metrics` serves Prometheus metrics to a token or a

@@ -1,6 +1,6 @@
 // How healthy each repository is and why, rolled up into one level for X-Monitor and the page.
 
-import { format_age, format_duration } from "./borg/durations.ts";
+import { format_age, format_duration } from "@x-tech-laboratories/x-libs/durations";
 import type { Watched } from "./poller.ts";
 
 // ── Levels ───────────────────────────────────────────────────────────────────

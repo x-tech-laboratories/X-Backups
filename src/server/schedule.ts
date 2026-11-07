@@ -4,7 +4,7 @@
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
-import { parse_duration } from "./borg/durations.ts";
+import { parse_duration } from "@x-tech-laboratories/x-libs/durations";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ export function parse_schedule(expression: ScheduleText): Schedule {
   if (typeof expression === "number") return interval(expression, String(expression));
   const text = expression.trim().toLowerCase().replace(/\s+/g, " ");
   if (text === "") throw new Error("A schedule cannot be empty.");
-  if (/^\d+$/.test(text) || /^(\d+[wdhms])+$/.test(text)) return interval(parse_duration(text), expression);
+  if (/^\d+$/.test(text) || /^(\d+[wdhms])+$/.test(text)) return interval(parse_duration(text, "schedule"), expression);
   if (Object.hasOwn(presets, text)) return parse_cron(presets[text]);
 
   const daily = /^daily (\S+)$/.exec(text);

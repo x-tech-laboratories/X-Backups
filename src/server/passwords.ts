@@ -1,29 +1,16 @@
-// Password hashes: scrypt with a random salt, and the one hash file the declared admin logs in with.
+// Password hashes from X-Libs, and the one hash file the declared admin logs in with: a bare hash, or one `name:hash`
+// line as `npm run hash-password` writes it.
 
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { load_accounts } from "@x-tech-laboratories/x-libs/server/passwords";
 
-const key_length = 64;
+export { hash_password, verify_password } from "@x-tech-laboratories/x-libs/server/passwords";
 
-// Stored as `scrypt$<salt hex>$<hash hex>`.
-export function hash_password(password: string): string {
-  const salt = randomBytes(16);
-  return `scrypt$${salt.toString("hex")}$${scryptSync(password, salt, key_length).toString("hex")}`;
-}
+// The environment variable naming the hash file.
+export const password_hash_variable = "X_BACKUPS_PASSWORD_HASH_FILE";
 
-export function verify_password(password: string, stored: string): boolean {
-  const [scheme, salt_hex, hash_hex] = stored.trim().split("$");
-  if (scheme !== "scrypt" || !salt_hex || !hash_hex) return false;
-  const expected = Buffer.from(hash_hex, "hex");
-  const actual = scryptSync(password, Buffer.from(salt_hex, "hex"), expected.length);
-  return timingSafeEqual(actual, expected);
-}
-
-export function load_password_hash(file_path: string | undefined = process.env.X_BACKUPS_PASSWORD_HASH_FILE): string {
-  if (!file_path) {
-    throw new Error("X_BACKUPS_PASSWORD_HASH_FILE is not set; create one with `npm run hash-password -- <file>`.");
-  }
-  const stored = readFileSync(file_path, "utf8").trim();
-  if (!stored.startsWith("scrypt$")) throw new Error(`${file_path} does not hold a hash from \`npm run hash-password\`.`);
-  return stored;
+export function load_password_hash(file_path: string | undefined = process.env[password_hash_variable]): string {
+  if (!file_path) throw new Error(`${password_hash_variable} is not set; create one with \`npm run hash-password -- <file>\`.`);
+  const accounts = load_accounts(password_hash_variable, file_path);
+  if (accounts.size !== 1) throw new Error(`${file_path} must hold the declared admin's hash alone, not ${accounts.size} users.`);
+  return [...accounts.values()][0];
 }

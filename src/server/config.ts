@@ -6,8 +6,8 @@
 
 import { readFileSync } from "node:fs";
 
-import { AgentKeyError, parse_public_key } from "../shared/agent_keys.ts";
-import { parse_duration } from "./borg/durations.ts";
+import { AgentKeyError, parse_public_key } from "@x-tech-laboratories/x-libs/agent/keys";
+import { parse_duration } from "@x-tech-laboratories/x-libs/durations";
 import { BorgRepository, type BorgConfig, type TargetScope } from "./borg/repository.ts";
 import { as_list } from "./borg/shell.ts";
 import { repo_location } from "./map.ts";
@@ -558,7 +558,7 @@ function parse_job(tagged: TaggedEntry): { job: JobEntity; tasks: WrittenTasks }
 function interval_of(entry: Record<string, unknown>, defaults: Record<string, unknown>, fail: Fail): number {
   const interval = entry.interval ?? defaults.interval ?? default_settings.interval.fallback;
   if (!is_field_kind(interval, "duration")) fail(`interval must be a duration such as "1h", not ${JSON.stringify(interval)}.`, "interval");
-  const interval_in_seconds = parse_duration(interval as number | string);
+  const interval_in_seconds = parse_duration(interval, "interval");
   if (interval_in_seconds <= 0) fail("interval must be longer than zero.", "interval");
   return interval_in_seconds;
 }
@@ -1005,7 +1005,7 @@ function task_config(kind: TaskKind, written: WrittenTask | undefined, fallback:
 
 // A check's schedule from its freshness limits: half the shortest, so a run lands well before the limit passes.
 function limit_schedule(limits: (number | string | undefined)[]): Partial<TaskConfig> {
-  const seconds = limits.filter((limit) => limit !== undefined).map((limit) => parse_duration(limit!)).filter((limit) => limit > 0);
+  const seconds = limits.filter((limit) => limit !== undefined).map((limit) => parse_duration(limit, "check limit")).filter((limit) => limit > 0);
   if (seconds.length === 0) return {};
   const half = Math.max(Math.floor(Math.min(...seconds) / 2), shortest_default_schedule_in_seconds);
   return { schedule: duration_text(half), origin: "default" };
@@ -1050,7 +1050,7 @@ function is_duration(value: unknown): boolean {
   if (typeof value === "number") return Number.isFinite(value) && value >= 0;
   if (typeof value !== "string") return false;
   try {
-    parse_duration(value);
+    parse_duration(value, "duration");
     return true;
   } catch {
     return false;

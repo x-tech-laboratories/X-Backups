@@ -29,10 +29,10 @@ describe("backup age", () => {
     const config = { max_age: "1d", warn_age: "12h" };
 
     expect(repository_health(watched(config, { backup: 13 * hour }), now)).toEqual({
-      level: "warning", reasons: [{ level: "warning", text: "last backup 13 Hours ago, warning at 12 Hours" }],
+      level: "warning", reasons: [{ level: "warning", text: "last backup 13 hours ago, warning at 12 hours" }],
     });
     expect(repository_health(watched(config, { backup: 25 * hour }), now).reasons).toEqual([
-      { level: "critical", text: "last backup 1 Day 1 Hour ago, limit 1 Day" },
+      { level: "critical", text: "last backup 1 day, 1 hour ago, limit 1 day" },
     ]);
   });
 
@@ -47,7 +47,7 @@ describe("check and canary ages", () => {
   it("warns when the oldest passing check is past check_warn_age", () => {
     const result = repository_health(watched({ check_units: ["borg-check.service"], check_max_age: "30d", check_warn_age: "14d" }, { backup: hour, check: 15 * day }), now);
 
-    expect(result).toEqual({ level: "warning", reasons: [{ level: "warning", text: "oldest check passed 2 Weeks 1 Day ago, warning at 2 Weeks" }] });
+    expect(result).toEqual({ level: "warning", reasons: [{ level: "warning", text: "oldest check passed 2 weeks, 1 day ago, warning at 2 weeks" }] });
   });
 
   it("warns, then turns critical, as the canary goes without running", () => {
@@ -56,7 +56,7 @@ describe("check and canary ages", () => {
     expect(repository_health(watched(config, { backup: hour, canary: day }), now).level).toBe("ok");
     expect(repository_health(watched(config, { backup: hour, canary: 2 * day + hour }), now).level).toBe("warning");
     expect(repository_health(watched(config, { backup: hour, canary: 3 * day + hour }), now).reasons).toEqual([
-      { level: "critical", text: "restore canary last ran 3 Days 1 Hour ago, limit 3 Days" },
+      { level: "critical", text: "restore canary last ran 3 days, 1 hour ago, limit 3 days" },
     ]);
   });
 });

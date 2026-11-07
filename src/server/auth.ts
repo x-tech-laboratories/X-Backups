@@ -7,7 +7,10 @@
 // ── Imports ──────────────────────────────────────────────────────────────────
 
 import { randomBytes } from "node:crypto";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import fastify_cookie, { type CookieSerializeOptions } from "@fastify/cookie";
+import fastify_rate_limit from "@fastify/rate-limit";
+import fastify_session, { MemoryStore } from "@fastify/session";
+import type { FastifyInstance, FastifyRequest, Session } from "fastify";
 
 import type { Grant } from "./access.ts";
 import { AccountError, has_role, type Accounts, type Role, type User } from "./accounts.ts";
@@ -28,6 +31,11 @@ export interface Viewer {
 declare module "fastify" {
   interface FastifyRequest {
     viewer: Viewer | null;
+  }
+
+  interface Session {
+    // The user the session is logged in as.
+    name?: string;
   }
 }
 
@@ -52,9 +60,9 @@ const cookie_name = "x_backups_session";
 const oidc_cookie_name = "x_backups_oidc";
 const session_lifetime_ms = 12 * 60 * 60 * 1000;
 
-// After this many wrong passwords for one name from one address, that pair waits before trying again.
-const failures_allowed = 5;
-const lockout_ms = 5 * 60 * 1000;
+// One name may be tried from one address this many times in the window, then that pair waits.
+const tries_allowed = 5;
+const try_window = "5 minutes";
 
 // Reached without a login; an agent proves itself with its own token instead.
 const open_routes = new Set(["/api/health", "/api/agent", "/api/login", "/api/auth/info", "/api/auth/oidc/start", "/api/auth/oidc/callback"]);
@@ -82,51 +90,10 @@ export function needed(method: string, path: string): "open" | "any" | Role {
   return "viewer";
 }
 
-// ── Sessions ─────────────────────────────────────────────────────────────────
+// ── Cookies ──────────────────────────────────────────────────────────────────
 
-class Sessions {
-  // Token to the user and expiry; a restart logs everyone out.
-  private readonly sessions = new Map<string, { name: string; expires: number }>();
-
-  open(name: string): string {
-    const token = randomBytes(32).toString("hex");
-    this.sessions.set(token, { name, expires: Date.now() + session_lifetime_ms });
-    return token;
-  }
-
-  name_of(token: string | undefined): string | null {
-    if (token === undefined) return null;
-    const session = this.sessions.get(token);
-    if (session === undefined) return null;
-    if (session.expires < Date.now()) {
-      this.sessions.delete(token);
-      return null;
-    }
-    return session.name;
-  }
-
-  close(token: string | undefined): void {
-    if (token !== undefined) this.sessions.delete(token);
-  }
-
-  // Ends every session of a user whose access changed or who was removed, except the one making the change.
-  close_user(name: string, keep?: string): void {
-    for (const [token, session] of this.sessions) if (session.name === name && token !== keep) this.sessions.delete(token);
-  }
-}
-
-function read_cookie(request: FastifyRequest, name: string): string | undefined {
-  for (const part of (request.headers.cookie ?? "").split(";")) {
-    const [key, ...value] = part.trim().split("=");
-    if (key === name) return value.join("=");
-  }
-  return undefined;
-}
-
-function cookie(request: FastifyRequest, name: string, value: string, max_age_seconds: number, same_site = "Strict"): string {
-  const secure = request.protocol === "https" ? "; Secure" : "";
-  return `${name}=${value}; Path=/; HttpOnly; SameSite=${same_site}; Max-Age=${max_age_seconds}${secure}`;
-}
+// The login state a single sign-on provider hands back, valid for ten minutes and sent on the provider's redirect.
+const oidc_cookie: CookieSerializeOptions = { path: "/", httpOnly: true, sameSite: "lax", secure: "auto", maxAge: 600 };
 
 function as_viewer(user: User, via: Viewer["via"]): Viewer {
   return { name: user.name, role: user.role, grants: user.grants, via };
@@ -134,10 +101,28 @@ function as_viewer(user: User, via: Viewer["via"]): Viewer {
 
 // ── Registration ─────────────────────────────────────────────────────────────
 
-export function register_auth(app: FastifyInstance, options: AuthOptions): void {
+export async function register_auth(app: FastifyInstance, options: AuthOptions): Promise<void> {
   const { accounts, oidc = null, proxy = null, sees_target = () => true } = options;
-  const sessions = new Sessions();
-  const failures = new Map<string, { count: number; until: number }>();
+  // Session ids to their sessions, kept in the server so a restart logs everyone out.
+  const sessions = new Map<string, Session>();
+
+  await app.register(fastify_cookie);
+  await app.register(fastify_session, {
+    secret: randomBytes(32).toString("hex"),
+    cookieName: cookie_name,
+    saveUninitialized: false,
+    store: new MemoryStore(sessions),
+    cookie: { path: "/", httpOnly: true, sameSite: "strict", secure: "auto", maxAge: session_lifetime_ms },
+  });
+  await app.register(fastify_rate_limit, {
+    global: false,
+    errorResponseBuilder: () => ({ statusCode: 429, error: "Too many tries; wait a few minutes." }),
+  });
+
+  // Ends every session of a user whose access changed or who was removed, except the one making the change.
+  const close_user = (name: string, keep?: string) => {
+    for (const [id, session] of sessions) if (session.name === name && id !== keep) sessions.delete(id);
+  };
 
   app.decorateRequest("viewer", null);
 
@@ -163,8 +148,8 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
   });
 
   const identify = (request: FastifyRequest): Viewer | null => {
-    const session_user = sessions.name_of(read_cookie(request, cookie_name));
-    if (session_user !== null) {
+    const session_user = request.session.name;
+    if (session_user !== undefined) {
       const user = accounts.user(session_user);
       if (user !== null) return as_viewer(user, "session");
     }
@@ -181,41 +166,39 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
     return null;
   };
 
-  const start_session = (request: FastifyRequest, reply: FastifyReply, name: string) => {
-    reply.header("set-cookie", cookie(request, cookie_name, sessions.open(name), session_lifetime_ms / 1000));
+  // A fresh session id at login, so one handed out before it cannot ride along.
+  const start_session = async (request: FastifyRequest, name: string) => {
+    await request.session.regenerate();
+    request.session.name = name;
+  };
+
+  const login_name = (request: FastifyRequest) => {
+    const body = request.body as { name?: unknown } | undefined;
+    return typeof body?.name === "string" && body.name.trim() ? body.name.trim().toLowerCase() : accounts.admin_name;
   };
 
   // ── Login ────────────────────────────────────────────────────────────────
 
   app.get("/api/auth/info", async () => ({ oidc: oidc === null ? null : { label: oidc.settings.label }, admin_name: accounts.admin_name }));
 
-  app.post<{ Body: { name?: unknown; password?: unknown; code?: unknown } }>("/api/login", async (request, reply) => {
-    const name = typeof request.body?.name === "string" && request.body.name.trim() ? request.body.name.trim().toLowerCase() : accounts.admin_name;
+  // Tries are counted per name and address once the body is read, whether they succeed or not.
+  app.post<{ Body: { name?: unknown; password?: unknown; code?: unknown } }>("/api/login", {
+    config: { rateLimit: { max: tries_allowed, timeWindow: try_window, hook: "preHandler", keyGenerator: (request) => `${request.ip}\n${login_name(request)}` } },
+  }, async (request, reply) => {
+    const name = login_name(request);
     const password = request.body?.password;
     const code = typeof request.body?.code === "string" ? request.body.code : undefined;
-    const key = `${request.ip}\n${name}`;
-    const failure = failures.get(key);
-    if (failure && failure.count >= failures_allowed && failure.until > Date.now()) {
-      return reply.code(429).send({ error: "Too many wrong tries; wait a few minutes." });
-    }
     const { user, needs_code } = typeof password === "string" ? accounts.authenticate(name, password, code) : { user: null, needs_code: false };
     if (user === null) {
-      // Asking for the code is not a failure; a wrong password or a wrong code is.
-      if (!(needs_code && !code)) {
-        const count = (failure && failure.until > Date.now() ? failure.count : 0) + 1;
-        failures.set(key, { count, until: Date.now() + lockout_ms });
-      }
       if (needs_code) return reply.code(401).send({ error: code ? "That code does not match." : "Enter the code from your authenticator app.", totp_required: true });
       return reply.code(401).send({ error: "Wrong name or password." });
     }
-    failures.delete(key);
-    start_session(request, reply, user.name);
+    await start_session(request, user.name);
     return reply.code(204).send();
   });
 
   app.post("/api/logout", async (request, reply) => {
-    sessions.close(read_cookie(request, cookie_name));
-    reply.header("set-cookie", cookie(request, cookie_name, "", 0));
+    await request.session.destroy();
     return reply.code(204).send();
   });
 
@@ -228,11 +211,11 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
   // ── Single sign-on ───────────────────────────────────────────────────────
 
   if (oidc !== null) {
-    app.get("/api/auth/oidc/start", async (request, reply) => {
+    app.get("/api/auth/oidc/start", async (_request, reply) => {
       const url = await oidc.start();
       // The state goes back in a cookie too, so only the browser that started a login can finish it.
       const state = new URL(url).searchParams.get("state")!;
-      reply.header("set-cookie", cookie(request, oidc_cookie_name, state, 600, "Lax"));
+      reply.setCookie(oidc_cookie_name, state, oidc_cookie);
       return reply.redirect(url);
     });
 
@@ -240,12 +223,13 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
       const fail = (message: string) => reply.redirect(`/#/?login_error=${encodeURIComponent(message)}`);
       const { state = "", code = "", error, error_description } = request.query;
       if (error) return fail(`The provider refused the login: ${error_description ?? error}`);
-      if (!state || state !== read_cookie(request, oidc_cookie_name)) return fail("That login was started in another browser; start again.");
+      if (!state || state !== request.cookies[oidc_cookie_name]) return fail("That login was started in another browser; start again.");
       try {
         const name = (await oidc.finish(state, code)).toLowerCase();
         const user = accounts.user(name);
         if (user === null) return fail(`There is no X-Backups user named '${name}'; an admin adds one first.`);
-        reply.header("set-cookie", [cookie(request, oidc_cookie_name, "", 0, "Lax"), cookie(request, cookie_name, sessions.open(user.name), session_lifetime_ms / 1000)]);
+        reply.clearCookie(oidc_cookie_name, oidc_cookie);
+        await start_session(request, user.name);
         return reply.redirect("/");
       } catch (problem) {
         return fail((problem as Error).message);
@@ -257,7 +241,7 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
 
   app.put<{ Body: { current?: unknown; next?: unknown } }>("/api/account/password", async (request) => {
     accounts.change_password(request.viewer!.name, request.body?.current, request.body?.next);
-    sessions.close_user(request.viewer!.name, read_cookie(request, cookie_name));
+    close_user(request.viewer!.name, request.session.sessionId);
     return { ok: true };
   });
 
@@ -285,7 +269,7 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
   app.put<{ Params: { name: string }; Body: Record<string, unknown> }>("/api/users/:name", async (request) => {
     const body = request.body ?? {};
     const user = accounts.update_user(request.params.name, { role: body.role, grants: body.grants, password: body.password });
-    sessions.close_user(user.name);
+    close_user(user.name);
     request.log.info(`${request.viewer!.name} changed the user ${user.name}`);
     return user;
   });
@@ -293,7 +277,7 @@ export function register_auth(app: FastifyInstance, options: AuthOptions): void 
   app.delete<{ Params: { name: string } }>("/api/users/:name", async (request, reply) => {
     if (request.params.name === request.viewer!.name) throw new AccountError("You cannot remove yourself.", 403);
     accounts.delete_user(request.params.name);
-    sessions.close_user(request.params.name);
+    close_user(request.params.name);
     request.log.info(`${request.viewer!.name} removed the user ${request.params.name}`);
     return reply.code(204).send();
   });

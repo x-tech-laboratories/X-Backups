@@ -6,11 +6,11 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastify_static from "@fastify/static";
-import { key_fingerprint } from "../shared/agent_keys.ts";
+import { key_fingerprint } from "@x-tech-laboratories/x-libs/agent/keys";
+import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
 import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, writers, type Scope, type World } from "./access.ts";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import type { AgentHub } from "./agents/hub.ts";
-import { register_agent_route } from "./agents/route.ts";
 import { register_auth, type ProxyLogin } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
 import { backup_map, map_entry, map_links } from "./map.ts";
@@ -146,7 +146,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // What the viewer sees, or null for everything.
   const scope = (request: FastifyRequest): Scope | null => scope_of(request.viewer?.grants ?? null, world());
 
-  register_auth(app, {
+  await register_auth(app, {
     accounts, oidc: options.oidc, proxy: options.proxy,
     sees_target: (request, target_id) => sees(scope(request), { kind: "target", target_id }),
   });

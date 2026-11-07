@@ -13,7 +13,7 @@ import {
   CHECK_KINDS, TRACKED_CHECKS, canary_verdict, check_run_kind, check_unit_script, covered_by_check_run,
   merge_unit, observed_unit, parse_check_units, type CheckState,
 } from "./checks.ts";
-import { format_age, format_duration, parse_duration } from "./durations.ts";
+import { format_age, format_duration, parse_duration } from "@x-tech-laboratories/x-libs/durations";
 import {
   LIST_FORMAT, PRUNE_LINE, RepoView, children_filter, decode_json, diff_line, format_size, is_object, parse_diff,
   parse_listing, parse_size, split_run_output, type ArchiveEntry, type DiffChange, type ListingEntry,
@@ -225,11 +225,11 @@ export class BorgRepository {
   constructor(name: string, config: BorgConfig, scope: TargetScope = {}) {
     this.name = name;
     this.id = config.id ?? name;
-    this.timeout = parse_duration(config.timeout ?? BorgRepository.DEFAULT_TIMEOUT);
+    this.timeout = parse_duration(config.timeout ?? BorgRepository.DEFAULT_TIMEOUT, "timeout");
 
     this.repo = config.repo ?? null;
-    this.max_age = parse_duration(config.max_age ?? "1d");
-    this.warn_age = parse_duration(config.warn_age ?? 0);
+    this.max_age = parse_duration(config.max_age ?? "1d", "max_age");
+    this.warn_age = parse_duration(config.warn_age ?? 0, "warn_age");
     if (this.warn_age > 0 && this.warn_age >= this.max_age) throw new Error("warn_age must be shorter than max_age");
     this.quota = parse_size(config.quota ?? 0);
     this.passphrase = config.passphrase ?? null;
@@ -258,13 +258,13 @@ export class BorgRepository {
     this.cache_dir_configured = Boolean(config.cache_dir);
     this.backup_lock_wait = config.backup_lock_wait ?? 600;
     this.canary_path = config.canary_path ?? null;
-    this.canary_interval = parse_duration(config.canary_interval ?? "1d");
-    this.canary_warn_age = parse_duration(config.canary_warn_age ?? 0);
-    this.canary_max_age = parse_duration(config.canary_max_age ?? 0);
+    this.canary_interval = parse_duration(config.canary_interval ?? "1d", "canary_interval");
+    this.canary_warn_age = parse_duration(config.canary_warn_age ?? 0, "canary_warn_age");
+    this.canary_max_age = parse_duration(config.canary_max_age ?? 0, "canary_max_age");
     if (this.canary_warn_age > 0 && this.canary_max_age > 0 && this.canary_warn_age >= this.canary_max_age) throw new Error("canary_warn_age must be shorter than canary_max_age");
     this.check_units = as_list(config.check_units);
-    this.check_max_age = parse_duration(config.check_max_age ?? "8d");
-    this.check_warn_age = parse_duration(config.check_warn_age ?? 0);
+    this.check_max_age = parse_duration(config.check_max_age ?? "8d", "check_max_age");
+    this.check_warn_age = parse_duration(config.check_warn_age ?? 0, "check_warn_age");
     this.restore_dir = config.restore_dir ?? "/var/tmp/x-backups-restore";
     this.browse_limit = Math.max(1, Math.trunc(Number(config.browse_limit ?? 2000)));
     this.retention = {};
@@ -292,7 +292,7 @@ export class BorgRepository {
     this.inhibit_sleep = Boolean(config.inhibit_sleep ?? false);
     this.job_lock = config.job_lock ?? null;
     this.check_kinds = {};
-    for (const [kind, age] of Object.entries(config.check_kinds ?? {})) this.check_kinds[kind] = parse_duration(age);
+    for (const [kind, age] of Object.entries(config.check_kinds ?? {})) this.check_kinds[kind] = parse_duration(age, `check_kinds.${kind}`);
     const unknown = Object.keys(this.check_kinds).filter((kind) => !(TRACKED_CHECKS as readonly string[]).includes(kind)).sort();
     if (unknown.length > 0) {
       throw new Error(`check_kinds has unknown kinds ${JSON.stringify(unknown)}; use repository, archives, data or extract`);
