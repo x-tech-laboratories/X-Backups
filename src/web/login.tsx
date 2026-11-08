@@ -1,5 +1,6 @@
 // The login page: a user name and password, then the code from an authenticator app when the account asks for one, or single sign-on.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { current_route } from "@x-tech-laboratories/x-libs/web/router";
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { api, ApiError } from "./api.ts";
@@ -42,7 +43,7 @@ export function Login({ on_login }: { on_login: () => Promise<void> }) {
         set_asks_code(true);
         code_input.current?.focus();
       } else {
-        set_message(error instanceof Error ? error.message : String(error));
+        set_message(describe_error(error));
         (asks_code ? code_input : password_input).current?.select();
       }
       set_busy(false);

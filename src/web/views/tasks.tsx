@@ -1,6 +1,7 @@
 // The tasks of a job or a repository: their schedules in words, when each is next due, its last run and why it waits,
 // with Run now and a switch for an operator.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { Badge, Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { Switch } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { Empty } from "@x-tech-laboratories/x-libs/web/react/states";
@@ -65,7 +66,7 @@ export function TasksTable({ tasks, refresh, with_owner = false, empty_hint }: T
       sort: (task) => task.last_run?.started_epoch ?? null,
     },
     { label: "Enabled", cell: (task) => <Enabled task={task} refresh={refresh} /> },
-    { label: "", class: "actions-cell", cell: (task) => can("operator") && <span className="row-actions"><RunNow task={task} refresh={refresh} /></span> },
+    { id: "actions", label: "", class: "actions-cell", cell: (task) => can("operator") && <span className="row-actions"><RunNow task={task} refresh={refresh} /></span> },
   ];
   return <div aria-live="polite"><DataTable columns={columns} rows={tasks} row_key={(task) => task.id} caption="Tasks" /></div>;
 }
@@ -95,7 +96,7 @@ function Enabled({ task, refresh }: { task: TaskView; refresh: Refresh }) {
       toast(`${task_label(task)} of ${task.owner} switched ${next ? "on" : "off"}.`, { tone: "good" });
       return true;
     } catch (error) {
-      toast(`Could not switch it: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+      toast(`Could not switch it: ${describe_error(error)}`, { tone: "bad" });
       return false;
     } finally {
       void refresh();
@@ -123,7 +124,7 @@ function RunNow({ task, refresh }: { task: TaskView; refresh: Refresh }) {
         link: { href: link(["runs"], { task: task.id }), text: "Its runs" },
       });
     } catch (error) {
-      toast(`Could not run it: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+      toast(`Could not run it: ${describe_error(error)}`, { tone: "bad" });
     }
     set_busy(false);
     void refresh();

@@ -2,7 +2,7 @@
 // searched, filtered and sorted, with the choices kept in the URL.
 
 import { Segmented, SearchBox, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
-import { Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { PageHeading, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
 import { sorting_from, type Sorting } from "@x-tech-laboratories/x-libs/web/tables";
@@ -62,10 +62,7 @@ export function RepositoriesView() {
 
   return (
     <div className="page">
-      <div className="page-title spread">
-        <h1>Repositories</h1>
-        <span>{adding && <a className="button accent solid" href={link(["new-repository"])}>Add repository</a>}</span>
-      </div>
+      <PageHeading title="Repositories" actions={adding && <a className="button accent solid" href={link(["new-repository"])}>Add repository</a>} />
       <Toolbar>
         <SearchBox label="Search by repository, job or host" value={text} on_input={(value) => { set_text(value); replace_query({ q: value }); }} />
         <Select label="Status" options={status_filters} value={status} on_change={(value) => { set_status(value); replace_query({ status: value }); }} />

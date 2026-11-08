@@ -1,5 +1,6 @@
 // Runs a repository's actions from any page: what each does, how it is confirmed, and how its outcome is shown.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { confirm_dialog, Dialog, open_dialog, text_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
 import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
@@ -83,7 +84,7 @@ export async function run_action(target: ActionTarget, action_id: string, name: 
     const outcome = await api<Outcome>(`${repository_path(target.target_id)}/actions/${action_id}`, body);
     await show_outcome(target.target_id, name, outcome);
   } catch (error) {
-    toast(`${name} failed: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+    toast(`${name} failed: ${describe_error(error)}`, { tone: "bad" });
   }
   await target.done?.();
 }

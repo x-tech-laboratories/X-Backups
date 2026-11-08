@@ -11,6 +11,7 @@ import fastify_cookie, { type CookieSerializeOptions } from "@fastify/cookie";
 import fastify_rate_limit from "@fastify/rate-limit";
 import fastify_session, { MemoryStore } from "@fastify/session";
 import type { FastifyInstance, FastifyRequest, Session } from "fastify";
+import { path_of, register_sign_in_guard } from "@x-tech-laboratories/x-libs/server/sign_in";
 
 import type { Grant } from "./access.ts";
 import { AccountError, has_role, type Accounts, type Role, type User } from "./accounts.ts";
@@ -126,9 +127,14 @@ export async function register_auth(app: FastifyInstance, options: AuthOptions):
 
   app.decorateRequest("viewer", null);
 
-  // Works out who is asking, then whether they may.
+  // Every API call needs a login; the page loads without one and logs in itself.
+  register_sign_in_guard(app, {
+    is_signed_in: (request) => identify(request) !== null, login_path: null, refusal: "json", refusal_text: "Log in first.", open_paths: open_routes,
+  });
+
+  // Works out who is asking, then whether they may; /metrics is outside the guard, so it is refused here.
   app.addHook("onRequest", async (request, reply) => {
-    const path = request.url.split("?")[0];
+    const path = path_of(request);
     request.viewer = identify(request);
     const need = needed(request.method, path);
     if (need === "open") return;

@@ -2,7 +2,7 @@
 
 import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { confirm_dialog, Dialog, open_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
-import { Facts, Section } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Facts, PageHeading, Section } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { DataTable } from "@x-tech-laboratories/x-libs/web/react/table";
 import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
@@ -51,7 +51,7 @@ export function UsersView() {
   if (!can("admin")) {
     return (
       <div className="page">
-        <div className="page-title spread"><h1>Users</h1></div>
+        <PageHeading title="Users" />
         <Section title="Users"><div><Empty title="Only an admin manages users." /></div></Section>
         <Section title="API tokens">
           <div className="stack">
@@ -79,10 +79,7 @@ function AdminUsers() {
 
   return (
     <div className="page">
-      <div className="page-title spread">
-        <h1>Users</h1>
-        <button className="accent solid" onClick={() => user_dialog(null, choices, refresh)}>Add user</button>
-      </div>
+      <PageHeading title="Users" actions={<button className="accent solid" onClick={() => user_dialog(null, choices, refresh)}>Add user</button>} />
       <Section title="Users">
         <div><Loaded resource={users} lines={4}>{(rows) => <UsersTable users={rows} grantable={choices} refresh={refresh} />}</Loaded></div>
       </Section>
@@ -133,7 +130,7 @@ function UsersTable({ users, grantable, refresh }: { users: User[]; grantable: G
           : user.has_password ? "password" : <span className="muted">single sign-on only</span>,
       },
       {
-        label: "", class: "actions-cell", cell: (user) => (
+        id: "actions", label: "", class: "actions-cell", cell: (user) => (
           <span className="row-actions">
             {user.source === "page" && <button onClick={() => user_dialog(user, grantable, refresh)}>Edit</button>}
             {user.totp_enabled && <button onClick={() => reset_totp(user, refresh)}>Reset second factor</button>}
@@ -307,7 +304,7 @@ function TokensTable({ tokens, refresh }: { tokens: Token[]; refresh: Refresh })
       { label: "Created", cell: (token) => <span title={stamp(token.created_epoch)}>{`${age(token.created_epoch)} by ${token.created_by}`}</span> },
       { label: "Last used", cell: (token) => token.last_used_epoch ? <Age epoch={token.last_used_epoch} /> : <span className="muted">never</span> },
       {
-        label: "", class: "actions-cell", cell: (token) => (
+        id: "actions", label: "", class: "actions-cell", cell: (token) => (
           <button className="danger" onClick={() => confirm_dialog({
             title: `Revoke ${token.name}?`,
             message: "Whatever uses it is refused from now on.",

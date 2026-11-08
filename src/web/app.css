@@ -3,38 +3,6 @@
 /* ── Search and the runs in progress ─────────────────────────────────────── */
 
 .search { position: relative; flex: 1; max-width: 420px; margin-left: var(--space-6); }
-.search input { width: 100%; }
-.search-results {
-  position: absolute;
-  top: calc(100% + var(--space-2));
-  left: 0;
-  right: 0;
-  z-index: var(--layer-menu);
-  max-height: 60vh;
-  overflow: auto;
-  padding: 5px;
-  border: var(--border-width) solid var(--border-default);
-  border-radius: var(--radius-default);
-  background-color: var(--surface-default);
-  box-shadow: var(--shadow-floating);
-}
-.search-item {
-  display: block;
-  min-height: var(--row-height);
-  padding: var(--space-3) 9px;
-  border-radius: var(--radius-small);
-  color: var(--text-body);
-  font-size: var(--text-control);
-  line-height: var(--line-height-ui);
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.search-item:hover, .search-item:focus { background-color: var(--surface-secondary); }
-.search-none { margin: var(--space-3) 9px; font-size: var(--text-control); }
-.running-chip { margin-left: auto; text-decoration: none; }
-.running-chip:not([hidden]) + #theme { margin-left: 0; }
 .stream-state { margin: auto 0 0; padding: 0 var(--space-4); }
 
 /* A card is a block, so its chips keep their own space below the facts. */
@@ -170,7 +138,6 @@
 @media (max-width: 768px) {
   .running-chip { display: none; }
   .search { order: 5; flex-basis: 100%; max-width: none; margin-left: 0; }
-  .running-chip:not([hidden]) + #theme { margin-left: auto; }
 }
 @media (max-width: 640px) {
   .day-switch { display: flex; }

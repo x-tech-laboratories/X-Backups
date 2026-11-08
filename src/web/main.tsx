@@ -4,9 +4,11 @@ import "@x-tech-laboratories/halon/halon-tokens.css";
 import "@x-tech-laboratories/halon/halon.css";
 import "./app.css";
 import { stamp } from "@x-tech-laboratories/x-libs/web/format";
+import { StatusPill } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { Shell, use_route, type ShellSection } from "@x-tech-laboratories/x-libs/web/react/shell";
+import { Suggestions } from "@x-tech-laboratories/x-libs/web/react/suggestions";
 import { current_route, link, type Route } from "@x-tech-laboratories/x-libs/web/router";
-import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { api, LoginNeeded, query, type Run, type SearchResults } from "./api.ts";
 import { connect, disconnect, stream_up } from "./live.ts";
@@ -167,102 +169,75 @@ function RunningChip() {
 
 // ── Stream state ─────────────────────────────────────────────────────────────
 
-const stream_text = () => stream_up() ? "Live" : "Reconnecting; refreshing every 15 s";
-
-// Whether the change stream is up, written at the foot of the sidebar.
+// Whether the change stream is up, at the foot of the sidebar.
 function StreamState() {
-  const [text, set_text] = useState("");
+  const [up, set_up] = useState<boolean | null>(null);
   useEffect(() => {
-    const timer = setTimeout(() => set_text(stream_text()), 2000);
+    const timer = setTimeout(() => set_up(stream_up()), 2000);
     return () => clearTimeout(timer);
   }, []);
-  use_changes(() => set_text(stream_text()));
-  return <p id="stream-state" className="stream-state muted small" role="status">{text}</p>;
+  use_changes(() => set_up(stream_up()));
+  if (up === null) return null;
+  return (
+    <div className="stream-state" role="status">
+      <StatusPill tone={up ? "good" : "warn"} busy={!up} label={up ? "Live" : "Reconnecting; refreshing every 15 s"} />
+    </div>
+  );
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────
 
+interface Found {
+  kind: "repository" | "archive";
+  key: string;
+  text: string;
+  detail: string | null;
+  href: string;
+}
+
+// The repositories and archives whose names hold the text.
+async function find(text: string): Promise<Found[]> {
+  if (!text) return [];
+  const answer = await api<SearchResults>(`/api/search${query({ q: text })}`).catch(() => null);
+  if (answer === null) return [];
+  return [
+    ...answer.repositories.map((repository): Found => ({
+      kind: "repository", key: `repository-${repository.id}`, text: repository.name, detail: null, href: link(["repositories", repository.id]),
+    })),
+    ...answer.archives.map((archive): Found => ({
+      kind: "archive", key: `archive-${archive.target_id}-${archive.name}`, text: archive.name, detail: `in ${archive.target_id}, ${stamp(archive.epoch)}`,
+      href: link(["repositories", archive.target_id, "archives", archive.name], { tab: "changes" }),
+    })),
+  ];
+}
+
 function Search() {
   const [text, set_text] = useState("");
-  const [found, set_found] = useState<SearchResults | null>(null);
-  const box = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const results = useRef<HTMLDivElement>(null);
+  const [wanted, set_wanted] = useState("");
   const timer = useRef<number | undefined>(undefined);
-  const open = found !== null;
 
-  useEffect(() => {
-    const outside = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) set_found(null); };
-    document.addEventListener("click", outside);
-    return () => document.removeEventListener("click", outside);
-  }, []);
-
+  // The server is asked once typing pauses.
   function typed(value: string): void {
     set_text(value);
     clearTimeout(timer.current);
-    const wanted = value.trim();
-    if (!wanted) return set_found(null);
-    timer.current = window.setTimeout(async () => {
-      const answer = await api<SearchResults>(`/api/search${query({ q: wanted })}`).catch(() => null);
-      if (answer === null || input.current?.value.trim() !== wanted) return;
-      set_found(answer);
-    }, 200);
+    timer.current = window.setTimeout(() => set_wanted(value.trim()), 200);
   }
 
-  const items = () => [...(results.current?.querySelectorAll<HTMLAnchorElement>("a") ?? [])];
-
-  function input_key(event: KeyboardEvent<HTMLInputElement>): void {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      items()[0]?.focus();
-    } else if (event.key === "Escape") {
-      set_found(null);
-    } else if (event.key === "Enter") {
-      items()[0]?.click();
-    }
-  }
-
-  function results_key(event: KeyboardEvent<HTMLDivElement>): void {
-    const list = items();
-    const at = list.indexOf(document.activeElement as HTMLAnchorElement);
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      list[Math.min(list.length - 1, at + 1)]?.focus();
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      if (at <= 0) input.current?.focus();
-      else list[at - 1].focus();
-    } else if (event.key === "Escape") {
-      set_found(null);
-      input.current?.focus();
-    }
-  }
-
-  function picked(event: SyntheticEvent): void {
-    if (!(event.target as HTMLElement).closest("a")) return;
-    set_found(null);
+  function picked(item: Found): void {
     set_text("");
+    set_wanted("");
+    location.hash = item.href;
   }
 
-  const count = found ? found.repositories.length + found.archives.length : 0;
   return (
-    <div ref={box} className="search" role="search">
-      <input ref={input} id="search" type="search" placeholder="Search repositories and archives" aria-label="Search repositories and archives"
-        autoComplete="off" aria-controls="search-results" aria-expanded={open} value={text}
-        onChange={(event) => typed(event.currentTarget.value)} onKeyDown={input_key} />
-      <div ref={results} id="search-results" className="search-results" hidden={!open} onKeyDown={results_key} onClick={picked}>
-        {found?.repositories.map((repository) => (
-          <a key={`repository-${repository.id}`} href={link(["repositories", repository.id])} className="search-item">
-            <span className="chip">repository</span> {repository.name}
-          </a>
-        ))}
-        {found?.archives.map((archive) => (
-          <a key={`archive-${archive.target_id}-${archive.name}`} href={link(["repositories", archive.target_id, "archives", archive.name], { tab: "changes" })} className="search-item">
-            <span className="chip">archive</span> {archive.name}<span className="muted small">{` in ${archive.target_id}, ${stamp(archive.epoch)}`}</span>
-          </a>
-        ))}
-        {open && count === 0 && <p className="muted search-none">Nothing matches.</p>}
-      </div>
+    <div className="search" role="search">
+      <Suggestions value={wanted} source={find} key_of={(item) => item.key} label="Search results" on_take={picked}
+        render={(item) => <><span className="chip">{item.kind}</span> {item.text}</>} detail={(item) => item.detail}>
+        {(field) => (
+          <input {...field} id="search" type="search" placeholder="Search repositories and archives" aria-label="Search repositories and archives"
+            autoComplete="off" value={text} onChange={(event) => typed(event.currentTarget.value)} />
+        )}
+      </Suggestions>
     </div>
   );
 }

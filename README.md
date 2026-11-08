@@ -35,7 +35,7 @@ npm run lint
 npm run build && npm start
 ```
 
-`npm start` serves the API and the built page together. `HOST` and `PORT` change where it listens.
+`npm start` serves the API and the built page together. `HOST` and `PORT`, or `--host` and `--port`, change where it listens; `--help` lists the options.
 
 The API asks for a login, checked against the hash in the file `X_BACKUPS_PASSWORD_HASH_FILE` names.
 `npm run hash-password -- <file>` asks for the password and writes that file, readable only by you.

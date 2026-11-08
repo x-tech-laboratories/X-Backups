@@ -2,6 +2,7 @@
 // and page modes with a job's sources and repositories picked from lists and its tasks edited with their schedules in
 // words, or read-only with its source named.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
 import { Crumbs, Section } from "@x-tech-laboratories/x-libs/web/react/layout";
@@ -231,7 +232,7 @@ function Editor({ kind, info, entry, choices, reload }: EditorProps) {
           toast(`${removed.name} removed.`, { tone: "warn" });
           location.hash = kind === "repositories" ? link(["settings"]) : link([kind]);
         } catch (error) {
-          toast(`Could not remove it: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+          toast(`Could not remove it: ${describe_error(error)}`, { tone: "bad" });
         }
       },
     });
@@ -409,7 +410,7 @@ function SchedulePreviewLine({ id, text }: { id: string; text: string }) {
         const answer = await api<SchedulePreview>(`/api/schedule${query({ text })}`);
         if (current) set_preview({ text: `${answer.description}; next ${answer.next.map(stamp).join(", ")} (${answer.time_zone})`, bad: false });
       } catch (error) {
-        if (current) set_preview({ text: error instanceof Error ? error.message : String(error), bad: true });
+        if (current) set_preview({ text: describe_error(error), bad: true });
       }
     }, 300);
     return () => {

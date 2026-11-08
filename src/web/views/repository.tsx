@@ -1,10 +1,11 @@
 // One target of a repository: its header and actions, then tabs for its overview (with the jobs writing to the repository,
 // its other targets and its own tasks), archives, runs, sources, schedule, events and config.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { Badge, Chip, Verdict } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { SearchBox, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
-import { Crumbs, Facts, Section, Tabs, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Crumbs, Facts, PageHeading, Section, Tabs, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, Skeleton, use_resource, type Resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { DataTable, Pager, type Sorting } from "@x-tech-laboratories/x-libs/web/react/table";
 import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
@@ -103,9 +104,11 @@ function RepositoryHeader({ repository, target }: { repository: RepositoryDetail
   const reasons = repository_reasons(repository);
   const running = repository.running_run;
   return (
-    <header className="page-head">
-      <div className="page-title">
-        <h1>{repository.name}</h1>
+    <PageHeading title={repository.name} actions={can("operator") && <>
+      {buttons.map((action, index) => <ActionButton key={action.action_id} action={action} target={target} class_name={index === 0 ? "accent solid" : ""} />)}
+      <button onClick={() => void poll_now(target)}>Poll now</button>
+    </>} subtitle={
+      <span className="chips">
         <StatusBadge status={repository.status} />
         {repository.source === "declared"
           ? <Chip title="Set in the Nix configuration; edit it there">declared</Chip>
@@ -116,14 +119,9 @@ function RepositoryHeader({ repository, target }: { repository: RepositoryDetail
             {repository.downloads.length === 1 ? "download running" : `${repository.downloads.length} downloads running`}
           </a>
         )}
-      </div>
+      </span>
+    }>
       <p className="muted">{target_label(repository)}{repository.repo ? ` · ${repository.repo}` : ""}{` · polled ${age(repository.last_poll_epoch)}`}</p>
-      {can("operator") && (
-        <div className="head-actions">
-          {buttons.map((action, index) => <ActionButton key={action.action_id} action={action} target={target} class_name={index === 0 ? "accent solid" : ""} />)}
-          <button onClick={() => void poll_now(target)}>Poll now</button>
-        </div>
-      )}
       {reasons.length > 0 && (
         <ul className="attention compact">
           {reasons.map((reason, index) => (
@@ -133,7 +131,7 @@ function RepositoryHeader({ repository, target }: { repository: RepositoryDetail
           ))}
         </ul>
       )}
-    </header>
+    </PageHeading>
   );
 }
 
@@ -152,7 +150,7 @@ async function poll_now(target: ActionTarget): Promise<void> {
     await api(`${repository_path(target.target_id)}/poll`, {});
     toast("Poll finished.", { tone: "good" });
   } catch (error) {
-    toast(`Poll failed: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+    toast(`Poll failed: ${describe_error(error)}`, { tone: "bad" });
   }
   await target.done?.();
 }
@@ -209,7 +207,7 @@ function DownloadsPanel({ repository, refresh }: { repository: RepositoryDetail;
           { label: "Who", cell: (download) => download.who },
           { label: "Running", cell: (download) => <span title={stamp(download.started_epoch)}>{duration(now_seconds() - download.started_epoch)}</span> },
           {
-            label: "", class: "actions-cell",
+            id: "actions", label: "", class: "actions-cell",
             cell: (download) => can("operator") && <span className="row-actions"><button className="danger" onClick={() => stop(download)}>Stop</button></span>,
           },
         ]} />
@@ -422,7 +420,7 @@ function ArchivesTable({ repository, archives, sorting, on_sort, target }: Archi
       { label: "New data", class: "number", cell: (archive) => size(archive.deduplicated), sort: () => 0 },
       { label: "Files", class: "number", cell: (archive) => archive.nfiles?.toLocaleString() ?? "—", sort: () => 0 },
       {
-        label: "", class: "actions-cell", cell: (archive) => (
+        id: "actions", label: "", class: "actions-cell", cell: (archive) => (
           <span className="row-actions">
             {can("operator") && archive.name !== oldest && <a className="button" href={archive_link(archive, "changes")}>Changes</a>}
             {can("operator") && <a className="button" href={archive_link(archive, "files")}>Files</a>}

@@ -1,13 +1,14 @@
 // Every run across the targets, filtered by target, host, job, task, kind, outcome and period and paged, and one run's
 // page with its outcome and live output.
 
-import { Crumbs, Facts, Section, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { FollowingOutput } from "@x-tech-laboratories/x-libs/web/react/following";
+import { Crumbs, Facts, PageHeading, Section, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Select } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { Pager } from "@x-tech-laboratories/x-libs/web/react/table";
 import { age, duration, now_seconds, stamp } from "@x-tech-laboratories/x-libs/web/format";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, query, type HostRow, type JobRow, type Run, type RepositorySummary, type TaskView } from "../api.ts";
 import { RunStateBadge, use_changes } from "../ui.tsx";
 import { medians, run_kinds, run_states, RunButtons, RunsTable, touches } from "./shared.tsx";
@@ -101,8 +102,6 @@ export function RunView({ id }: { id: number }) {
   // How many output lines have arrived, so each poll asks only for the ones after.
   const lines = useRef(0);
   const [output, set_output] = useState("");
-  const text = useRef<HTMLPreElement>(null);
-  const following = useRef(true);
   const run = use_resource(() => api<Run>(`/api/runs/${id}${query({ skip: lines.current })}`), [id]);
   use_changes((changes) => {
     if (changes === null || changes.some((change) => change.kind === "run" && change.run_id === id)) run.reload(true);
@@ -113,15 +112,8 @@ export function RunView({ id }: { id: number }) {
     const fresh = (run.data.output ?? []).map(readable_line).filter((line): line is string => line !== null);
     lines.current += run.data.output?.length ?? 0;
     if (fresh.length === 0) return;
-    // Only a reader already at the bottom is carried along, so scrolling up to read is not undone.
-    const element = text.current;
-    following.current = element === null || element.scrollTop + element.clientHeight >= element.scrollHeight - 8;
     set_output((before) => before + (before ? "\n" : "") + fresh.join("\n"));
   }, [run.data]);
-
-  useLayoutEffect(() => {
-    if (following.current && text.current) text.current.scrollTop = text.current.scrollHeight;
-  }, [output]);
 
   const state = run.data;
   const note = state === null ? "" : lines.current === 0
@@ -135,7 +127,7 @@ export function RunView({ id }: { id: number }) {
       <Section title="Output" tools={<button onClick={() => void navigator.clipboard?.writeText(output)}>Copy</button>}>
         <div>
           <p className="muted small">{note}</p>
-          <pre ref={text} className="output run-output" tabIndex={0} aria-label="Run output">{output}</pre>
+          <FollowingOutput text={output} class_name="run-output" />
         </div>
       </Section>
     </div>
@@ -145,12 +137,8 @@ export function RunView({ id }: { id: number }) {
 function RunHead({ run, refresh }: { run: Run; refresh: () => void }) {
   const took = (run.ended_epoch ?? now_seconds()) - run.started_epoch;
   return (
-    <header className="page-head">
-      <div className="page-title">
-        <h1>{`${run.kind} #${run.id}`}</h1>
-        <RunStateBadge run={run} />
-        <a href={link(["repositories", run.target_id])}>{`on ${run.target_id}`}</a>
-      </div>
+    <PageHeading title={`${run.kind} #${run.id}`} subtitle={<span className="chips"><RunStateBadge run={run} /><a href={link(["repositories", run.target_id])}>{`on ${run.target_id}`}</a></span>}
+      actions={<RunButtons run={run} refresh={refresh} />}>
       <div className={`result-bar tone-fill-${run.condition === "waiting_for_agent" ? "warn" : result_tones[run.state]}`} role="status" aria-live="polite">
         {run.condition === "waiting_for_agent" ? `Waiting for ${run.host ?? "its host"}'s agent; the run carries on there, started ${duration(took)} ago`
           : run.condition === "lost" ? `Lost after ${duration(took)}: its agent no longer knew it, so its outcome is unknown`
@@ -167,8 +155,7 @@ function RunHead({ run, refresh }: { run: Run; refresh: () => void }) {
         ["Exit code", run.exit_code ?? "—"],
       ]} />
       <details className="command"><summary>Command</summary><pre className="output">{run.command}</pre></details>
-      <div className="head-actions"><RunButtons run={run} refresh={refresh} /></div>
-    </header>
+    </PageHeading>
   );
 }
 

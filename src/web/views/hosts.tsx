@@ -1,11 +1,12 @@
 // Every host with its agent's state and health, and one host's page: its health, sources, repositories, the targets
 // running there, its runs and timers, and for an admin, enrolling and revoking its agent.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { age, now_seconds, plural, size, stamp } from "@x-tech-laboratories/x-libs/web/format";
 import { Badge, Chip, type Tone } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { Select } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { confirm_dialog, Dialog, open_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
-import { Crumbs, Facts, Section, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Crumbs, Facts, PageHeading, Section, Toolbar, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { DataTable, type Sorting } from "@x-tech-laboratories/x-libs/web/react/table";
 import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
@@ -71,7 +72,7 @@ export function HostsView() {
 
   return (
     <div className="page">
-      <div className="page-title spread"><h1>Hosts</h1>{can("admin") && <a className="button" href={link(["settings", "new", "hosts"])}>Add host</a>}</div>
+      <PageHeading title="Hosts" actions={can("admin") && <a className="button" href={link(["settings", "new", "hosts"])}>Add host</a>} />
       <Toolbar>
         <Select label="Agent" options={state_filters} value={state} on_change={(value) => { set_state(value); replace_query({ state: value }); }} />
       </Toolbar>
@@ -264,8 +265,12 @@ function HostHeader({ host, refresh }: { host: HostRow; refresh: Refresh }) {
     ["Repositories", `${host.repositories.length} ${host.repositories.length === 1 ? "repository" : "repositories"}`],
   ];
   return (
-    <header className="page-head">
-      <div className="page-title"><h1>{host.name}</h1><AgentBadge host={host} />{host.own && <Chip>this server</Chip>}</div>
+    <PageHeading title={host.name} subtitle={<span className="chips"><AgentBadge host={host} />{host.own && <Chip>this server</Chip>}</span>}
+      actions={can("admin") && host.kind === "managed" && !host.own && <>
+        {host.agent_key === null && <button className={host.enrolled ? undefined : "accent solid"} onClick={() => enrol(host, refresh)}>{host.enrolled ? "Issue a new token" : "Enrol agent"}</button>}
+        {host.enrolled && <button className="danger" onClick={() => revoke(host, refresh)}>Revoke token</button>}
+        <a className="button" href={link(["settings", "hosts", host.name])}>Config</a>
+      </>}>
       <p className="muted" role="status" aria-live="polite">
         {host.kind === "storage-only" ? "Storage-only: holds repositories reached through borg serve." : host.address ?? "This server's own machine."}
         {host.agent_version ? ` · agent ${host.agent_version}` : ""}
@@ -279,14 +284,7 @@ function HostHeader({ host, refresh }: { host: HostRow; refresh: Refresh }) {
           {can("admin") ? "" : " An admin issues its token."}
         </div>
       )}
-      {can("admin") && host.kind === "managed" && !host.own && (
-        <div className="head-actions">
-          {host.agent_key === null && <button className={host.enrolled ? undefined : "accent solid"} onClick={() => enrol(host, refresh)}>{host.enrolled ? "Issue a new token" : "Enrol agent"}</button>}
-          {host.enrolled && <button className="danger" onClick={() => revoke(host, refresh)}>Revoke token</button>}
-          <a className="button" href={link(["settings", "hosts", host.name])}>Config</a>
-        </div>
-      )}
-    </header>
+    </PageHeading>
   );
 }
 
@@ -336,7 +334,7 @@ function enrol(host: HostRow, refresh: Refresh): void {
       const { token } = await api<{ token: string }>(`/api/hosts/${encodeURIComponent(host.name)}/token`, {});
       show_token(host.name, token);
     } catch (error) {
-      toast(`Could not issue a token: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+      toast(`Could not issue a token: ${describe_error(error)}`, { tone: "bad" });
     }
     await refresh();
   };
@@ -410,7 +408,7 @@ function revoke(host: HostRow, refresh: Refresh): void {
         await send("DELETE", `/api/hosts/${encodeURIComponent(host.name)}/token`);
         toast(`${host.name}'s token is revoked.`, { tone: "warn" });
       } catch (error) {
-        toast(`Could not revoke it: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+        toast(`Could not revoke it: ${describe_error(error)}`, { tone: "bad" });
       }
       await refresh();
     },

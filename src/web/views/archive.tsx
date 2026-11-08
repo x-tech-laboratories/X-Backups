@@ -3,7 +3,7 @@
 import { Badge, type Tone } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { SearchBox, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
-import { Crumbs, Facts, Section, Stepper, Tabs, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Crumbs, Facts, PageHeading, Section, Stepper, Tabs, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Failure, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { DataTable, Pager, type Sorting } from "@x-tech-laboratories/x-libs/web/react/table";
 import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
@@ -73,8 +73,9 @@ function ArchiveHeader({ repository, index, tab, target }: { repository: Reposit
   const delta = (now: number | undefined, before: number | undefined, format: (value: number) => string) =>
     now === undefined || before === undefined ? null : <span className="muted small">{` (${format(now - before)} since the one before)`}</span>;
   return (
-    <header className="page-head">
-      <div className="page-title"><h1>{archive.name}</h1></div>
+    <PageHeading title={archive.name} actions={can("operator") && repository.allow_delete && (
+      <button className="danger" onClick={() => delete_archive(target, archive.name, () => { location.hash = link(["repositories", repository.id, "archives"]); })}>Delete archive</button>
+    )}>
       <Stepper label="Step through archives" previous={step(older, "← Older")} position={`${repository.archives.length - index} of ${repository.archives.length}`} next={step(newer, "Newer →")} />
       <Facts rows={[
         ["Created", <span title={stamp(archive.epoch)}>{`${stamp(archive.epoch)} (${age(archive.epoch)})`}</span>],
@@ -82,12 +83,7 @@ function ArchiveHeader({ repository, index, tab, target }: { repository: Reposit
         ["New data", <span title="Data no other archive shares, which deleting this archive would free">{size(archive.deduplicated)}</span>],
         ["Files", <>{archive.nfiles?.toLocaleString() ?? "—"}{delta(archive.nfiles, older?.nfiles, count_change)}</>],
       ]} />
-      {can("operator") && repository.allow_delete && (
-        <div className="head-actions">
-          <button className="danger" onClick={() => delete_archive(target, archive.name, () => { location.hash = link(["repositories", repository.id, "archives"]); })}>Delete archive</button>
-        </div>
-      )}
-    </header>
+    </PageHeading>
   );
 }
 

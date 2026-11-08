@@ -1,5 +1,6 @@
 // What several pages show the same way: repository cards, the runs table, the events list, the timers table and the run filters.
 
+import { describe_error } from "@x-tech-laboratories/x-libs/web/errors";
 import { Chip, Chips, Verdict } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { confirm_dialog } from "@x-tech-laboratories/x-libs/web/react/dialog";
 import { Empty } from "@x-tech-laboratories/x-libs/web/react/states";
@@ -168,7 +169,7 @@ export function RunsTable({ runs, with_repository, refresh, usual }: RunsTablePr
     },
     { label: "Started", cell: (run) => <Age epoch={run.started_epoch} /> },
     { label: "Took", cell: (run) => <DurationBar run={run} median={durations.get(run.kind)} /> },
-    { label: "", class: "actions-cell", cell: (run) => <RunButtons run={run} refresh={refresh} /> },
+    { id: "actions", label: "", class: "actions-cell", cell: (run) => <RunButtons run={run} refresh={refresh} /> },
   ];
   return <DataTable columns={columns} rows={runs} row_key={(run) => run.id} caption="Runs" />;
 }
@@ -208,7 +209,7 @@ export function retry_run(run: Run, refresh: Refresh): void {
       try {
         await show_outcome(run.target_id, run.kind, await api<Outcome>(`/api/runs/${run.id}/retry`, {}));
       } catch (error) {
-        toast(`Could not run it again: ${error instanceof Error ? error.message : String(error)}`, { tone: "bad" });
+        toast(`Could not run it again: ${describe_error(error)}`, { tone: "bad" });
       }
       await refresh();
     },

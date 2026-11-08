@@ -1,13 +1,13 @@
 // ── Imports ──────────────────────────────────────────────────────────────────
 
-import { existsSync } from "node:fs";
-import type { ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import fastify_static from "@fastify/static";
 import { key_fingerprint } from "@x-tech-laboratories/x-libs/agent/keys";
 import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
+import { EventStream } from "@x-tech-laboratories/x-libs/server/events";
+import { send_error } from "@x-tech-laboratories/x-libs/server/replies";
+import { register_web_folder } from "@x-tech-laboratories/x-libs/server/web_folder";
 import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, writers, type Scope, type World } from "./access.ts";
 import { AccountError, Accounts, has_role } from "./accounts.ts";
 import type { AgentHub } from "./agents/hub.ts";
@@ -78,9 +78,6 @@ interface ListQuery {
 }
 
 const web_build_directory = fileURLToPath(new URL("../../dist", import.meta.url));
-
-// A stream sends a comment this often, so proxies keep an idle connection open.
-const stream_keepalive_in_milliseconds = 25_000;
 
 // How many coming times a schedule's preview lists.
 const preview_count = 3;
@@ -432,8 +429,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     if (error instanceof ConfigError) return reply.code(400).send({ error: error.message, field: error.field });
     if (error instanceof AccountError) return reply.code(error.status).send({ error: error.message });
     reply.log.error(error);
-    const status = (error as { statusCode?: number }).statusCode ?? 500;
-    return reply.code(status).send({ error: (error as Error).message });
+    return send_error(reply, (error as { statusCode?: number }).statusCode ?? 500, (error as Error).message, "json");
   });
 
   // Repositories and archives whose names hold the text, for the header's search.
@@ -759,53 +755,24 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // ── Live changes ─────────────────────────────────────────────────────────
 
   // Server-sent events naming what changed, so an open page fetches it at once instead of polling.
-  const streams = new Set<ServerResponse>();
-  app.get("/api/stream", (request, reply) => {
-    reply.hijack();
-    const stream = reply.raw;
-    stream.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-    stream.write("retry: 5000\n\n");
-    // A change of a target the viewer does not see is left out, unless it is a repository's own run they see.
-    const send = (change: Change) => {
-      const shown = scope(request);
-      const seen = change.target_id === null || sees(shown, { kind: "target", target_id: change.target_id })
-        || (change.run_id !== undefined && run_seen(shown, store.run_row(change.run_id)) !== null);
-      if (seen) stream.write(`data: ${JSON.stringify(change)}\n\n`);
-    };
-    const keepalive = setInterval(() => stream.write(": keepalive\n\n"), stream_keepalive_in_milliseconds);
-    store.changes.on("change", send);
-    streams.add(stream);
-    request.raw.on("close", () => {
-      clearInterval(keepalive);
-      store.changes.off("change", send);
-      streams.delete(stream);
-    });
-  });
-  // An open stream never ends by itself, so closing the app ends each one.
-  app.addHook("onClose", async () => {
-    for (const stream of streams) stream.end();
-  });
+  const changes = new EventStream({ hello_event: null, retry_ms: 5000 });
+  changes.register(app, "/api/stream");
+  // A change of a target the viewer does not see is left out, unless it is a repository's own run they see.
+  const seen_by = (request: FastifyRequest, change: Change): boolean => {
+    const shown = scope(request);
+    return change.target_id === null || sees(shown, { kind: "target", target_id: change.target_id })
+      || (change.run_id !== undefined && run_seen(shown, store.run_row(change.run_id)) !== null);
+  };
+  const announce = (change: Change) => changes.send(JSON.stringify(change), { to: ({ request }) => seen_by(request, change) });
+  store.changes.on("change", announce);
+  app.addHook("onClose", async () => store.changes.off("change", announce));
 
   // ── Metrics ──────────────────────────────────────────────────────────────
 
   app.get("/metrics", async (request, reply) => reply.type("text/plain; version=0.0.4").send(metrics_text(watched_by(request))));
 
   // In production the server also hands out the built web page.
-  if (options.serve_web && existsSync(web_build_directory)) {
-    // The Nix store dates every file to 1970, and a rebuilt index.html keeps its size, so the default
-    // size-and-mtime ETag never changes and a browser keeps the old page naming bundles now gone.
-    // The page is fetched whole each time; the bundles carry a content hash, so they never change.
-    await app.register(fastify_static, {
-      root: web_build_directory,
-      etag: false,
-      lastModified: false,
-      cacheControl: false,
-      setHeaders: (reply, path) => {
-        const immutable = path.includes("/assets/");
-        void reply.header("cache-control", immutable ? "public, max-age=31536000, immutable" : "no-cache, no-store");
-      },
-    });
-  }
+  if (options.serve_web) await register_web_folder(app, { folder: web_build_directory, page_cache_control: "no-cache, no-store", when_missing: "skip" });
 
   return app;
 }

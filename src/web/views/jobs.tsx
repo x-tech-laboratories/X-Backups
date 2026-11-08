@@ -2,7 +2,7 @@
 // host and repository with its freshness, its tasks and its runs.
 
 import { Badge, StateBadge, type Tone } from "@x-tech-laboratories/x-libs/web/react/badges";
-import { Crumbs, Facts, Section, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Crumbs, Facts, PageHeading, Section, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { DataTable } from "@x-tech-laboratories/x-libs/web/react/table";
 import { Age } from "@x-tech-laboratories/x-libs/web/react/time";
@@ -25,7 +25,7 @@ export function JobsView() {
   use_changes((changes) => { if (touches(changes, null, ["repository", "run", "tasks", "config"])) jobs.reload(true); });
   return (
     <div className="page">
-      <div className="page-title spread"><h1>Jobs</h1>{can("admin") && <a className="button" href={link(["settings", "new", "jobs"])}>Add job</a>}</div>
+      <PageHeading title="Jobs" actions={can("admin") && <a className="button" href={link(["settings", "new", "jobs"])}>Add job</a>} />
       <div>
         <Loaded resource={jobs} lines={5}>
           {(rows) => rows.length === 0
@@ -112,14 +112,13 @@ export function JobView({ name }: { name: string }) {
 
 function JobHeader({ job }: { job: JobRow }) {
   return (
-    <header className="page-head">
-      <div className="page-title"><h1>{job.name}</h1><HealthBadge level={job.level} /><OriginChip entity={job} /></div>
+    <PageHeading title={job.name} subtitle={<span className="chips"><HealthBadge level={job.level} /><OriginChip entity={job} /></span>}
+      actions={can("admin") && <a className="button" href={config_link(job, "jobs")}>Config</a>}>
       <p className="muted" role="status" aria-live="polite">
         {`${job.targets.length} ${job.targets.length === 1 ? "target" : "targets"}`}
         {job.targets.some((target) => target.running_run) ? " · a run is going" : ""}
       </p>
-      {can("admin") && <div className="head-actions"><a className="button" href={config_link(job, "jobs")}>Config</a></div>}
-    </header>
+    </PageHeading>
   );
 }
 

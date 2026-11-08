@@ -1,7 +1,7 @@
 // Every source: the paths and excludes on one managed host, and the jobs backing them up; and one source's page.
 
 import { Chip } from "@x-tech-laboratories/x-libs/web/react/badges";
-import { Crumbs, Facts, Section, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { Crumbs, Facts, PageHeading, Section, type Fact } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { DataTable } from "@x-tech-laboratories/x-libs/web/react/table";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
@@ -18,7 +18,7 @@ export function SourcesView() {
   use_changes((changes) => { if (touches(changes, null, ["config"])) sources.reload(true); });
   return (
     <div className="page">
-      <div className="page-title spread"><h1>Sources</h1>{can("admin") && <a className="button" href={link(["settings", "new", "sources"])}>Add source</a>}</div>
+      <PageHeading title="Sources" actions={can("admin") && <a className="button" href={link(["settings", "new", "sources"])}>Add source</a>} />
       <div>
         <Loaded resource={sources} lines={5}>
           {(rows) => rows.length === 0
@@ -48,11 +48,9 @@ export function SourceView({ name }: { name: string }) {
           {(row) => {
             const settings = Object.entries(row.settings).filter(([field]) => field !== "source_paths" && field !== "exclude");
             return <>
-              <header className="page-head">
-                <div className="page-title"><h1>{row.name}</h1><OriginChip entity={row} /></div>
+              <PageHeading title={row.name} subtitle={<span className="chips"><OriginChip entity={row} /></span>} actions={can("admin") && <a className="button" href={config_link(row)}>Config</a>}>
                 <p className="muted">On <a href={link(["hosts", row.host])}>{row.host}</a></p>
-                {can("admin") && <div className="head-actions"><a className="button" href={config_link(row)}>Config</a></div>}
-              </header>
+              </PageHeading>
               <Section title="Backed up"><PathList items={row.paths} none="No paths." /></Section>
               <Section title="Excluded"><PathList items={row.exclude} none="Nothing is excluded." /></Section>
               {settings.length > 0 && (

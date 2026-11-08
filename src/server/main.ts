@@ -3,6 +3,7 @@
 import { join } from "node:path";
 
 import { LocalAgent } from "@x-tech-laboratories/x-libs/server/agents/local";
+import { read_server_config } from "@x-tech-laboratories/x-libs/server/config";
 
 import { command_runner } from "../agent/agent.ts";
 import { read_health } from "../agent/health.ts";
@@ -19,8 +20,10 @@ import { Store } from "./store.ts";
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-const host = process.env.HOST ?? "127.0.0.1";
-const port = Number(process.env.PORT ?? 7710);
+const listening = read_server_config({
+  program: "x-backups-server", summary: "Serves X-Backups as a web app.", env_prefix: "X_BACKUPS", default_port: 7710, secret: false,
+  built_in: { host: { variable: "HOST" }, port: { variable: "PORT" } },
+});
 const is_production = process.env.NODE_ENV === "production";
 const sources = ConfigSources.from_environment();
 const config = sources.config();
@@ -61,6 +64,6 @@ app.log.info(`Watching ${config.repositories.length} repositories; config is ${s
 for (const name of sources.shadowed()) app.log.warn(`The page's repository '${name}' is hidden by a declared one of the same name`);
 if (process.env.X_BACKUPS_SSH_KEY_FILE) app.log.warn("X_BACKUPS_SSH_KEY_FILE is no longer used: each managed host runs the X-Backups agent, which replaces SSH");
 
-await app.listen({ host, port });
+await app.listen({ host: listening.host, port: listening.port });
 poller.start();
 scheduler.start();
