@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 import fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { encode_message } from "@x-tech-laboratories/x-libs/agent/protocol";
@@ -135,6 +136,8 @@ describe("agent hub", () => {
     stream.stdout.pipe(reader);
 
     expect(await stream.done).toEqual({ exit_code: 0, stderr: "" });
+    // The reader may still hold queued chunks when the run settles.
+    await finished(reader);
     expect(received).toBe(size);
     expect(wrong).toBe(false);
   });
