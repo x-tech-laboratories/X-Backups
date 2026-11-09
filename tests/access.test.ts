@@ -190,18 +190,18 @@ describe("job access", () => {
     const bea = await add_user(admin, "bea", "operator", [{ job: "nightly" }, { job: "mail" }]);
     const vera = await add_user(admin, "vera", "viewer", [{ job: "nightly" }]);
 
-    expect(ids(await call("GET", "/api/tasks", vic))).toEqual(["job:nightly:backup", "job:nightly:check", "repository:vault:compact", "repository:vault:check"]);
+    expect(ids(await call("GET", "/api/tasks", vic))).toEqual(["job:nightly:backup", "job:nightly:check:archives", "repository:vault:compact", "repository:vault:check:repository"]);
     expect((await call("GET", "/api/tasks", admin)).json().find((task: { id: string }) => task.id === "job:mail:backup").targets).toHaveLength(1);
     expect((await call("POST", "/api/tasks/job:mail:backup/run", vic)).statusCode).toBe(404);
     expect((await call("POST", "/api/tasks/job:nightly:backup/disable", vera)).statusCode).toBe(403);
 
-    expect((await call("POST", "/api/tasks/repository:vault:check/run", vic)).statusCode).toBe(403);
+    expect((await call("POST", "/api/tasks/repository:vault:check:repository/run", vic)).statusCode).toBe(403);
     expect((await call("POST", "/api/tasks/repository:vault:compact/disable", vic)).statusCode).toBe(403);
-    const disabled = await call("POST", "/api/tasks/repository:vault:check/disable", bea);
-    expect(disabled.json()).toMatchObject({ id: "repository:vault:check", enabled: false });
-    const ran = await call("POST", "/api/tasks/job:nightly:check/run", vic);
+    const disabled = await call("POST", "/api/tasks/repository:vault:check:repository/disable", bea);
+    expect(disabled.json()).toMatchObject({ id: "repository:vault:check:repository", enabled: false });
+    const ran = await call("POST", "/api/tasks/job:nightly:check:archives/run", vic);
     expect(ran.statusCode).toBe(202);
-    expect(ran.json()).toEqual({ id: "job:nightly:check", targets: ["nightly:odin:vault"] });
+    expect(ran.json()).toEqual({ id: "job:nightly:check:archives", targets: ["nightly:odin:vault"] });
   });
 
   it("shows only the jobs, sources and writers a user sees", async () => {
@@ -211,13 +211,13 @@ describe("job access", () => {
 
     expect(ids(await call("GET", "/api/jobs", vic))).toEqual(["nightly"]);
     expect((await call("GET", "/api/jobs/mail", vic)).statusCode).toBe(404);
-    expect((await call("GET", "/api/jobs/nightly", vic)).json().tasks.map((task: { id: string }) => task.id)).toEqual(["job:nightly:backup", "job:nightly:check"]);
+    expect((await call("GET", "/api/jobs/nightly", vic)).json().tasks.map((task: { id: string }) => task.id)).toEqual(["job:nightly:backup", "job:nightly:check:archives"]);
     expect(ids(await call("GET", "/api/sources", vic))).toEqual(["home"]);
     expect((await call("GET", "/api/sources/maildir", vic)).statusCode).toBe(404);
     const vault = (await call("GET", "/api/repositories/nightly:odin:vault", vic)).json();
     expect(vault.writers).toEqual(["nightly"]);
     expect(vault.repository_targets).toEqual([]);
-    expect(vault.tasks.map((task: { id: string }) => task.id)).toEqual(["repository:vault:compact", "repository:vault:check"]);
+    expect(vault.tasks.map((task: { id: string }) => task.id)).toEqual(["repository:vault:compact", "repository:vault:check:repository"]);
     expect((await call("GET", "/api/repositories/nightly:odin:vault", admin)).json().writers).toEqual(["nightly", "mail"]);
   });
 

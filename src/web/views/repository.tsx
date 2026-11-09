@@ -20,7 +20,7 @@ import {
   api, ApiError, query, repository_path, send, type Action, type Archive, type ConfigInfo, type DownloadRecord, type EventRow, type History, type Run,
   type RepositoryConfig, type RepositoryDetail, type RepositorySummary, type TaskView, type TimerRow,
 } from "../api.ts";
-import { BarChart, LineChart, Strip } from "../charts.tsx";
+import { BarChart, LineChart, Strip } from "@x-tech-laboratories/x-libs/web/react/charts";
 import { can } from "../session.ts";
 import { StatusBadge, use_changes } from "../ui.tsx";
 import { ConfigForm, ConfigReadOnly, ConfigTools, load_key, type ConfigFormHandle } from "./config_form.tsx";

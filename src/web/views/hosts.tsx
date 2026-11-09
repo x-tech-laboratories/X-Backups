@@ -13,7 +13,7 @@ import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/web/router";
 import { useState } from "react";
 import { api, query, send, type HostRow, type HostSample, type RepositorySummary, type Run, type SourceRow, type TimerRow } from "../api.ts";
-import { Sparkline } from "../charts.tsx";
+import { Sparkline } from "@x-tech-laboratories/x-libs/web/react/charts";
 import { can } from "../session.ts";
 import { use_changes } from "../ui.tsx";
 import { RepositoriesTable, RunsTable, TimersTable, touches, type Refresh } from "./shared.tsx";
