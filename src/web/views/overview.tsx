@@ -12,7 +12,7 @@ import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { failing, overdue, repository_reasons, timer_problem } from "../attention.ts";
 import { api, query, repository_path, type History, type HostRow, type HostSample, type Run, type RepositorySummary, type TaskView, type TimerRow } from "../api.ts";
-import { Donut, LineChart, Meters, StackedBarChart, Timeline, type Meter, type Stack } from "../charts.tsx";
+import { Donut, LineChart, Meters, StackedBarChart, Timeline, type Meter, type Stack } from "@x-tech-laboratories/x-libs/web/react/charts";
 import { RunBadge, use_changes } from "../ui.tsx";
 import { agent_away, HostHealth } from "./hosts.tsx";
 import { MapSection } from "./map.tsx";
