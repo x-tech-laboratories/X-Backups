@@ -45,6 +45,7 @@ const agent_token_route = /^\/api\/hosts\/[^/]+\/token$/;
 
 // What one of X-Backups' own routes needs; the account routes are X-Libs' to decide.
 export function needed(method: string, path: string): Need {
+  if (open_routes.includes(path)) return "open";
   if (path === "/metrics") return { role: "viewer" };
   if (method === "POST" && (path === "/api/repositories" || path.startsWith("/api/config/"))) return { role: "admin" };
   if (agent_token_route.test(path)) return { role: "admin" };
