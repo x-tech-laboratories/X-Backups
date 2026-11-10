@@ -11,7 +11,7 @@ import { parse_config, type Config } from "../src/server/config.ts";
 import { Poller } from "../src/server/poller.ts";
 import { Scheduler } from "../src/server/scheduler.ts";
 import { Store } from "../src/server/store.ts";
-import { code_at } from "../src/server/totp.ts";
+import { code_at } from "@x-tech-laboratories/x-libs/server/totp";
 import { FakeAgent } from "./agents/fake_agent.ts";
 
 const LIST = JSON.stringify({ archives: [{ name: "a1", time: "2026-10-01T10:00:00" }] });
@@ -58,7 +58,7 @@ function call(method: "GET" | "POST" | "PUT" | "DELETE", url: string, cookie: st
 }
 
 async function add_user(admin: string, name: string, role: string, grants: Grant[] | null = null): Promise<string> {
-  const created = await call("POST", "/api/users", admin, { name, role, grants, password: `${name} long password` });
+  const created = await call("POST", "/api/users", admin, { name, role, access: grants, password: `${name} long password` });
   expect(created.statusCode).toBe(201);
   return login(name, `${name} long password`);
 }
@@ -234,22 +234,23 @@ describe("job access", () => {
 
   it("carries a user's older grant on a repository over to the jobs writing there", async () => {
     await rebuild(parse_config(SHARED, "test.json"));
-    const admin = await login("admin", "declared admin pass");
-    await add_user(admin, "old", "viewer", []);
-    store.run("ALTER TABLE users ADD COLUMN repositories TEXT");
-    store.run("UPDATE users SET repositories = ? WHERE name = 'old'", JSON.stringify(["vault"]));
+    // A database from before both the job grants and the X-Libs accounts.
+    store.run(`CREATE TABLE users (name TEXT PRIMARY KEY, role TEXT NOT NULL, password_hash TEXT, totp_secret TEXT, totp_pending TEXT,
+      totp_last_step INTEGER, recovery_codes TEXT, created_epoch INTEGER NOT NULL, repositories TEXT)`);
+    store.run("INSERT INTO users (name, role, password_hash, created_epoch, repositories) VALUES ('old', 'viewer', ?, 0, ?)",
+      hash_password("old long password"), JSON.stringify(["vault"]));
     await rebuild(parse_config(SHARED, "test.json"));
     const old = await login("old", "old long password");
 
-    expect((await call("GET", "/api/users", await login("admin", "declared admin pass"))).json().find((user: { name: string }) => user.name === "old").grants)
+    expect((await call("GET", "/api/users", await login("admin", "declared admin pass"))).json().find((user: { name: string }) => user.name === "old").access)
       .toEqual([{ job: "nightly" }, { job: "mail" }]);
     expect(ids(await call("GET", "/api/repositories", old))).toEqual(["nightly:odin:vault", "mail:thor:vault"]);
   });
 });
 
-// ── Login ────────────────────────────────────────────────────────────────────
+// ── Signing in ───────────────────────────────────────────────────────────────
 
-describe("login", () => {
+describe("signing in", () => {
   it("asks for the second factor once it is set up", async () => {
     const admin = await login("admin", "declared admin pass");
     const { secret } = (await call("POST", "/api/account/totp/start", admin)).json();
@@ -259,7 +260,7 @@ describe("login", () => {
 
     const without = await app.inject({ method: "POST", url: "/api/login", payload: { name: "admin", password: "declared admin pass" } });
     expect(without.statusCode).toBe(401);
-    expect(without.json().totp_required).toBe(true);
+    expect(without.json().code_needed).toBe(true);
     await login("admin", "declared admin pass", code_at(secret, now + 30));
   });
 
@@ -289,12 +290,12 @@ describe("tokens and metrics", () => {
   it("lets a token read and scrape metrics but change nothing", async () => {
     const admin = await login("admin", "declared admin pass");
     await poller.poll("odin");
-    const { token } = (await call("POST", "/api/tokens", admin, { name: "prometheus" })).json();
+    const { token } = (await call("POST", "/api/account/tokens", admin, { name: "prometheus", read_only: true })).json();
     const bearer = { authorization: `Bearer ${token}` };
 
     expect((await app.inject({ method: "GET", url: "/api/repositories", headers: bearer })).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: "/api/repositories/odin/poll", headers: bearer })).statusCode).toBe(403);
-    expect((await app.inject({ method: "GET", url: "/api/me", headers: bearer })).statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: "/api/account/sessions", headers: bearer })).statusCode).toBe(403);
     const metrics = await app.inject({ method: "GET", url: "/metrics", headers: bearer });
     expect(metrics.body).toContain('x_backups_archives{repository="odin",host="local"} 1');
     expect((await app.inject({ method: "GET", url: "/metrics" })).statusCode).toBe(401);

@@ -275,25 +275,6 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS events_by_target ON events (target_id, id);
   CREATE INDEX IF NOT EXISTS runs_by_target ON runs (target_id, id);
-  CREATE TABLE IF NOT EXISTS users (
-    name TEXT PRIMARY KEY,
-    role TEXT NOT NULL,
-    jobs TEXT,
-    password_hash TEXT,
-    totp_secret TEXT,
-    totp_pending TEXT,
-    totp_last_step INTEGER,
-    recovery_codes TEXT,
-    created_epoch INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS tokens (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    hash TEXT NOT NULL UNIQUE,
-    created_by TEXT NOT NULL,
-    created_epoch INTEGER NOT NULL,
-    last_used_epoch INTEGER
-  );
   CREATE TABLE IF NOT EXISTS task_overrides (
     task_id TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL,
@@ -331,6 +312,11 @@ export class Store {
     this.database.exec(SCHEMA);
     // Every open page listens, so more listeners than Node's default is normal rather than a leak.
     this.changes.setMaxListeners(0);
+  }
+
+  // The connection, for the accounts X-Libs keeps in the same database.
+  get sql(): DatabaseSync {
+    return this.database;
   }
 
   changed(change: Change): void {

@@ -69,7 +69,7 @@ beforeEach(async () => {
     return command.includes("borg") && command.includes("list") ? cmd_result(0, LIST, "") : cmd_result(0, "", "");
   }, fake_stream);
   app = await build_app({ serve_web: false, logger: false, password_hash, poller, store });
-  const login = await app.inject({ method: "POST", url: "/api/login", payload: { password: "correct horse" } });
+  const login = await app.inject({ method: "POST", url: "/api/login", payload: { name: "admin", password: "correct horse" } });
   cookie = String(login.headers["set-cookie"]).split(";")[0];
 });
 
@@ -455,7 +455,7 @@ describe("config from the page", () => {
     const editable_hub = new AgentHub(new AgentTokens(editable_store), { local: { host: "local", agent: new FakeAgent() } });
     editable_poller = new Poller(sources.config(), editable_store, editable_hub, async () => cmd_result(0, LIST, ""));
     editable_app = await build_app({ serve_web: false, logger: false, password_hash, poller: editable_poller, store: editable_store, sources });
-    const login = await editable_app.inject({ method: "POST", url: "/api/login", payload: { password: "correct horse" } });
+    const login = await editable_app.inject({ method: "POST", url: "/api/login", payload: { name: "admin", password: "correct horse" } });
     session = String(login.headers["set-cookie"]).split(";")[0];
   });
 

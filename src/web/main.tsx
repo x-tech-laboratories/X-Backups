@@ -1,4 +1,4 @@
-// The page: the login, the shell around every view (header, sidebar, search, runs in progress, theme), and the router between views.
+// The page: the sign-in, the shell around every view (header, sidebar, search, runs in progress, theme), and the router between views.
 
 import "@x-tech-laboratories/halon/halon-tokens.css";
 import "@x-tech-laboratories/halon/halon.css";
@@ -6,14 +6,14 @@ import "./app.css";
 import { stamp } from "@x-tech-laboratories/x-libs/web/format";
 import { StatusPill } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { Shell, use_route, type ShellSection } from "@x-tech-laboratories/x-libs/web/react/shell";
+import { SignInForm } from "@x-tech-laboratories/x-libs/web/react/sign_in";
 import { Suggestions } from "@x-tech-laboratories/x-libs/web/react/suggestions";
 import { current_route, link, type Route } from "@x-tech-laboratories/x-libs/web/router";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { api, LoginNeeded, query, type Run, type SearchResults } from "./api.ts";
 import { connect, disconnect, stream_up } from "./live.ts";
-import { Login } from "./login.tsx";
-import { can, forget_me, load_me, type Me } from "./session.ts";
+import { accounts, can, forget_me, load_me, type Me } from "./session.ts";
 import { theme, use_changes } from "./ui.tsx";
 import { ArchiveView } from "./views/archive.tsx";
 import { entity_title, EntityView } from "./views/entity_config.tsx";
@@ -84,7 +84,7 @@ function moved(route: Route): Route {
 // ── App ──────────────────────────────────────────────────────────────────────
 
 function App() {
-  // Who is logged in, null on the login page, and undefined until the first request tells whether a session is open.
+  // Who is signed in, null on the sign-in page, and undefined until the first request tells whether a session is open.
   const [who, set_who] = useState<Me | null | undefined>(undefined);
   const route = moved(use_route());
 
@@ -100,7 +100,7 @@ function App() {
   }
 
   useEffect(() => {
-    // A login can lapse while any view is fetching, so a LoginNeeded from anywhere brings the login back.
+    // A session can lapse while any view is fetching, so a LoginNeeded from anywhere brings the sign-in back.
     window.addEventListener("unhandledrejection", (event) => {
       if (!(event.reason instanceof LoginNeeded)) return;
       event.preventDefault();
@@ -116,12 +116,12 @@ function App() {
   const view_key = `${route.parts.join("/")}?${route.query.toString()}`;
 
   useEffect(() => {
-    if (who === null) document.title = "Log in · X-Backups";
+    if (who === null) document.title = "Sign in · X-Backups";
     else if (page) document.title = `${page.title} · X-Backups`;
   });
 
-  async function log_out(): Promise<void> {
-    await api("/api/logout", {}).catch(() => {});
+  async function sign_out(): Promise<void> {
+    await accounts.sign_out().catch(() => {});
     show_login();
   }
 
@@ -134,12 +134,12 @@ function App() {
       theme={theme}
       user={who ? `${who.name} · ${who.role}` : null}
       user_href="#/account"
-      on_logout={() => void log_out()}
+      on_logout={() => void sign_out()}
       tools={who && <><Search /><RunningChip /></>}
       sidebar_foot={who && <StreamState />}
       view_key={who ? view_key : "login"}
     >
-      {who === null && <Login on_login={async () => {
+      {who === null && <SignInForm client={accounts} title="X-Backups" on_signed_in={async () => {
         window.dispatchEvent(new HashChangeEvent("hashchange"));
         await start();
       }} />}

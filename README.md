@@ -180,12 +180,12 @@ Settings, Users and Account, and each entity's page links to the others it names
 
 ## Users and access
 
-The password hash file logs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds
+The password hash file signs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds
 other users on the Users page, each with a role and the jobs they are granted, or everything:
 
 - `viewer` sees status, history, runs and events.
 - `operator` also runs actions, restores, and reads and downloads what is inside archives.
-- `admin` also changes the config, users and API tokens.
+- `admin` also changes the config, users and everyone's tokens.
 
 A job's grant shows its targets with their runs, events and archives, the sources and repositories
 it uses, and the hosts those are on. A repository no job writes to, such as one a host's own
@@ -196,13 +196,16 @@ purging archives, and cancelling or rerunning those) needs an admin, or a user g
 writing there; the server refuses it otherwise. A grant on a repository from an older release
 becomes grants on the jobs writing there on the first start.
 
-Anyone can turn on a second factor (an authenticator app, with recovery codes) on the Account
-page. One name may be tried from one address five times in five minutes, right or wrong; then
-that pair waits.
+Signing in, the Account and Users pages are the X-Libs accounts every X-app shares. Unless "Keep me
+signed in" is ticked, a session ends when the browser closes; ticked, it lasts until it is signed
+out from the Account page or by an admin. Sessions survive a restart. On the Account page anyone
+can change their password, turn on a second factor (an authenticator app, with recovery codes),
+see where they are signed in and sign those out, and make tokens. One name may be tried from one
+address five times in five minutes, right or wrong; then that pair waits.
 
-API tokens, made on the Users page, read like a viewer of everything and nothing more:
-send one as `Authorization: Bearer <token>`. `/metrics` serves Prometheus metrics to a token or a
-logged-in user.
+A token acts as the user who made it, read-only unless they untick that: send one as
+`Authorization: Bearer <token>`. `/metrics` serves Prometheus metrics to a token or a signed-in
+user. API tokens from an older release keep working as read-only tokens of the admin who made them.
 
 Two other ways in, both only for users an admin has added:
 
@@ -403,7 +406,7 @@ when one is set, and otherwise against the free space of its filesystem, which e
 `df` for a repository on a local path. A repository reached over `ssh://` has no free space to read, since
 its storage host allows only `borg serve`. The bar turns amber at 75 % and red at 90 %.
 
-Anyone who can log in to a page that edits the config can make X-Backups run commands as its user
+Anyone who can sign in to a page that edits the config can make X-Backups run commands as its user
 and as each agent's user, through fields such as `rsh`, `borg_bin` and `passphrase_command`.
 
 ## Licence

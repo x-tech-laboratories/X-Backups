@@ -15,7 +15,7 @@ function make_app() {
 }
 
 async function login(app: Awaited<ReturnType<typeof build_app>>, password: string) {
-  return app.inject({ method: "POST", url: "/api/login", payload: { password } });
+  return app.inject({ method: "POST", url: "/api/login", payload: { name: "admin", password } });
 }
 
 describe("password hashes", () => {
@@ -46,7 +46,7 @@ describe("api guard", () => {
     await app.close();
   });
 
-  it("lets a session in until it logs out", async () => {
+  it("lets a session in until it signs out", async () => {
     const app = await make_app();
 
     const response = await login(app, "correct horse");

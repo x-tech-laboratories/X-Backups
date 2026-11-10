@@ -4,18 +4,19 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { key_fingerprint } from "@x-tech-laboratories/x-libs/agent/keys";
+import { AccountError, AccountStore } from "@x-tech-laboratories/x-libs/server/account_store";
+import type { ProxySignIn } from "@x-tech-laboratories/x-libs/server/account_sign_in";
+import type { OidcClient } from "@x-tech-laboratories/x-libs/server/oidc";
 import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
 import { EventStream } from "@x-tech-laboratories/x-libs/server/events";
 import { send_error } from "@x-tech-laboratories/x-libs/server/replies";
 import { register_web_folder } from "@x-tech-laboratories/x-libs/server/web_folder";
 import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, writers, type Scope, type World } from "./access.ts";
-import { AccountError, Accounts, has_role } from "./accounts.ts";
 import type { AgentHub } from "./agents/hub.ts";
-import { register_auth, type ProxyLogin } from "./auth.ts";
+import { adopt_old_accounts, check_grants, grants_of, has_role, register_auth, roles } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
 import { backup_map, map_entry, map_links } from "./map.ts";
 import { metrics_text } from "./metrics.ts";
-import type { OidcClient } from "./oidc.ts";
 import { browser_rows } from "./borg/parsing.ts";
 import { WAITING_FOR_AGENT, type BorgRepository } from "./borg/repository.ts";
 import { as_list } from "./borg/shell.ts";
@@ -39,7 +40,7 @@ export interface app_options {
   // The name the password hash logs in as; "admin" unless X_BACKUPS_ADMIN_NAME says otherwise.
   admin_name?: string;
   oidc?: OidcClient | null;
-  proxy?: ProxyLogin | null;
+  proxy?: ProxySignIn | null;
   poller: Poller;
   store: Store;
   // Where the config comes from; without it the config is the poller's own and read-only.
@@ -130,7 +131,11 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   const { poller, store, sources } = options;
   const agents = options.agents ?? poller.agents;
 
-  const accounts = new Accounts(store, { name: options.admin_name ?? "admin", password_hash: options.password_hash });
+  const accounts = new AccountStore({
+    database: store.sql, app_name: "X-Backups", roles, check_access: check_grants, token_prefix: "xb",
+    declared: new Map([[options.admin_name ?? "admin", options.password_hash]]),
+  });
+  adopt_old_accounts(store.sql);
 
   // ── Access ───────────────────────────────────────────────────────────────
 
@@ -141,7 +146,7 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   });
 
   // What the viewer sees, or null for everything.
-  const scope = (request: FastifyRequest): Scope | null => scope_of(request.viewer?.grants ?? null, world());
+  const scope = (request: FastifyRequest): Scope | null => scope_of(grants_of(request), world());
 
   await register_auth(app, {
     accounts, oidc: options.oidc, proxy: options.proxy,

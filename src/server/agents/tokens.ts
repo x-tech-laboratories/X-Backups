@@ -5,7 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 
-import { digest } from "../accounts.ts";
+import { digest } from "@x-tech-laboratories/x-libs/server/account_store";
 import type { Store } from "../store.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
