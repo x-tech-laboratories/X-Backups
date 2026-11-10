@@ -128,6 +128,7 @@ function App() {
   return (
     <Shell
       brand="X-Backups"
+      brand_icon="/icon.svg"
       sections={sections.filter((section) => section.id !== "users" || can("admin"))}
       active={(route.parts[0] === "new-repository" ? "repositories" : route.parts[0]) ?? ""}
       theme={theme}
