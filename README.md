@@ -225,7 +225,7 @@ The NixOS module has the same as `adminName`, `oidc.*` and `proxyLogin.*`.
 and their contents, runs, events, tasks, timers, hosts, jobs and sources, and the actions the page
 has. Each tool runs its route as the caller, so it sees only what their grants show and may do only
 what their role allows. Downloads, agent tokens and config editing stay on the page. A client sends
-a token with read-only unticked, as every MCP request is a POST:
+a token as a bearer header; a read-only one runs only the tools that read:
 
 ```sh
 claude mcp add --transport http x-backups https://backups.example/api/mcp --header "Authorization: Bearer <token>"

@@ -88,7 +88,7 @@ export async function register_auth(app: FastifyInstance, options: AuthOptions):
   const { accounts, oidc = null, proxy = null, sees_target = () => true } = options;
 
   await register_accounts(app, {
-    accounts, oidc, proxy, needed, cookie_name: "x_backups_session", open_paths: open_routes, guarded_paths: ["/metrics"],
+    accounts, oidc, proxy, needed, cookie_name: "x_backups_session", open_paths: open_routes, guarded_paths: ["/metrics"], read_only_paths: ["/api/mcp"],
   });
 
   // A repository the viewer may not see answers as if it did not exist.
