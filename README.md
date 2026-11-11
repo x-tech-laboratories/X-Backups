@@ -219,6 +219,18 @@ Two other ways in, both only for users an admin has added:
 
 The NixOS module has the same as `adminName`, `oidc.*` and `proxyLogin.*`.
 
+## MCP
+
+`/api/mcp` offers the API to AI clients as MCP tools over streamable HTTP: repositories, archives
+and their contents, runs, events, tasks, timers, hosts, jobs and sources, and the actions the page
+has. Each tool runs its route as the caller, so it sees only what their grants show and may do only
+what their role allows. Downloads, agent tokens and config editing stay on the page. A client sends
+a token with read-only unticked, as every MCP request is a POST:
+
+```sh
+claude mcp add --transport http x-backups https://backups.example/api/mcp --header "Authorization: Bearer <token>"
+```
+
 ## NixOS
 
 The flake's `nixosModules.default` runs X-Backups as a service:

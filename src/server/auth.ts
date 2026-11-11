@@ -43,8 +43,10 @@ const archive_contents = /^\/api\/repositories\/[^/]+\/(browse|diff|download)$/;
 // Issuing or revoking a host's agent token decides which machine may run commands, so it needs an admin.
 const agent_token_route = /^\/api\/hosts\/[^/]+\/token$/;
 
-// What one of X-Backups' own routes needs; the account routes are X-Libs' to decide.
+// What one of X-Backups' own routes needs; the account routes are X-Libs' to decide. MCP needs only a viewer, as each
+// tool's route is checked again on its own.
 export function needed(method: string, path: string): Need {
+  if (path === "/api/mcp") return { role: "viewer" };
   if (open_routes.includes(path)) return "open";
   if (path === "/metrics") return { role: "viewer" };
   if (method === "POST" && (path === "/api/repositories" || path.startsWith("/api/config/"))) return { role: "admin" };

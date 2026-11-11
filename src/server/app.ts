@@ -16,6 +16,7 @@ import type { AgentHub } from "./agents/hub.ts";
 import { adopt_old_accounts, check_grants, grants_of, has_role, register_auth, roles } from "./auth.ts";
 import { health, repository_health } from "./health.ts";
 import { backup_map, map_entry, map_links } from "./map.ts";
+import { register_mcp } from "./mcp.ts";
 import { metrics_text } from "./metrics.ts";
 import { browser_rows } from "./borg/parsing.ts";
 import { WAITING_FOR_AGENT, type BorgRepository } from "./borg/repository.ts";
@@ -775,6 +776,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // ── Metrics ──────────────────────────────────────────────────────────────
 
   app.get("/metrics", async (request, reply) => reply.type("text/plain; version=0.0.4").send(metrics_text(watched_by(request))));
+
+  await register_mcp(app, Object.keys(actions));
 
   // In production the server also hands out the built web page.
   if (options.serve_web) await register_web_folder(app, { folder: web_build_directory, page_cache_control: "no-cache, no-store", when_missing: "skip" });
