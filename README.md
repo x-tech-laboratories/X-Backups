@@ -41,6 +41,13 @@ The API asks for a login, checked against the hash in the file `X_BACKUPS_PASSWO
 `npm run hash-password -- <file>` asks for the password and writes that file, readable only by you.
 State is kept in a SQLite file under the folder `X_BACKUPS_STATE_DIR` names, `state/` by default.
 
+That database, which holds the users, task overrides and agent tokens beside the poll and run history, is backed up
+once a day into `<X_BACKUPS_STATE_DIR>/backups`, keeping the last 14 daily copies. An admin changes that, backs up by
+hand, restores or deletes a backup in the Backups section of Settings. A restore first backs up the current data, then
+stops the server, which systemd starts again with the backup in place of the database. X-Backups keeps no history of
+its items, which the Application Standard asks of apps whose users edit items: its repositories, hosts and tasks come
+from the config, and the rest is polls, runs and events, which are a log.
+
 `/api/health` stays open, so X-Monitor can poll it without logging in. Its `status` is `ok`,
 `warning` or `critical`, the worst of the repositories', each listed with its reasons; it answers
 503 when critical, so a plain HTTP check alerts on that without reading the body.

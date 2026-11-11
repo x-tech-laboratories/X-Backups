@@ -3,6 +3,9 @@
 import { add_days, start_of_day } from "@x-tech-laboratories/x-libs/dates";
 import { ButtonGroup, Segmented, Select } from "@x-tech-laboratories/x-libs/web/react/controls";
 import { Facts, Section, Toolbar } from "@x-tech-laboratories/x-libs/web/react/layout";
+import { BackupSettings } from "@x-tech-laboratories/x-libs/web/react/backup_settings";
+import { create_api } from "@x-tech-laboratories/x-libs/web/api";
+import { backup_client } from "@x-tech-laboratories/x-libs/web/backups";
 import { Empty, Loaded, Skeleton, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { Pager } from "@x-tech-laboratories/x-libs/web/react/table";
 import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
@@ -268,6 +271,9 @@ const source_text: Record<Setting["source"], [label: string, title: string]> = {
 
 const theme_options: [value: Theme, text: string][] = [["system", "Follow the system"], ["light", "Light"], ["dark", "Dark"]];
 
+// The state database's backups; changing them needs an admin.
+const backups = backup_client(create_api());
+
 export function SettingsView() {
   const [chosen, set_chosen] = useState(theme.get);
   const config = use_resource(() => api<ConfigInfo>("/api/config"), []);
@@ -285,6 +291,10 @@ export function SettingsView() {
       </Section>
       <div className="stack"><Loaded resource={config} lines={4}>{(info) => <ConfigurationPanel info={info} saved={() => config.reload(true)} />}</Loaded></div>
       <div>{config.data ? <EntityPanels /> : <Skeleton lines={3} />}</div>
+      <Section title="Backups">
+        {/* A restore restarts the server, so the page loads again once it answers. */}
+        <BackupSettings device={backups} data_name="accounts, task overrides, agent tokens and history" on_restored={() => setTimeout(() => window.location.reload(), 3000)} />
+      </Section>
     </div>
   );
 }
