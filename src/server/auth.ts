@@ -43,8 +43,10 @@ const archive_contents = /^\/api\/repositories\/[^/]+\/(browse|diff|download)$/;
 // Issuing or revoking a host's agent token decides which machine may run commands, so it needs an admin.
 const agent_token_route = /^\/api\/hosts\/[^/]+\/token$/;
 
-// What one of X-Backups' own routes needs; the account routes are X-Libs' to decide.
+// What one of X-Backups' own routes needs; the account routes are X-Libs' to decide. MCP needs only a viewer, as each
+// tool's route is checked again on its own.
 export function needed(method: string, path: string): Need {
+  if (path === "/api/mcp") return { role: "viewer" };
   if (open_routes.includes(path)) return "open";
   if (path === "/metrics") return { role: "viewer" };
   if (method === "POST" && (path === "/api/repositories" || path.startsWith("/api/config/"))) return { role: "admin" };
@@ -86,7 +88,7 @@ export async function register_auth(app: FastifyInstance, options: AuthOptions):
   const { accounts, oidc = null, proxy = null, sees_target = () => true } = options;
 
   await register_accounts(app, {
-    accounts, oidc, proxy, needed, cookie_name: "x_backups_session", open_paths: open_routes, guarded_paths: ["/metrics"],
+    accounts, oidc, proxy, needed, cookie_name: "x_backups_session", open_paths: open_routes, guarded_paths: ["/metrics"], read_only_paths: ["/api/mcp"],
   });
 
   // A repository the viewer may not see answers as if it did not exist.
