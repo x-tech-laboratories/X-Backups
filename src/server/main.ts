@@ -2,7 +2,10 @@
 
 import { join } from "node:path";
 
+import { backup_naming, keep_backing_up } from "@x-tech-laboratories/x-libs/backups";
 import { LocalAgent } from "@x-tech-laboratories/x-libs/server/agents/local";
+import { json_backup_schedule } from "@x-tech-laboratories/x-libs/server/backup_routes";
+import { sqlite_backups, take_staged_restore } from "@x-tech-laboratories/x-libs/server/sqlite_backups";
 import { read_server_config } from "@x-tech-laboratories/x-libs/server/config";
 
 import { command_runner } from "../agent/agent.ts";
@@ -42,7 +45,21 @@ const proxy: ProxySignIn | null = proxy_header
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-const store = Store.open_from_environment();
+const database_path = Store.path_from_environment();
+// A restore picked in Settings waits beside the database and is taken in here, before the database opens.
+const restored = take_staged_restore(database_path);
+const store = new Store(database_path);
+// The state database holds the accounts, task overrides and agent tokens, so it is backed up daily; a restore stops the
+// server so systemd starts it again.
+const backups = sqlite_backups({
+  folder: () => join(state_directory, "backups"), naming: backup_naming("x-backups", ".sqlite"), database: () => store.sql, database_path: () => database_path,
+  after_staging: () => {
+    app.log.info("Restarting to restore a backup");
+    setTimeout(() => process.exit(75), 500);
+  },
+});
+const backup_schedule = json_backup_schedule(join(state_directory, "backup-schedule.json"));
+const automatic_backups = keep_backing_up(backups, backup_schedule.get);
 // The server's own host is the managed one with no address, whose commands the built-in agent runs here; its long runs
 // keep their output under the state folder, so they outlive a restart of the server.
 const agents = new AgentHub(new AgentTokens(store), {
@@ -54,9 +71,12 @@ const scheduler = new Scheduler(poller, store);
 const app = await build_app({
   serve_web: is_production, logger: true, password_hash, admin_name, poller, store, sources, agents, scheduler,
   oidc: oidc_settings === null ? null : new OidcClient(oidc_settings), proxy,
+  backups: { backups, schedule: backup_schedule, on_schedule_change: () => void automatic_backups.check() },
 });
+if (restored) app.log.info("Restored the database from the backup picked in Settings");
 
 app.addHook("onClose", async () => {
+  automatic_backups.stop();
   scheduler.stop();
   poller.stop();
   store.close();

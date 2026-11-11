@@ -6,6 +6,7 @@ import fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { key_fingerprint } from "@x-tech-laboratories/x-libs/agent/keys";
 import { AccountError, AccountStore } from "@x-tech-laboratories/x-libs/server/account_store";
 import type { ProxySignIn } from "@x-tech-laboratories/x-libs/server/account_sign_in";
+import { register_backup_routes, type BackupRoutesOptions } from "@x-tech-laboratories/x-libs/server/backup_routes";
 import type { OidcClient } from "@x-tech-laboratories/x-libs/server/oidc";
 import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
 import { EventStream } from "@x-tech-laboratories/x-libs/server/events";
@@ -52,6 +53,8 @@ export interface app_options {
   agents?: AgentHub;
   // Starts the tasks; without it /api/tasks is not served.
   scheduler?: Scheduler;
+  // The state database's backups, served to Settings; without them /api/backups is not served.
+  backups?: BackupRoutesOptions;
 }
 
 interface ActionBody {
@@ -154,6 +157,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
     sees_target: (request, target_id) => sees(scope(request), { kind: "target", target_id }),
   });
   await register_agent_route(app, agents);
+  const { backups } = options;
+  if (backups !== undefined) await app.register(async (api) => register_backup_routes(api, backups), { prefix: "/api" });
 
   // The targets this viewer sees.
   const watched_by = (request: FastifyRequest): Watched[] => {

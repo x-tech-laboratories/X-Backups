@@ -325,9 +325,14 @@ export class Store {
 
   // Opens the database in the folder X_BACKUPS_STATE_DIR names, creating the folder if needed.
   static open_from_environment(): Store {
+    return new Store(Store.path_from_environment());
+  }
+
+  // The database file under X_BACKUPS_STATE_DIR, its folder made if missing.
+  static path_from_environment(): string {
     const directory = process.env.X_BACKUPS_STATE_DIR ?? "state";
     mkdirSync(directory, { recursive: true });
-    return new Store(join(directory, "x-backups.sqlite"));
+    return join(directory, "x-backups.sqlite");
   }
 
   close(): void {

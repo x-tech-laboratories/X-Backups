@@ -49,6 +49,8 @@ export function needed(method: string, path: string): Need {
   if (path === "/api/mcp") return { role: "viewer" };
   if (open_routes.includes(path)) return "open";
   if (path === "/metrics") return { role: "viewer" };
+  // Backups hold every account and token, and a restore replaces them, so changing them needs an admin.
+  if (path.startsWith("/api/backups")) return method === "GET" ? { role: "viewer" } : { role: "admin" };
   if (method === "POST" && (path === "/api/repositories" || path.startsWith("/api/config/"))) return { role: "admin" };
   if (agent_token_route.test(path)) return { role: "admin" };
   if (method === "PUT" || method === "DELETE") return { role: "admin" };
