@@ -37,9 +37,7 @@ const sections: ShellSection[] = [
   { id: "runs", label: "Runs", href: "#/runs" },
   { id: "schedules", label: "Schedules", href: "#/schedules" },
   { id: "events", label: "Events", href: "#/events" },
-  { id: "settings", label: "Settings", href: "#/settings" },
   { id: "users", label: "Users", href: "#/users" },
-  { id: "account", label: "Account", href: "#/account" },
 ];
 
 // ── Routing ──────────────────────────────────────────────────────────────────
@@ -137,6 +135,7 @@ function App() {
       on_logout={() => void sign_out()}
       tools={who && <><Search /><RunningChip /></>}
       sidebar_foot={who && <StreamState />}
+      settings={{ href: "#/settings" }}
       view_key={who ? view_key : "login"}
     >
       {who === null && <SignInForm client={accounts} title="X-Backups" on_signed_in={async () => {
