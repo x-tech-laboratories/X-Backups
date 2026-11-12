@@ -28,7 +28,7 @@ const FULL_CFG: BorgConfig = {
   allow_delete: true, allow_purge: true, exclude: ["*.tmp"],
 };
 
-const CANARY_CFG: BorgConfig = { ...BASE_CFG, canary_path: "/Storage/System/.x-monitor-canary", collect_stats: false };
+const CANARY_CFG: BorgConfig = { ...BASE_CFG, canary_path: "/Storage/System/.x-backups-canary", collect_stats: false };
 
 const CHECK_CFG: BorgConfig = { ...BASE_CFG, repo: "/srv/local", check_units: ["borgmatic-check.service"], collect_stats: false };
 
@@ -384,7 +384,7 @@ describe("failures", () => {
     ["a missing borg binary", cmd_result(1, "", "sudo: borg: command not found"), "unavailable"],
     ["an unreadable repo", cmd_result(2, "", "Permission denied: '/srv/repo/config'"), "unavailable"],
     ["a repo lock timeout", cmd_result(2, "", "Failed to create/acquire the lock /srv/repo/lock.exclusive (timeout)."), "unavailable"],
-    ["a cache lock timeout", cmd_result(2, "", "Failed to create/acquire the lock /var/cache/x-monitor-borg/.cache/borg/abc/lock.exclusive (timeout)."), "unavailable"],
+    ["a cache lock timeout", cmd_result(2, "", "Failed to create/acquire the lock /var/cache/x-backups-borg/.cache/borg/abc/lock.exclusive (timeout)."), "unavailable"],
   ])("calls %s %s", (_label, result, status) => {
     const harness = make();
     collect(harness, result);
@@ -512,8 +512,8 @@ describe("list command", () => {
   });
 
   it("sets BORG_RSH from an ssh key", () => {
-    const command = make({ ...BASE_CFG, ssh_key: "/run/secrets/x_monitor_ssh_key" }).repository.list_command();
-    for (const part of ["BORG_RSH=", "/run/secrets/x_monitor_ssh_key", "IdentitiesOnly=yes", "BatchMode=yes"]) {
+    const command = make({ ...BASE_CFG, ssh_key: "/run/secrets/x_backups_ssh_key" }).repository.list_command();
+    for (const part of ["BORG_RSH=", "/run/secrets/x_backups_ssh_key", "IdentitiesOnly=yes", "BatchMode=yes"]) {
       expect(command).toContain(part);
     }
   });
@@ -607,7 +607,7 @@ describe("lock hints", () => {
   });
 
   it("points a cache lock at the shared cache folder", () => {
-    const result = collect(make(), cmd_result(2, "", "Failed to create/acquire the lock /var/cache/x-monitor-borg/.cache/borg/abc123/lock.exclusive (timeout)."));
+    const result = collect(make(), cmd_result(2, "", "Failed to create/acquire the lock /var/cache/x-backups-borg/.cache/borg/abc123/lock.exclusive (timeout)."));
     expect(messages(result)).toContain("chunks cache");
     expect(messages(result)).toContain("cache_dir");
     expect(messages(result)).not.toContain("a backup may be running");
@@ -732,7 +732,7 @@ describe("backup command", () => {
 
   it("uses the persistent cache folder", () => {
     const command = make(BACKUP_CFG).repository.backup_command();
-    expect(command).toContain("BORG_BASE_DIR=/var/cache/x-monitor-borg");
+    expect(command).toContain("BORG_BASE_DIR=/var/cache/x-backups-borg");
     expect(command).not.toContain("mktemp");
     expect(command).not.toContain("rm -rf");
     expect(make({ ...BACKUP_CFG, cache_dir: "/srv/borgcache" }).repository.backup_command()).toContain("BORG_BASE_DIR=/srv/borgcache");
@@ -1094,11 +1094,11 @@ describe("restore canary", () => {
     const command = poll_text(harness);
     expect(harness.repository.poll_calls).toEqual(["list", "canary", "canary_live"]);
     expect(command).toContain("extract --stdout");
-    expect(command.replaceAll("'", "")).toContain("host-2024 Storage/System/.x-monitor-canary");
+    expect(command.replaceAll("'", "")).toContain("host-2024 Storage/System/.x-backups-canary");
   });
 
   it("reads the live canary without sudo first", () => {
-    const canary = join(scratch_dir(), ".x-monitor-canary");
+    const canary = join(scratch_dir(), ".x-backups-canary");
     writeFileSync(canary, "token");
     const harness = make({ ...CANARY_CFG, canary_path: canary, require_sudo: true });
     cycle_with(harness);
@@ -1761,7 +1761,7 @@ describe("job preflight", () => {
   });
 
   it("launches when the unit is inactive", () => {
-    expect(sh(with_preflight(preflight_script(null, ["x-monitor-no-such-unit.service"]), "echo launched")).stdout.trim()).toBe("launched");
+    expect(sh(with_preflight(preflight_script(null, ["x-backups-no-such-unit.service"]), "echo launched")).stdout.trim()).toBe("launched");
   });
 
   it("never probes a host the shell could misread", () => {
@@ -1836,9 +1836,9 @@ describe("job wrappers", () => {
   });
 
   it("wraps the whole job in the lock, then the inhibitor, then the priority", () => {
-    const config = { ...CHAIN_CFG, job_lock: "/run/lock/x-monitor-borg", inhibit_sleep: true, job_nice: 19, job_io_idle: true };
+    const config = { ...CHAIN_CFG, job_lock: "/run/lock/x-backups-borg", inhibit_sleep: true, job_nice: 19, job_io_idle: true };
     const command = unquoted(command_of(make(config), "run_backup"));
-    const order = ["flock /run/lock/x-monitor-borg sh -c", "systemd-inhibit", "--what=sleep:shutdown", "nice -n 19 ionice -c 3 sh -c", "create"];
+    const order = ["flock /run/lock/x-backups-borg sh -c", "systemd-inhibit", "--what=sleep:shutdown", "nice -n 19 ionice -c 3 sh -c", "create"];
     const positions = order.map((part) => command.indexOf(part));
     expect(positions.every((position) => position > -1)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));

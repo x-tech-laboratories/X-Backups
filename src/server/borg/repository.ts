@@ -254,7 +254,7 @@ export class BorgRepository {
     this.one_file_system = Boolean(config.one_file_system ?? true);
     this.compression = config.compression ?? "zstd";
     this.archive_prefix = config.archive_prefix ?? name;
-    this.cache_dir = config.cache_dir ?? "/var/cache/x-monitor-borg";
+    this.cache_dir = config.cache_dir ?? "/var/cache/x-backups-borg";
     this.cache_dir_configured = Boolean(config.cache_dir);
     this.backup_lock_wait = config.backup_lock_wait ?? 600;
     this.canary_path = config.canary_path ?? null;
