@@ -73,11 +73,11 @@ adapted where a task changes a contract.
    passphrase today by exporting the shell variable `with_passphrase` reads into, which a
    `systemd-run` unit would not inherit: use `passphrase_command` on the target or a systemd
    credential there.
-5. [ ] **Rename X-Monitor leftovers.** Done except the `cache_dir` default, which waits for task 16. The `__XMONITOR_*` and `__x_monitor_*` shell markers, the
-   `cache_dir` default `/var/cache/x-monitor-borg` and `restore_dir` default
+5. [x] **Rename X-Monitor leftovers.** The `__XMONITOR_*` and `__x_monitor_*` shell markers, the
+   `cache_dir` default (now `/var/cache/x-backups-borg`) and `restore_dir` default
    `/var/tmp/x-monitor-restore` in `repository.ts`, `$HOME/.cache/x_monitor/jobs`,
    `--who=X-Monitor`, and "X-Monitor" in `failure_hint`. A new `cache_dir` rebuilds each
-   repository's chunks cache once, so land that default with the cutover (task 16).
+   repository's chunks cache once, so the default landed with the cutover (task 16).
 6. [x] **Passphrase off the command line.** The passphrase travels on the command's stdin: the
    shell reads it into a variable once, and each borg call gets it piped in by the `printf`
    builtin with `BORG_PASSPHRASE_FD=0`, so no process list shows it, under sudo too.
@@ -134,7 +134,7 @@ adapted where a task changes a contract.
     Commit `flake.lock`. Reference: `../X-Monitor/nix/module.nix`.
 15. [x] **CI.** `.github/workflows/ci.yml` runs `npm ci`, build, test and lint. Pushing a workflow
     file needs a GitHub token with the `workflow` scope.
-16. [ ] **Cutover.**
+16. [x] **Cutover.**
     - [x] Deploy beside X-Monitor against the same repositories (Heimdall, `backups.heimdall.technet`, 2026-10-26).
     - [x] Compare the two for a few days.
     - [x] Import X-Monitor's borg history before its borg plugin goes, with
@@ -143,11 +143,13 @@ adapted where a task changes a contract.
       Done: a dry run on 2026-10-30 found nothing left to write, the history reaching back to 2026-09-28.
     - [x] Several checks per job and repository, so X-Monitor's weekly check and monthly extract and data
       checks carry over, and a calendar task never run waits for its next time instead of starting at once.
-    - [ ] Schedule the backups and checks in X-Backups and drop X-Monitor's borg monitors in one deploy.
-    - Remove X-Monitor's borg plugin: `x_monitor/plugins/borg/`, its tests, its `config.yaml`
+    - [x] Schedule the backups and checks in X-Backups and drop X-Monitor's borg monitors in one deploy.
+    - [x] Remove X-Monitor's borg plugin: `x_monitor/plugins/borg/`, its tests, its `config.yaml`
       example, `borgPassphraseFile` in `nix/module.nix`, and the borg meter in
       `x_monitor/core/ui/views/fleet.py`.
-    - Add an X-Monitor HTTP check on X-Backups' `/api/health`.
+    - [x] Add an X-Monitor HTTP check on X-Backups' `/api/health`.
+    - [x] Move the hosts' borg cache to `/var/cache/x-backups-borg` and the job lock to
+      `/run/x-backups-borg.lock`, both owned by X-Backups' agent in TechNet.
 
 ### Then
 

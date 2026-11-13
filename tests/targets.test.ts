@@ -177,7 +177,7 @@ describe("flat entries", () => {
   it("run on the written host their host names, keeping its key and kind, and stay flat", () => {
     const keys = { heimdall: make_key(key_folder, "heimdall").public_line, odin: make_key(key_folder, "odin").public_line };
     const shared = {
-      ssh_user: "x-monitor-access", require_sudo: true, cache_dir: "/var/cache/x-monitor-borg", job_lock: "/run/x-monitor-borg.lock",
+      ssh_user: "x-backups-access", require_sudo: true, cache_dir: "/var/cache/x-backups-borg", job_lock: "/run/x-backups-borg.lock",
       archive_prefix: "backup", prune_after_backup: true, compact_after_backup: true, keep_daily: 7,
     };
     const repositories = [
