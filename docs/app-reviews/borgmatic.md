@@ -1,3 +1,9 @@
+---
+title: borgmatic
+parent: App reviews
+nav_order: 3
+---
+
 # borgmatic review (from online docs only)
 
 ## Summary

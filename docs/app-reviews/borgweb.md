@@ -1,3 +1,9 @@
+---
+title: BorgWeb
+parent: App reviews
+nav_order: 7
+---
+
 # BorgWeb review (docs only)
 
 ## Summary

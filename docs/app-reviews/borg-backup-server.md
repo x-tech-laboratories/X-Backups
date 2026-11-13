@@ -1,3 +1,9 @@
+---
+title: Borg Backup Server
+parent: App reviews
+nav_order: 2
+---
+
 # Borg Backup Server, BBS (marcpope/borgbackupserver) - docs review
 
 ## Summary

@@ -1,3 +1,9 @@
+---
+title: Borgitory
+parent: App reviews
+nav_order: 4
+---
+
 # Borgitory review (docs only)
 
 ## Summary

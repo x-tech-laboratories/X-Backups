@@ -1,3 +1,9 @@
+---
+title: Borg UI
+parent: App reviews
+nav_order: 1
+---
+
 # Borg UI (karanhudia/borg-ui) - docs review
 
 ## Summary

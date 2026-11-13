@@ -1,3 +1,9 @@
+---
+title: Vorta
+parent: App reviews
+nav_order: 6
+---
+
 # Vorta review (docs only)
 
 ## Summary

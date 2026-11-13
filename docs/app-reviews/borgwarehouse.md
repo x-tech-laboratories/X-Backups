@@ -1,3 +1,9 @@
+---
+title: BorgWarehouse
+parent: App reviews
+nav_order: 5
+---
+
 # BorgWarehouse review (docs only)
 
 ## Summary
