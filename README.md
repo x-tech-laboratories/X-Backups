@@ -1,5 +1,7 @@
 # X-Backups
 
+<a href="https://liberapay.com/BeatLink/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a>
+
 A web platform for managing borg backups, part of X-Tech Laboratories. It runs every backup, prune, check and compact
 on a small agent on each host, and shows how fresh, large and healthy each backup is.
 
