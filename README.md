@@ -1,6 +1,6 @@
 # X-Backups
 
-<a href="https://liberapay.com/BeatLink/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a>
+<a href="https://liberapay.com/BeatLink/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a> <a href="https://ko-fi.com/I4V52ANK6N"><img alt="Support me on Ko-fi" src="https://ko-fi.com/img/githubbutton_sm.svg"></a>
 
 A web platform for managing borg backups, part of X-Tech Laboratories. It runs every backup, prune, check and compact
 on a small agent on each host, and shows how fresh, large and healthy each backup is.
