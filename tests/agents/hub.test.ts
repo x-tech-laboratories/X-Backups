@@ -208,7 +208,9 @@ describe("agent hub", () => {
   it("re-adopts a long run after the agent itself restarts", async () => {
     const first = start_agent_process();
     await connected();
-    await hub.start("odin", "outlives", "echo one; sleep 1; echo two", {});
+    // The run waits for the test to let it finish, so a slow restart never sees it end first.
+    const finish = join(folder, "finish");
+    await hub.start("odin", "outlives", `echo one; while [ ! -e '${finish}' ]; do sleep 0.05; done; echo two`, {});
 
     const gone = once(hub, "disconnect");
     first.kill("SIGKILL");
@@ -220,6 +222,7 @@ describe("agent hub", () => {
     const status = await reconnected;
 
     expect(status.runs).toMatchObject([{ run_id: "outlives", state: "running" }]);
+    writeFileSync(finish, "");
     expect(await ended("outlives")).toMatchObject({ state: "exited", exit_code: 0, new_output: "one\ntwo\n" });
   });
 
