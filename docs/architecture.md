@@ -224,7 +224,7 @@ grants means everything.
 
 `src/web/main.tsx` draws the sign-in, the X-Libs shell (header, sidebar, search, runs in progress, theme) and routes
 between views by the URL's hash. Each view in `src/web/views/` is one page: Overview (tiles, needs-attention list, the
-backup map), Hosts, Repositories with tabs, an archive page with Changes and Files tabs, Sources, Jobs, Runs,
+backup map, drawn with X-Libs' `FlowMap`), Hosts, Repositories with tabs, an archive page with Changes and Files tabs, Sources, Jobs, Runs,
 Schedules, Events, Settings and Users.
 
 Pages draw with X-Libs' React widgets (tables, dialogs, toasts, charts, layout, states) and Halon's tokens and styles;

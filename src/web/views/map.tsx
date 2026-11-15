@@ -2,410 +2,104 @@
 // the middle, and the repositories they write to on the right, under the hosts that store them; every box opens its page.
 
 import { age } from "@x-tech-laboratories/x-libs/web/format";
-import { ButtonGroup } from "@x-tech-laboratories/x-libs/web/react/controls";
+import { FlowMap, FlowMapZoom, use_flow_map, type FlowColumn, type FlowGroup, type FlowLink, type FlowTone } from "@x-tech-laboratories/x-libs/web/react/flow_map";
 import { Section } from "@x-tech-laboratories/x-libs/web/react/layout";
 import { Empty, Loaded, use_resource } from "@x-tech-laboratories/x-libs/web/react/states";
 import { link } from "@x-tech-laboratories/x-libs/web/router";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { api, type BackupMap, type MapTarget } from "../api.ts";
 import { use_changes } from "../ui.tsx";
 import { touches } from "./shared.tsx";
 
-// ── Layout ───────────────────────────────────────────────────────────────────
+// ── Building ─────────────────────────────────────────────────────────────────
 
-const host_width = 300;
-const job_width = 240;
-// The room between columns that the lines cross.
-const corridor = 150;
-const padding = 12;
-const heading_height = 30;
-const host_head = 34;
-const host_gap = 16;
-const source_height = 28;
-const job_height = 46;
-const repository_height = 58;
-const node_gap = 8;
+const node_id = { source: (id: string) => `source:${id}`, job: (id: string) => `job:${id}`, repository: (id: string) => `repository:${id}` };
 
-type Tone = "running" | "ok" | "warning" | "critical";
+const tone_rank: Record<FlowTone, number> = { unknown: 0, ok: 0, running: 1, warning: 2, critical: 3 };
 
-interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+function tone_of(target: MapTarget): FlowTone {
+  return target.running_run ? "running" : target.level;
 }
 
-interface Node {
-  id: string;
-  box: Box;
-  // The targets that pass through it, which hovering lights.
-  targets: number[];
-}
-
-interface Placed {
-  hosts: { name: string; id: string; box: Box }[];
-  sources: Map<string, Node & { path: string }>;
-  jobs: Map<string, Node>;
-  repositories: Map<string, Node & { path: string; stored_on: string }>;
-  columns: number[];
-  width: number;
-  height: number;
-}
-
-// Each column is ordered by where its boxes' lines come from, so the lines mostly run straight across.
-function place(map: BackupMap): Placed {
+export function backup_flow(map: BackupMap): { columns: FlowColumn[]; links: FlowLink[] } {
   const host_name = new Map(map.hosts.map((host) => [host.id, host.name]));
-  const by_name = (left: string, right: string) => (host_name.get(left) ?? left).localeCompare(host_name.get(right) ?? right);
-  const mean = (values: number[]) => values.length === 0 ? Infinity : values.reduce((sum, value) => sum + value, 0) / values.length;
-  const targets_where = (test: (target: MapTarget) => boolean) => map.targets.flatMap((target, index) => test(target) ? [index] : []);
-
-  // Jobs first follow the folders in host order, then the hosts and their folders follow the jobs, and the jobs again.
-  let source_hosts = [...new Set(map.sources.map((source) => source.host))].sort(by_name);
-  let source_order = source_hosts.flatMap((host) => map.sources.filter((source) => source.host === host));
-  const order_jobs = () => {
-    const source_rank = new Map(source_order.map((source, index) => [source.id, index]));
-    return [...map.jobs].sort((left, right) =>
-      mean(left.sources.map((id) => source_rank.get(id)!)) - mean(right.sources.map((id) => source_rank.get(id)!)) || left.id.localeCompare(right.id));
+  const host_of = (id: string) => host_name.get(id) ?? id;
+  const by_name = (left: string, right: string) => host_of(left).localeCompare(host_of(right));
+  const worst = (targets: MapTarget[]): FlowTone => targets.map(tone_of).sort((left, right) => tone_rank[right] - tone_rank[left])[0] ?? "ok";
+  // Each host's box, linking to its page when it is a configured host.
+  const group = (prefix: string, host: string): Omit<FlowGroup, "nodes"> => {
+    const page = map.links?.hosts[host];
+    return { id: `${prefix}:${host}`, label: host_of(host), href: page ? link(["hosts", page]) : null, title: page ? `${page}: open its page` : undefined };
   };
-  let job_rank = new Map(order_jobs().map((job, index) => [job.id, index]));
-  const source_feeds = new Map(map.sources.map((source) => [source.id,
-    mean(map.jobs.filter((job) => job.sources.includes(source.id)).map((job) => job_rank.get(job.id)!))]));
-  const host_feeds = (host: string) => mean(map.sources.filter((source) => source.host === host).map((source) => source_feeds.get(source.id)!).filter(Number.isFinite));
-  source_hosts = source_hosts.sort((left, right) => host_feeds(left) - host_feeds(right) || by_name(left, right));
-  source_order = source_hosts.flatMap((host) => map.sources.filter((source) => source.host === host)
-    .sort((left, right) => source_feeds.get(left.id)! - source_feeds.get(right.id)! || left.path.localeCompare(right.path)));
-  const jobs = order_jobs();
-  job_rank = new Map(jobs.map((job, index) => [job.id, index]));
-  // A repository only watched has no job and sinks to the bottom.
-  const repository_rank = new Map(map.repositories.map((repository) => [repository.id,
-    mean(map.targets.filter((target) => target.repository === repository.id && target.job !== null).map((target) => job_rank.get(target.job!)!))]));
-  const repositories = [...map.repositories].sort((left, right) => repository_rank.get(left.id)! - repository_rank.get(right.id)! || left.id.localeCompare(right.id));
-  const repository_hosts = [...new Set(repositories.map((repository) => repository.stored_on))]
-    .sort((left, right) => mean(repositories.filter((item) => item.stored_on === left).map((item) => repository_rank.get(item.id)!).filter(Number.isFinite))
-      - mean(repositories.filter((item) => item.stored_on === right).map((item) => repository_rank.get(item.id)!).filter(Number.isFinite)) || by_name(left, right));
 
-  const columns = [padding, padding + host_width + corridor, padding + host_width + corridor + job_width + corridor];
-  const top = padding + heading_height;
-  const hosts: Placed["hosts"] = [];
-  // Stacks host boxes down a column, each holding its own boxes.
-  const stack = <T,>(x: number, host_ids: string[], items_of: (host: string) => T[], height: number, put: (item: T, box: Box) => void) => {
-    let y = top;
-    for (const host of host_ids) {
-      const start = y;
-      y += host_head;
-      for (const item of items_of(host)) {
-        put(item, { x: x + padding, y, width: host_width - 2 * padding, height });
-        y += height + node_gap;
-      }
-      y += padding - node_gap;
-      hosts.push({ id: host, name: host_name.get(host) ?? host, box: { x, y: start, width: host_width, height: y - start } });
-      y += host_gap;
+  const source_hosts = [...new Set(map.sources.map((source) => source.host))].sort(by_name);
+  const sources: FlowGroup[] = source_hosts.map((host) => ({
+    ...group("sources", host),
+    nodes: map.sources.filter((source) => source.host === host).map((source) => {
+      // A folder of a configured source opens the source's page.
+      const page = map.links?.sources[source.id];
+      return { id: node_id.source(source.id), label: source.path, mono: true, href: page ? link(["sources", page]) : null, title: page ? `${source.path}, in the source ${page}` : source.path };
+    }),
+  }));
+
+  const jobs = map.jobs.map((job) => {
+    const targets = map.targets.filter((target) => target.job === job.id);
+    const folders = new Set(targets.flatMap((target) => target.sources)).size;
+    const writes_to = new Set(targets.map((target) => target.repository)).size;
+    const detail = `${folders} ${folders === 1 ? "folder" : "folders"} → ${writes_to} ${writes_to === 1 ? "repository" : "repositories"}`;
+    return { id: node_id.job(job.id), label: job.id, tone: worst(targets), details: [{ text: detail }], href: map.links?.jobs.includes(job.id) ? link(["jobs", job.id]) : null };
+  });
+
+  const repository_hosts = [...new Set(map.repositories.map((repository) => repository.stored_on))].sort(by_name);
+  const repositories: FlowGroup[] = repository_hosts.map((host) => ({
+    ...group("repositories", host),
+    nodes: map.repositories.filter((repository) => repository.stored_on === host).map((repository) => {
+      const targets = map.targets.filter((target) => target.repository === repository.id);
+      const last = Math.max(...targets.map((target) => target.last_backup_epoch ?? -Infinity));
+      const when = `last backup ${age(Number.isFinite(last) ? last : null)}`;
+      const detail = targets.some((target) => target.job !== null) ? when : `watched only · ${when}`;
+      const reasons = new Set(targets.flatMap((target) => target.reasons.map((reason) => reason.text)));
+      return {
+        id: node_id.repository(repository.id),
+        label: repository.id,
+        tone: worst(targets),
+        details: [{ text: repository.path, mono: true }, { text: detail }],
+        href: link(["repositories", targets[0].id]),
+        title: [repository.id, `${repository.path} on ${host_of(repository.stored_on)}`, detail, ...reasons].join("\n"),
+      };
+    }),
+  }));
+
+  // One line from each folder to each job that backs it up, and one from each job to each repository it writes to.
+  const links: FlowLink[] = [];
+  const path_of = new Map(map.sources.map((source) => [source.id, source]));
+  for (const job of map.jobs) {
+    const targets = map.targets.filter((target) => target.job === job.id);
+    for (const source of new Set(targets.flatMap((target) => target.sources))) {
+      const folder = path_of.get(source);
+      links.push({
+        from: node_id.source(source), to: node_id.job(job.id), tone: worst(targets.filter((target) => target.sources.includes(source))),
+        title: `${folder ? `${host_of(folder.host)} ${folder.path}` : source} → ${job.id}`,
+      });
     }
-    return y - host_gap;
-  };
-
-  const sources: Placed["sources"] = new Map();
-  const left_bottom = stack(columns[0], source_hosts, (host) => source_order.filter((source) => source.host === host), source_height, (source, box) =>
-    sources.set(source.id, { id: source.id, path: source.path, box, targets: targets_where((target) => target.sources.includes(source.id)) }));
-  const repository_nodes: Placed["repositories"] = new Map();
-  const right_bottom = stack(columns[2], repository_hosts, (host) => repositories.filter((repository) => repository.stored_on === host), repository_height, (repository, box) =>
-    repository_nodes.set(repository.id, { ...repository, box, targets: targets_where((target) => target.repository === repository.id) }));
-
-  // The jobs sit in the middle of the height the hosts take.
-  const bottom = Math.max(left_bottom, right_bottom, top);
-  const jobs_height = jobs.length * (job_height + node_gap) - node_gap;
-  let y = top + Math.max(0, (bottom - top - jobs_height) / 2);
-  const job_nodes: Placed["jobs"] = new Map();
-  for (const job of jobs) {
-    job_nodes.set(job.id, { id: job.id, box: { x: columns[1], y, width: job_width, height: job_height }, targets: targets_where((target) => target.job === job.id) });
-    y += job_height + node_gap;
+    for (const repository of new Set(targets.map((target) => target.repository))) {
+      const writes = targets.filter((target) => target.repository === repository);
+      const retention = [...new Set(writes.map((target) => keeps(target.retention)).filter(Boolean))];
+      const stored_on = host_of(map.repositories.find((item) => item.id === repository)?.stored_on ?? "");
+      links.push({
+        from: node_id.job(job.id), to: node_id.repository(repository), tone: worst(writes),
+        title: `${job.id} → ${repository} on ${stored_on}${retention.length > 0 ? `, keeps ${retention.join(" / ")}` : ""}`,
+      });
+    }
   }
 
   return {
-    hosts,
-    sources,
-    jobs: job_nodes,
-    repositories: repository_nodes,
-    columns,
-    width: columns[2] + host_width + padding,
-    height: Math.max(bottom, y - node_gap) + padding,
+    columns: [
+      { title: "Sources", width: 300, groups: sources },
+      { title: "Jobs", width: 240, nodes: jobs },
+      { title: "Repositories", width: 300, groups: repositories },
+    ],
+    links,
   };
-}
-
-// A curve from one box's right side to the next column's box's left side.
-function flow_path(from: Box, from_y: number, to: Box, to_y: number): string {
-  const [x1, x2] = [from.x + from.width, to.x];
-  const bend = (x2 - x1) / 2;
-  return `M${x1},${from_y}C${x1 + bend},${from_y} ${x2 - bend},${to_y} ${x2},${to_y}`;
-}
-
-// Where each line meets a box's side, spread along it in the order of the boxes at their other ends so they never cross there.
-function ports(lines: { key: string; at: string; other_y: number }[], box_of: (id: string) => Box): Map<string, number> {
-  const out = new Map<string, number>();
-  const by_box = new Map<string, typeof lines>();
-  for (const line of lines) by_box.set(line.at, [...by_box.get(line.at) ?? [], line]);
-  for (const [at, group] of by_box) {
-    const box = box_of(at);
-    group.sort((left, right) => left.other_y - right.other_y)
-      .forEach((line, index) => out.set(line.key, box.y + box.height * (index + 1) / (group.length + 1)));
-  }
-  return out;
-}
-
-// ── Drawing ──────────────────────────────────────────────────────────────────
-
-interface Controls {
-  fit: () => void;
-  zoom: (factor: number) => void;
-}
-
-// The boxes and lines of the map, without its view box, which the map's handlers move.
-function Drawing({ map, placed }: { map: BackupMap; placed: Placed }) {
-  const tones = map.targets.map(tone_of);
-  const worst = (indexes: number[]): Tone => indexes.map((index) => tones[index]).sort((left, right) => tone_rank[right] - tone_rank[left])[0] ?? "ok";
-  const lit_by = (indexes: number[]) => ({ "data-targets": indexes.join(" ") });
-  const host_of = (id: string) => placed.hosts.find((host) => host.id === id)?.name ?? id;
-
-  // One line from each folder to each job that backs it up, and one from each job to each repository it writes to.
-  const centre = (box: Box) => box.y + box.height / 2;
-  const feeds = [...placed.jobs.values()].flatMap((job) => [...new Set(job.targets.flatMap((index) => map.targets[index].sources))]
-    .map((source) => ({ source, job: job.id, targets: job.targets.filter((index) => map.targets[index].sources.includes(source)) })));
-  const writes = [...placed.jobs.values()].flatMap((job) => [...new Set(job.targets.map((index) => map.targets[index].repository))]
-    .map((repository) => ({ job: job.id, repository, targets: job.targets.filter((index) => map.targets[index].repository === repository) })));
-  const source_box = (id: string) => placed.sources.get(id)!.box;
-  const job_box = (id: string) => placed.jobs.get(id)!.box;
-  const repository_box = (id: string) => placed.repositories.get(id)!.box;
-  const feed_out = ports(feeds.map((feed) => ({ key: `${feed.source}>${feed.job}`, at: feed.source, other_y: centre(job_box(feed.job)) })), source_box);
-  const feed_in = ports(feeds.map((feed) => ({ key: `${feed.source}>${feed.job}`, at: feed.job, other_y: centre(source_box(feed.source)) })), job_box);
-  const write_out = ports(writes.map((write) => ({ key: `${write.job}>${write.repository}`, at: write.job, other_y: centre(repository_box(write.repository)) })), job_box);
-  const write_in = ports(writes.map((write) => ({ key: `${write.job}>${write.repository}`, at: write.repository, other_y: centre(job_box(write.job)) })), repository_box);
-
-  return (
-    <>
-      <g className="flows">
-        {feeds.map((feed) => {
-          const key = `${feed.source}>${feed.job}`;
-          const source = placed.sources.get(feed.source)!;
-          return (
-            <path key={key} className={`flow map-tone-${worst(feed.targets)}`} d={flow_path(source.box, feed_out.get(key)!, job_box(feed.job), feed_in.get(key)!)} {...lit_by(feed.targets)}>
-              <title>{`${host_of(feed.source.split(":")[0])} ${source.path} → ${feed.job}`}</title>
-            </path>
-          );
-        })}
-        {writes.map((write) => {
-          const key = `${write.job}>${write.repository}`;
-          const retention = [...new Set(write.targets.map((index) => keeps(map.targets[index].retention)).filter(Boolean))];
-          const stored_on = host_of(placed.repositories.get(write.repository)!.stored_on);
-          return (
-            <path key={key} className={`flow map-tone-${worst(write.targets)}`} d={flow_path(job_box(write.job), write_out.get(key)!, repository_box(write.repository), write_in.get(key)!)} {...lit_by(write.targets)}>
-              <title>{`${write.job} → ${write.repository} on ${stored_on}${retention.length > 0 ? `, keeps ${retention.join(" / ")}` : ""}`}</title>
-            </path>
-          );
-        })}
-      </g>
-      <g>
-        {["Sources", "Jobs", "Repositories"].map((title, index) => <Text key={title} class_name="map-group" x={placed.columns[index]} y={padding + 14} content={title} />)}
-        {placed.hosts.map((host) => {
-          // A configured host's name opens its page.
-          const host_page = map.links?.hosts[host.id];
-          const name = <Text class_name="map-host-name" x={host.box.x + padding} y={host.box.y + 22} content={host.name} />;
-          return [
-            <rect key={`${host.id}-box`} className="map-host" x={host.box.x} y={host.box.y} width={host.box.width} height={host.box.height} rx={10} />,
-            host_page
-              ? <a key={`${host.id}-name`} href={link(["hosts", host_page])}>{name}<title>{`${host_page}: open its page`}</title></a>
-              : <Text key={`${host.id}-name`} class_name="map-host-name" x={host.box.x + padding} y={host.box.y + 22} content={host.name} />,
-          ];
-        })}
-        {[...placed.sources].map(([id, source]) => {
-          const { box } = source;
-          // A folder of a configured source opens the source's page.
-          const source_page = map.links?.sources[id];
-          const children = <>
-            <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
-            <Text class_name="map-path" x={box.x + 10} y={box.y + 18} content={clip(source.path, box.width - 20, 7.4)} />
-            <title>{source_page ? `${source.path}, in the source ${source_page}` : source.path}</title>
-          </>;
-          return source_page
-            ? <a key={id} className="map-node map-source" {...lit_by(source.targets)} href={link(["sources", source_page])}>{children}</a>
-            : <g key={id} className="map-node map-source" {...lit_by(source.targets)} tabIndex={0}>{children}</g>;
-        })}
-        {[...placed.jobs].map(([id, job]) => {
-          const { box } = job;
-          const folders = new Set(job.targets.flatMap((index) => map.targets[index].sources)).size;
-          const writes_to = new Set(job.targets.map((index) => map.targets[index].repository)).size;
-          const detail = `${folders} ${folders === 1 ? "folder" : "folders"} → ${writes_to} ${writes_to === 1 ? "repository" : "repositories"}`;
-          const node_class = `map-node map-job map-tone-${worst(job.targets)}`;
-          const children = <>
-            <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
-            <circle className="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
-            <Text class_name="map-name" x={box.x + 24} y={box.y + 21} content={clip(id, box.width - 34, 7.8)} />
-            <Text class_name="map-detail" x={box.x + 10} y={box.y + 37} content={clip(detail, box.width - 20)} />
-            <title>{`${id}\n${detail}`}</title>
-          </>;
-          return map.links?.jobs.includes(id)
-            ? <a key={id} className={node_class} {...lit_by(job.targets)} href={link(["jobs", id])}>{children}</a>
-            : <g key={id} className={node_class} {...lit_by(job.targets)} tabIndex={0}>{children}</g>;
-        })}
-        {[...placed.repositories].map(([id, repository]) => {
-          const { box } = repository;
-          const written = repository.targets.filter((index) => map.targets[index].job !== null);
-          const last = Math.max(...repository.targets.map((index) => map.targets[index].last_backup_epoch ?? -Infinity));
-          const detail = written.length === 0 ? `watched only · last backup ${age(Number.isFinite(last) ? last : null)}` : `last backup ${age(Number.isFinite(last) ? last : null)}`;
-          const reasons = repository.targets.flatMap((index) => map.targets[index].reasons.map((reason) => reason.text));
-          return (
-            <a key={id} className={`map-node map-repository map-tone-${worst(repository.targets)}`} href={link(["repositories", map.targets[repository.targets[0]].id])} {...lit_by(repository.targets)}>
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} rx={6} />
-              <circle className="map-dot" cx={box.x + 14} cy={box.y + 17} r={4} />
-              <Text class_name="map-name" x={box.x + 24} y={box.y + 21} content={clip(id, box.width - 34, 7.8)} />
-              <Text class_name="map-path" x={box.x + 10} y={box.y + 37} content={clip(repository.path, box.width - 20, 7.4)} />
-              <Text class_name="map-detail" x={box.x + 10} y={box.y + 51} content={clip(detail, box.width - 20)} />
-              <title>{[id, `${repository.path} on ${host_of(repository.stored_on)}`, detail, ...new Set(reasons)].join("\n")}</title>
-            </a>
-          );
-        })}
-      </g>
-    </>
-  );
-}
-
-// The drawn map, which keeps the reader's zoom across a redraw after a change and hands its zoom and fit to the section's buttons.
-function FlowMap({ map, view_box, controls }: { map: BackupMap; view_box: { current: Box | null }; controls: { current: Controls | null } }) {
-  const drawing = useRef<SVGSVGElement>(null);
-  const snapshot = JSON.stringify(map);
-  const placed = useMemo(() => place(map), [snapshot]);
-  // A refresh that changes nothing leaves the drawing, and whatever is lit, alone.
-  const content = useMemo(() => <Drawing map={map} placed={placed} />, [snapshot]);
-  const whole = useRef<Box>({ x: 0, y: 0, width: placed.width, height: placed.height });
-  whole.current = { x: 0, y: 0, width: placed.width, height: placed.height };
-
-  const set_view = (box: Box) => {
-    view_box.current = box;
-    drawing.current?.setAttribute("viewBox", `${box.x} ${box.y} ${box.width} ${box.height}`);
-  };
-  const zoom = (factor: number, centre?: { x: number; y: number }) => {
-    const box = view_box.current!;
-    const width = Math.min(whole.current.width * 2, Math.max(whole.current.width / 8, box.width * factor));
-    const height = width * box.height / box.width;
-    const point = centre ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    set_view({ x: point.x - (point.x - box.x) * width / box.width, y: point.y - (point.y - box.y) * height / box.height, width, height });
-  };
-
-  useLayoutEffect(() => {
-    set_view(view_box.current ?? whole.current);
-    controls.current = { fit: () => set_view(whole.current), zoom };
-  }, [snapshot]);
-
-  useEffect(() => {
-    const element = drawing.current!;
-    const stop_highlight = highlight_on_hover(element);
-    const stop_panning = pan_and_zoom(element, () => view_box.current!, set_view, zoom);
-    return () => {
-      stop_highlight();
-      stop_panning();
-      controls.current = null;
-    };
-  }, []);
-
-  return (
-    <figure className="chart flow-map-frame">
-      <svg ref={drawing} className="flow-map" role="img" aria-label="Which folders each job backs up, and the repositories it writes them to">{content}</svg>
-    </figure>
-  );
-}
-
-// Lights every line and box that shares a target with whatever the pointer or focus is on, which follows a folder through
-// its jobs to the repositories it lands in, and back; the rest dims.
-function highlight_on_hover(drawing: SVGElement): () => void {
-  const light = (target: Element | null) => {
-    for (const lit of drawing.querySelectorAll(".lit")) lit.classList.remove("lit");
-    const node = target?.closest<SVGElement>(".map-node");
-    drawing.classList.toggle("focused", node !== null && node !== undefined);
-    if (!node) return;
-    const targets = new Set(targets_of(node));
-    for (const item of drawing.querySelectorAll<SVGElement>("[data-targets]")) {
-      if (item === node || targets_of(item).some((index) => targets.has(index))) item.classList.add("lit");
-    }
-  };
-  const over = (event: Event) => light(event.target as Element);
-  const away = () => light(null);
-  drawing.addEventListener("pointerover", over);
-  drawing.addEventListener("pointerleave", away);
-  drawing.addEventListener("focusin", over);
-  drawing.addEventListener("focusout", away);
-  return () => {
-    drawing.removeEventListener("pointerover", over);
-    drawing.removeEventListener("pointerleave", away);
-    drawing.removeEventListener("focusin", over);
-    drawing.removeEventListener("focusout", away);
-  };
-}
-
-function targets_of(element: SVGElement): string[] {
-  return (element.dataset.targets ?? "").split(" ").filter(Boolean);
-}
-
-// Dragging pans and Ctrl or ⌘ with the wheel zooms about the pointer; a drag never counts as a click on a repository.
-function pan_and_zoom(drawing: SVGElement, view: () => Box, set_view: (box: Box) => void, zoom: (factor: number, centre: { x: number; y: number }) => void): () => void {
-  const to_map = (event: { clientX: number; clientY: number }) => {
-    const bounds = drawing.getBoundingClientRect();
-    const box = view();
-    return { x: box.x + (event.clientX - bounds.left) / bounds.width * box.width, y: box.y + (event.clientY - bounds.top) / bounds.height * box.height };
-  };
-  const wheel = (event: WheelEvent) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    zoom(Math.exp(event.deltaY * 0.002), to_map(event));
-  };
-
-  let start: { x: number; y: number; box: Box } | null = null;
-  let dragged = false;
-  const down = (event: PointerEvent) => {
-    if (event.button !== 0) return;
-    start = { x: event.clientX, y: event.clientY, box: view() };
-    dragged = false;
-  };
-  const move = (event: PointerEvent) => {
-    if (!start) return;
-    const [dx, dy] = [event.clientX - start.x, event.clientY - start.y];
-    if (!dragged && Math.hypot(dx, dy) < 4) return;
-    if (!dragged) drawing.setPointerCapture(event.pointerId);
-    dragged = true;
-    drawing.classList.add("panning");
-    const bounds = drawing.getBoundingClientRect();
-    set_view({ ...start.box, x: start.box.x - dx / bounds.width * start.box.width, y: start.box.y - dy / bounds.height * start.box.height });
-  };
-  const stop = () => {
-    start = null;
-    drawing.classList.remove("panning");
-  };
-  const click = (event: MouseEvent) => {
-    if (!dragged) return;
-    event.preventDefault();
-    dragged = false;
-  };
-
-  drawing.addEventListener("wheel", wheel, { passive: false });
-  drawing.addEventListener("pointerdown", down);
-  drawing.addEventListener("pointermove", move);
-  drawing.addEventListener("pointerup", stop);
-  drawing.addEventListener("pointercancel", stop);
-  drawing.addEventListener("click", click, true);
-  return () => {
-    drawing.removeEventListener("wheel", wheel);
-    drawing.removeEventListener("pointerdown", down);
-    drawing.removeEventListener("pointermove", move);
-    drawing.removeEventListener("pointerup", stop);
-    drawing.removeEventListener("pointercancel", stop);
-    drawing.removeEventListener("click", click, true);
-  };
-}
-
-// ── Pieces ───────────────────────────────────────────────────────────────────
-
-const tone_rank: Record<Tone, number> = { ok: 0, running: 1, warning: 2, critical: 3 };
-
-function tone_of(target: MapTarget): Tone {
-  return target.running_run ? "running" : target.level;
 }
 
 // Retention as borg's flags read, such as 24h 7d 4w 12m 3y.
@@ -418,47 +112,22 @@ function keeps(retention: Record<string, number | string>): string {
   }).join(" ");
 }
 
-// Shortens a label to about the width it has, since SVG text never wraps or ellipsises.
-function clip(label: string, width: number, char_width = 6.2): string {
-  const room = Math.floor(width / char_width);
-  return label.length <= room ? label : `${label.slice(0, Math.max(1, room - 1))}…`;
-}
-
-function Text({ class_name, x, y, content }: { class_name: string; x: number; y: number; content: string }) {
-  return <text className={class_name} x={x} y={y}>{content}</text>;
-}
-
 // ── Section ──────────────────────────────────────────────────────────────────
 
 export function MapSection() {
   const map = use_resource(() => api<BackupMap>("/api/map"), []);
   use_changes((changes) => { if (touches(changes, null, ["repository", "run", "config"])) map.reload(true); });
-  const view_box = useRef<Box | null>(null);
-  const controls = useRef<Controls | null>(null);
-
-  const tools = (
-    <ButtonGroup label="Zoom">
-      <button type="button" aria-label="Zoom out" onClick={() => controls.current?.zoom(1.25)}>−</button>
-      <button type="button" aria-label="Zoom in" onClick={() => controls.current?.zoom(0.8)}>+</button>
-      <button type="button" onClick={() => controls.current?.fit()}>Fit</button>
-    </ButtonGroup>
-  );
+  const handle = use_flow_map();
 
   return (
-    <Section title="What is backed up where" tools={tools}>
+    <Section title="What is backed up where" tools={<FlowMapZoom handle={handle} />}>
       <div>
         <Loaded resource={map} lines={6}>
-          {(answer) => answer.targets.length === 0
-            ? <Empty title="No repositories yet." hint="Repositories appear here once they are configured." />
-            : <>
-              <FlowMap map={answer} view_box={view_box} controls={controls} />
-              <p className="muted small flow-map-legend">
-                {(["ok", "warning", "critical", "running"] as const).map((tone) => (
-                  <span key={tone} className={`legend map-swatch-${tone}`}>{tone === "ok" ? "OK" : tone.charAt(0).toUpperCase() + tone.slice(1)}</span>
-                ))}
-                <span>Drag to pan, Ctrl or ⌘ and scroll to zoom. Hover a box to follow its lines.</span>
-              </p>
-            </>}
+          {(answer) => {
+            if (answer.targets.length === 0) return <Empty title="No repositories yet." hint="Repositories appear here once they are configured." />;
+            const { columns, links } = backup_flow(answer);
+            return <FlowMap label="Which folders each job backs up, and the repositories it writes them to" columns={columns} links={links} handle={handle} legend={["ok", "warning", "critical", "running"]} />;
+          }}
         </Loaded>
       </div>
     </Section>

@@ -13,6 +13,7 @@ version.
 
 ### 2026-11-14
 
+- refactor(web): draw the Overview's map with X-Libs' FlowMap and Halon's styles
 - build(nix): read npm packages from package-lock.json and drop the npm deps hash
 
 ### 2026-11-13
