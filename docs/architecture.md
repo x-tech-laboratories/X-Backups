@@ -236,8 +236,8 @@ visible.
 
 The flake exposes:
 
-- `packages.default`: the server and the built page, via `buildNpmPackage`. After changing `package-lock.json`,
-  update `npmDepsHash` in `nix/package.nix`.
+- `packages.default`: the server and the built page, via `buildNpmPackage`, its npm packages read from
+  `package-lock.json` by `importNpmLock`, so there is no deps hash to update.
 - `packages.agent`: the agent alone.
 - `packages.borg2`: the borg 2 beta, as `borg2`, to sit beside borg 1.
 - `nixosModules.default`: the server as a systemd service with `DynamicUser`, a state folder, passphrase files loaded
