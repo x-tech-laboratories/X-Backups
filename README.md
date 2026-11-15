@@ -42,8 +42,8 @@ npm run lint
 npm run build && npm start
 ```
 
-See [Getting started](docs/user/getting-started.md) for the NixOS modules, the environment and the agents. After
-changing `package-lock.json`, update `npmDepsHash` in `nix/package.nix` to the hash `nix build` reports.
+See [Getting started](docs/user/getting-started.md) for the NixOS modules, the environment and the agents. The Nix
+build reads its npm packages straight from `package-lock.json`, so a lock file change needs nothing else.
 
 ## Licence
 

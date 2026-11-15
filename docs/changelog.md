@@ -11,6 +11,10 @@ version.
 
 ## Unreleased
 
+### 2026-11-14
+
+- build(nix): read npm packages from package-lock.json and drop the npm deps hash
+
 ### 2026-11-13
 
 - docs: publish a documentation site with a user guide, architecture, roadmap and changelog in place of todo.md
