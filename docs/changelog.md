@@ -1,11 +1,10 @@
 ---
 title: Changelog
-nav_order: 5
+sidebar:
+  order: 5
 ---
 
-# Changelog
-
-Every change to X-Backups, one line per commit, newest first. Work still to do is in the [roadmap](roadmap.html).
+Every change to X-Backups, one line per commit, newest first. Work still to do is in the [roadmap](/roadmap/).
 Each commit adds its own line under **Unreleased**, beneath the day it was made; a release renames that heading to its
 version.
 

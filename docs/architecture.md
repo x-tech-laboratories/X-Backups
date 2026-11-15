@@ -1,12 +1,11 @@
 ---
 title: Architecture
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
-# Architecture
-
-How X-Backups is built today. What is planned and not built yet is in the [roadmap](roadmap.html); how to use it is
-in the [user guide](user/).
+How X-Backups is built today. What is planned and not built yet is in the [roadmap](/roadmap/); how to use it is
+in the [user guide](/user/).
 
 X-Backups follows the X-Tech [Application Standard](https://x-tech-laboratories.github.io/standards/application/):
 TypeScript run directly by Node 24, Fastify on the server, React on the page, SQLite through `node:sqlite`, shared

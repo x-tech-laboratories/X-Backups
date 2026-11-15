@@ -1,10 +1,8 @@
 ---
 title: Vorta
-parent: App reviews
-nav_order: 6
+sidebar:
+  order: 6
 ---
-
-# Vorta review (docs only)
 
 ## Summary
 Vorta is a Qt (PyQt) desktop GUI/tray app for macOS and Linux wrapping BorgBackup, with a local SQLite settings store (settings.db) and a scheduler. GPL-3.0. Actively maintained: v0.11.6 (7 Sep, year not shown on the releases page, probably 2025), 0.11.x series through the year, 1007 commits, ~2.5k stars, 174 open issues. Supports Borg 1.x and has Borg 2.x timestamp fixes. Runs on the machine being backed up (client-side, not a server dashboard).

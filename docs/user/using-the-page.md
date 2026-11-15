@@ -1,10 +1,8 @@
 ---
 title: Using the page
-parent: User guide
-nav_order: 6
+sidebar:
+  order: 6
 ---
-
-# Using the page
 
 The sidebar holds Overview, Hosts, Repositories, Sources, Jobs, Runs, Schedules, Events and Users, with your account,
 the theme and Settings at its foot. Each entity's page links to the others it names. The header searches repositories
@@ -26,7 +24,7 @@ so and refreshes every 15 seconds until it is back.
 
 Each host's kind, agent state (built in, connected, offline or never enrolled), version, last seen, health and
 counts. A host's page shows its health over time, its sources, the repositories stored there, the targets running
-there, its runs and timers. An admin enrols or revokes its agent there; see [Agents](agents.html).
+there, its runs and timers. An admin enrols or revokes its agent there; see [Agents](/user/agents/).
 
 ## Repositories
 
@@ -110,5 +108,5 @@ and paged.
 ## Settings
 
 The defaults, each host, repository, source and job as written, and for admins the Backups section for the
-X-Backups database itself (see [Monitoring and integrations](monitoring.html)). Whether entities can be changed here
-depends on the config mode; see [Editing from the page](editing-from-the-page.html).
+X-Backups database itself (see [Monitoring and integrations](/user/monitoring/)). Whether entities can be changed here
+depends on the config mode; see [Editing from the page](/user/editing-from-the-page/).

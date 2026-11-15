@@ -1,15 +1,13 @@
 ---
 title: App reviews
-nav_order: 6
-has_children: true
-permalink: /app-reviews/
+sidebar:
+  order: 0
+  label: Overview
 ---
-
-# App reviews
 
 The other borg tools X-Backups was compared with, to decide what to build and how to lay out the page. Each was
 reviewed from its online docs on 2026-10-26, one page per app below; their frontends were then read in source for
-layout. Reading the rest of their source is on the [roadmap](../roadmap.html#research). Release dates lack a year on
+layout. Reading the rest of their source is on the [roadmap](/roadmap/#research). Release dates lack a year on
 the release pages, so 2026 is assumed.
 
 | App                | Source                                              | Docs / site                                   |

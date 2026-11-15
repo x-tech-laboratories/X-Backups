@@ -1,10 +1,8 @@
 ---
 title: Concepts
-parent: User guide
-nav_order: 2
+sidebar:
+  order: 2
 ---
-
-# Concepts
 
 X-Backups describes your backups with four kinds of thing you write down, and works out two more from them.
 

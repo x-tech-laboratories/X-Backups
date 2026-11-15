@@ -1,10 +1,8 @@
 ---
 title: Editing from the page
-parent: User guide
-nav_order: 7
+sidebar:
+  order: 7
 ---
-
-# Editing from the page
 
 `X_BACKUPS_CONFIG_MODE` (the NixOS module's `configMode`) decides whether the page may change the config:
 
@@ -30,6 +28,6 @@ over a saved one. Settings tags each default declared, saved or default. To move
 declared config, press **Show as Nix** or **Show as JSON** on its form and copy that into the NixOS module or the
 file; once declared it shadows the page copy, which can then be deleted.
 
-{: .warning }
+
 Anyone who can sign in to a page that edits the config can make X-Backups run commands as its user and as each agent's
 user, through fields such as `rsh`, `borg_bin` and `passphrase_command`. Grant the admin role accordingly.

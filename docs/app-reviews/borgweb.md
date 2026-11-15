@@ -1,10 +1,8 @@
 ---
 title: BorgWeb
-parent: App reviews
-nav_order: 7
+sidebar:
+  order: 7
 ---
-
-# BorgWeb review (docs only)
 
 ## Summary
 BorgWeb is a small Flask web UI plus JavaScript front end for Borg, run on the machine being backed up (built-in server on 127.0.0.1:5000, or WSGI via borgweb.wsgi). Scope is deliberately tiny: review backup log files and start a backup. Maturity: README says "software in development"; releases 0.1.4 (first PyPI), 0.2.0, 0.3.0 (Flask 1.0 compat, Python 3.5/3.6), 280 commits, 399 stars, 12 open issues. No release dates visible; looks effectively unmaintained/stagnant (my inference from the 0.3.0 era), not confirmed.

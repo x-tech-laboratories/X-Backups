@@ -1,10 +1,8 @@
 ---
 title: Monitoring and integrations
-parent: User guide
-nav_order: 9
+sidebar:
+  order: 9
 ---
-
-# Monitoring and integrations
 
 ## Health check
 

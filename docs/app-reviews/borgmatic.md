@@ -1,10 +1,8 @@
 ---
 title: borgmatic
-parent: App reviews
-nav_order: 3
+sidebar:
+  order: 3
 ---
-
-# borgmatic review (from online docs only)
 
 ## Summary
 borgmatic is a YAML-configuration-driven CLI wrapper around Borg for servers and workstations (GPL-3.0-or-later). It creates, prunes, compacts and checks backups, dumps databases and snapshots filesystems, and pings monitoring services. It is a CLI only, with no UI or daemon, and is run from a systemd timer or cron. It is mature and actively maintained. The GitHub releases page showed 2.1.10 (05 Oct) as latest, preceded by 2.1.9 (25 Sep), 2.1.8 (18 Sep), 2.1.7 (14 Aug) and 2.1.6 (01 Jun). The year was not shown on the page; the fetch tool did not say. It supports Borg 1.x and 2.x.

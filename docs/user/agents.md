@@ -1,10 +1,8 @@
 ---
 title: Agents
-parent: User guide
-nav_order: 5
+sidebar:
+  order: 5
 ---
-
-# Agents
 
 Each managed host runs the X-Backups agent, which dials out to the server's `/api/agent` WebSocket, so a host needs no
 open port and a laptop that sleeps reconnects when it wakes. It runs the commands the server sends, keeps long runs
@@ -112,7 +110,7 @@ security.sudo.extraRules = [{
 
 Borg 2 needs `${inputs.x-backups.packages.${pkgs.system}.borg2}/bin/borg2` too, and restores need `find` and `mkdir`.
 
-{: .warning }
+
 Borg under sudo with `SETENV` runs whatever `rsh` and `passphrase_command` say as root, so whoever may change the config
 may act as root on that host.
 
