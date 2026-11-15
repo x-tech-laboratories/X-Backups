@@ -334,7 +334,8 @@ export class BorgRepository {
     if (this.borg_version === 2) env.push("BORG_EXIT_CODES=legacy");
 
     if (this.rsh || this.ssh_key) {
-      const rsh = this.rsh || `ssh -i ${shell_quote(this.ssh_key!)} -o IdentitiesOnly=yes -o BatchMode=yes`;
+      // Keep-alives make a run fail within minutes of the repository's host dying, not hours later when the connection is finally reset.
+      const rsh = this.rsh || `ssh -i ${shell_quote(this.ssh_key!)} -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=5`;
       env.push("BORG_RSH=" + shell_quote(rsh));
     }
 
