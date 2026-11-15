@@ -39,6 +39,21 @@ modes. (Borg UI)
 A declared `paused` flag that keeps a repository listed but silences its staleness, and an append-only badge on its
 card. Storage bars against `quota` or free space are already built. (BorgWarehouse)
 
+### Append-only clients and the deletion guard [70]
+
+borg enforces append-only on the storage host (`borg serve --append-only`, or NixOS's
+`authorizedKeysAppendOnly`), so a compromised client cannot delete archives for good. X-Backups should match that:
+
+- An `append_only` flag on a repository as a job's host reaches it refuses Prune, Delete, Purge Excluded, Break Lock
+  and prune after backup there, and names the host where they run instead.
+- Prune and compact run from a target on the storage host itself, through its agent, on the repository's local path.
+- That target guards deletions: each poll compares the archive names (`borg list --short`, which reads only the
+  manifest) with the last poll's. An archive gone that X-Backups' own prune or delete did not remove fails the target
+  and blocks Compact, which would make the loss permanent, until an admin confirms it with **Accept Deletions**.
+
+Borg Backup Server and BorgWarehouse set up append-only keys; neither notices archives that vanish anyway.
+(Borg Backup Server, BorgWarehouse)
+
 ### borgmatic awareness [34]
 
 On hosts whose own borgmatic fills a repository: show each check type's last run from borgmatic's state folder,
@@ -54,7 +69,9 @@ unmount when the run ends or X-Backups starts. (Borg UI, Borgitory, Vorta)
 ### Cloud sync [53]
 
 Mirror a repository to an rclone remote after each backup or on a schedule, with a Test button and the last sync's
-state on the repository's card. (Borg UI, Borgitory)
+state on the repository's card. The copy runs as `borg with-lock <repo> rclone sync <repo> <remote>`, so no borg
+process writes while it reads, and only a repository local to its host can be copied. Each remote's last success is
+kept like a check's, and one older than an `offsite_max_age` limit makes the target stale. (Borg UI, Borgitory)
 
 ### Hooks [54]
 
@@ -65,6 +82,20 @@ fails. (Borgitory, Vorta)
 
 Dump PostgreSQL, MySQL, MariaDB, MongoDB or SQLite into the archive, as borgmatic's data sources do, and restore one
 database from an archive. (borgmatic, Borg Backup Server)
+
+Each dump goes into an empty staging folder on the host before `borg create`, which archives it with the sources,
+and a trap removes the folder however the run ends. A failed dump fails the backup before borg runs. Named pipes
+would save the disk space, but they need `--read-special`, which would also read every device file in the sources.
+Restoring pipes `borg extract --stdout` into `psql`, `mysql` or `sqlite3`, only when the job allows it and after a
+confirmation.
+
+### File search across archives [71]
+
+Find a file by name in every archive of a target, rather than filtering one archive's folder. After each backup, an
+index step writes the new archive's `borg list` to a gzipped file per archive in an index folder on the host, and
+drops the files of archives that are gone; an action fills in archives without one. A search runs `zgrep -F -i` over
+that folder on the host through its agent, capped like a listing, and each hit names its archive and path with
+Restore and Download beside it. Millions of rows per archive stay out of the store. (Borg UI)
 
 ### Users in the NixOS configuration [57]
 
