@@ -513,7 +513,7 @@ describe("list command", () => {
 
   it("sets BORG_RSH from an ssh key", () => {
     const command = make({ ...BASE_CFG, ssh_key: "/run/secrets/x_backups_ssh_key" }).repository.list_command();
-    for (const part of ["BORG_RSH=", "/run/secrets/x_backups_ssh_key", "IdentitiesOnly=yes", "BatchMode=yes"]) {
+    for (const part of ["BORG_RSH=", "/run/secrets/x_backups_ssh_key", "IdentitiesOnly=yes", "BatchMode=yes", "ServerAliveInterval=60", "ServerAliveCountMax=5"]) {
       expect(command).toContain(part);
     }
   });
