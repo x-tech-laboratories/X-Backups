@@ -1,8 +1,5 @@
 ---
 title: User guide
-sidebar:
-  order: 0
-  label: Overview
 ---
 
 This part of the documentation is for people **running and using** X-Backups: setting it up, describing what to back

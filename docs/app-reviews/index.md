@@ -1,8 +1,5 @@
 ---
 title: App reviews
-sidebar:
-  order: 0
-  label: Overview
 ---
 
 The other borg tools X-Backups was compared with, to decide what to build and how to lay out the page. Each was
