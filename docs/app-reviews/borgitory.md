@@ -1,10 +1,8 @@
 ---
 title: Borgitory
-parent: App reviews
-nav_order: 4
+sidebar:
+  order: 4
 ---
-
-# Borgitory review (docs only)
 
 ## Summary
 Borgitory (mlapaglia/Borgitory, MIT) is a web UI for BorgBackup with scheduling, monitoring and cloud sync. Python FastAPI backend, HTMX + Alpine.js + Tailwind frontend, SQLite via SQLAlchemy/Alembic, APScheduler for cron. It runs borg and rclone as local subprocesses inside its own container (Docker image bundles borgbackup, rclone, fuse3) or from PyPI (`pip install borgitory`, Python 3.14+). The docs describe local or remote repositories but do not explain how remote ones are reached (SSH mechanics not documented). Maturity: GitHub ~194 stars, 6 forks, 163 commits, 11 open issues. Latest stable seen: v3.0.0 "16 Oct" (year not shown; Apprise notification switch, multi-directory backups), plus v3.1.0-alpha1 same day; earlier v2.8.0 (6 Aug). Several docs pages are stubs ("Coming Soon"), and the Features page mixes shipped and planned items, so treat claims there with caution.

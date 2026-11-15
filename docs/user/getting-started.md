@@ -1,10 +1,8 @@
 ---
 title: Getting started
-parent: User guide
-nav_order: 1
+sidebar:
+  order: 1
 ---
-
-# Getting started
 
 X-Backups is two programs: the **server**, which holds the config, keeps the history and serves the page, and the
 **agent**, which runs on every machine whose files are backed up and runs borg there. The server's own machine needs no
@@ -43,7 +41,7 @@ services.x-backups = {
 };
 ```
 
-On every other machine with files to back up, `nixosModules.agent` runs the agent; see [Agents](agents.html) for its
+On every other machine with files to back up, `nixosModules.agent` runs the agent; see [Agents](/user/agents/) for its
 key. Borg on the server reaches an `ssh://` repository through the system's ssh, whose host keys come from
 `programs.ssh.knownHosts`.
 
@@ -81,13 +79,13 @@ from. The server needs `borg` and `ssh` on its `PATH` for the built-in agent.
 | `X_BACKUPS_CONFIG`             | the declared config file                                         |
 | `X_BACKUPS_PASSWORD_HASH_FILE` | the admin's password hash                                        |
 | `X_BACKUPS_STATE_DIR`          | where the database and page-managed config live, `state/` by default |
-| `X_BACKUPS_CONFIG_MODE`        | `declarative`, `mixed` or `page`; see [Editing from the page](editing-from-the-page.html) |
+| `X_BACKUPS_CONFIG_MODE`        | `declarative`, `mixed` or `page`; see [Editing from the page](/user/editing-from-the-page/) |
 | `X_BACKUPS_TIMEZONE`           | the time zone schedules are read in, the server's own by default |
 | `X_BACKUPS_ADMIN_NAME`         | the admin's user name                                            |
 
-Run the agent on other hosts as described in [Agents](agents.html).
+Run the agent on other hosts as described in [Agents](/user/agents/).
 
 ## First sign-in
 
 Open the page and sign in as the admin. The Overview shows every target's health as soon as the first polls finish,
-and the Hosts page shows which agents have connected. From there, see [Using the page](using-the-page.html).
+and the Hosts page shows which agents have connected. From there, see [Using the page](/user/using-the-page/).

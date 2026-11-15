@@ -1,10 +1,8 @@
 ---
 title: Scheduling
-parent: User guide
-nav_order: 4
+sidebar:
+  order: 4
 ---
-
-# Scheduling
 
 X-Backups starts every backup itself, on the agent of each target's host; it needs no systemd timer.
 

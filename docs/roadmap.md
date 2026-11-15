@@ -1,16 +1,15 @@
 ---
 title: Roadmap
-nav_order: 4
+sidebar:
+  order: 4
 ---
 
-# Roadmap
-
-What X-Backups does not do yet. What it does today is in the [architecture](architecture.html), and what changed when
-is in the [changelog](changelog.html). When an item ships, its commit moves it out of this page and into the
+What X-Backups does not do yet. What it does today is in the [architecture](/architecture/), and what changed when
+is in the [changelog](/changelog/). When an item ships, its commit moves it out of this page and into the
 architecture.
 
 The goal, decided on 2026-10-26, is that X-Backups does at least everything each of the other borg tools does (see
-the [app reviews](app-reviews/)), including what was once out of scope: repository creation, notifications, mounts,
+the [app reviews](/app-reviews/)), including what was once out of scope: repository creation, notifications, mounts,
 cloud sync, hooks and database dumps. Each item names the tools that already have it. The task numbers in brackets
 are the ones commits and older notes refer to.
 
@@ -106,7 +105,7 @@ every X-app at once.
 
 ## Research
 
-Each app's online docs were reviewed on 2026-10-26 (see [app reviews](app-reviews/)). These read the source to
+Each app's online docs were reviewed on 2026-10-26 (see [app reviews](/app-reviews/)). These read the source to
 confirm what the docs claim and to settle how the features above should be built: one read-only pass per app, ordered
 by value to X-Backups.
 

@@ -1,10 +1,8 @@
 ---
 title: Borg Backup Server
-parent: App reviews
-nav_order: 2
+sidebar:
+  order: 2
 ---
-
-# Borg Backup Server, BBS (marcpope/borgbackupserver) - docs review
 
 ## Summary
 Self-hosted, MIT-licensed server for managing BorgBackup across many Linux/macOS/Windows endpoints ("a GUI manager for multiple Borg endpoints"). Architecture is agent-based: a stdlib-only Python 3 agent on each endpoint polls the server over HTTPS for tasks and reports progress (no inbound connections to endpoints), while backup data flows over SSH to the server which runs `borg serve` into append-only repos (agents cannot delete/prune; pruning runs server-side). Server is PHP 8.1+ (no framework), MySQL 8, ClickHouse (file catalog), Bootstrap 5 + Chart.js; Apache/certbot installer, Docker, Unraid template. Maturity: 387 stars, 38 forks, 1,954 commits; latest release v2.99.7 (26 Oct 2026), frequent releases (v2.99.1 to .7 in ~10 days); site claims 750+ active servers, 1,500+ endpoints (opt-in telemetry). Optional paid iOS app (BBS Manager, $3.99/mo). Very different model from X-Backups: BBS is the backup *originator/host*, not a read-mostly viewer.

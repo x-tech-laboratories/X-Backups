@@ -1,10 +1,8 @@
 ---
 title: Users and access
-parent: User guide
-nav_order: 8
+sidebar:
+  order: 8
 ---
-
-# Users and access
 
 The password hash file signs in as `admin` (`X_BACKUPS_ADMIN_NAME` renames it). That admin adds other users on the
 Users page, each with a role and the jobs they are granted, or everything.

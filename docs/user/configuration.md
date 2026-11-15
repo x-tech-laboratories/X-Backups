@@ -1,14 +1,12 @@
 ---
 title: Configuration
-parent: User guide
-nav_order: 3
+sidebar:
+  order: 3
 ---
-
-# Configuration
 
 The config is a JSON file named by `X_BACKUPS_CONFIG`, which the NixOS module writes from `services.x-backups`. It
 holds `hosts`, `repositories`, `sources` and `jobs`, as `config.example.json` in the repository shows. The same
-entities can be added from the page; see [Editing from the page](editing-from-the-page.html).
+entities can be added from the page; see [Editing from the page](/user/editing-from-the-page/).
 
 ## Hosts
 
@@ -16,7 +14,7 @@ A host is `managed` (it runs the agent) or `storage-only` (it only holds reposit
 
 - `address` is its network name, shown on the page. The one managed host with no `address` is the server itself, run
   by the agent built into it.
-- `agent_public_key` is the OpenSSH `ssh-ed25519` line of the key its agent signs in with; see [Agents](agents.html).
+- `agent_public_key` is the OpenSSH `ssh-ed25519` line of the key its agent signs in with; see [Agents](/user/agents/).
 - `ssh_key` and `rsh` set the SSH borg itself uses for an `ssh://` repository.
 - `require_sudo` runs borg as root through `sudo -n`; `borg_bin` names the borg program; `cache_dir` is borg's cache
   folder.
@@ -52,7 +50,7 @@ A job backs up `sources` to `repositories`, with:
 - freshness ages (below);
 - a restore canary: `canary_path`, a file in a source that Verify Restore restores from the newest archive and compares
   with the live copy;
-- `tasks`, when each step runs; see [Scheduling](scheduling.html).
+- `tasks`, when each step runs; see [Scheduling](/user/scheduling/).
 
 ## Defaults and health ages
 

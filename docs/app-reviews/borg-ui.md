@@ -1,10 +1,8 @@
 ---
 title: Borg UI
-parent: App reviews
-nav_order: 1
+sidebar:
+  order: 1
 ---
-
-# Borg UI (karanhudia/borg-ui) - docs review
 
 ## Summary
 Self-hosted web UI for BorgBackup, AGPL-3.0 (commercial/enterprise option; docs mention a licence activation service at license.borgui.com, with managed agents now a Community feature since 2.4.0). Repo layout implies Python backend (`app/`, alembic, pyproject), JS frontend (`frontend/`), a separate `agent/` (managed agents on remote machines) and `updates-worker/`. Reaches repos locally (container paths), over SSH/SFTP via "Remote Machines", via managed agents, and via rclone (cloud mirrors, Borg 2 rclone repos). Docker-first (amd64/arm64/armv7) plus native Debian/Ubuntu installer. Supports Borg 1.x and 2.0 beta. Maturity: ~1.7k stars, 60 forks, 2,849 commits, 12 open issues; latest release seen 2.4.3 (26 Oct 2026), 2.4.x series within a week, so very active. Default login admin/admin123. borgui.com: fetch returned only the title "Borg UI", so identity unconfirmed from the page itself (docs site links and licence host borgui.com make same project very likely).

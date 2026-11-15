@@ -5,7 +5,7 @@
 A web platform for managing borg backups, part of X-Tech Laboratories. It runs every backup, prune, check and compact
 on a small agent on each host, and shows how fresh, large and healthy each backup is.
 
-**Documentation: <https://x-tech-laboratories.github.io/X-Backups/>**, with the [user guide](docs/user/index.md),
+**Documentation: <https://x-tech-laboratories.github.io/X-Backups/>**, built from `docs/` with the [X-Libs site framework](https://github.com/x-tech-laboratories/X-Libs#a-static-site), with the [user guide](docs/user/index.md),
 [architecture](docs/architecture.md), [roadmap](docs/roadmap.md) and [changelog](docs/changelog.md).
 
 ## Layout

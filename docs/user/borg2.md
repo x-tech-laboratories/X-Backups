@@ -1,10 +1,8 @@
 ---
 title: Borg 2
-parent: User guide
-nav_order: 10
+sidebar:
+  order: 10
 ---
-
-# Borg 2
 
 A repository with `borg_version: 2` is driven with borg 2, which the flake packages as `borg2` (`packages.borg2`, the
 2.0 beta) so it sits beside borg 1. Its host runs `borg2` unless `borg_bin` says otherwise, and its repository server

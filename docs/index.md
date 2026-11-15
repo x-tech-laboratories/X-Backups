@@ -1,18 +1,22 @@
 ---
-title: Home
-layout: home
-nav_order: 1
+title: X-Backups
+description: A web platform for managing borg backups across many hosts.
+template: splash
+hero:
+  tagline: A web platform for managing borg backups across many hosts.
+  image: ../resources/icon.svg
+  actions:
+    - text: Read the user guide
+      link: /user/
+    - text: See how it is built
+      link: /architecture/
+      variant: secondary
 ---
-
-# X-Backups
 
 X-Backups watches and runs [borg](https://www.borgbackup.org/) backups for a whole network from one web page. You
 describe your machines, the folders to back up, the repositories they go to and when each job runs; X-Backups starts
 every backup, prune, check and compact itself on a small agent on each machine, and shows you how fresh, how large and
 how healthy every backup is.
-
-[Read the user guide](user/){: .btn .btn-primary .mr-2 }
-[See how it is built](architecture.html){: .btn }
 
 ---
 
@@ -37,8 +41,8 @@ how healthy every backup is.
 
 | Page                                  | For                                                            |
 | :------------------------------------ | :------------------------------------------------------------- |
-| [User guide](user/)                   | Installing X-Backups, describing your backups and using the page |
-| [Architecture](architecture.html)     | How X-Backups is built today                                   |
-| [Roadmap](roadmap.html)               | What is planned and not built yet                              |
-| [Changelog](changelog.html)           | Every change, commit by commit                                 |
-| [App reviews](app-reviews/)           | The other borg tools X-Backups was compared with               |
+| [User guide](/user/)                   | Installing X-Backups, describing your backups and using the page |
+| [Architecture](/architecture/)     | How X-Backups is built today                                   |
+| [Roadmap](/roadmap/)               | What is planned and not built yet                              |
+| [Changelog](/changelog/)           | Every change, commit by commit                                 |
+| [App reviews](/app-reviews/)           | The other borg tools X-Backups was compared with               |

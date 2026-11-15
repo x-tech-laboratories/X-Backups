@@ -1,10 +1,8 @@
 ---
 title: BorgWarehouse
-parent: App reviews
-nav_order: 5
+sidebar:
+  order: 5
 ---
-
-# BorgWarehouse review (docs only)
 
 ## Summary
 BorgWarehouse (Ravinou/borgwarehouse, AGPL-3.0, author Benjamin "Raven" Sourisse) is a web UI for running a central Borg repository SERVER: it provisions repos, SSH keys (restricted to borg serve), quotas and storage for clients that push to it. It does not run, start or see client backups and never handles passphrases; it only sees the last-modified time and size of repos, so it cannot tell success from failure. TypeScript/Next.js (pages router) app, pnpm, Vitest, SQLite (better-auth), shipped as one Docker image or a Debian install; a cron job calls its API to refresh status/storage. Maturity: ~681 stars, 38 forks, 1054 commits; latest release 3.7.0 (20 Sep, year not shown), v3.6.0 added compact/break-lock/archive; actively developed with versioned releases.
