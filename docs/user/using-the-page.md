@@ -20,7 +20,7 @@ so and refreshes every 15 seconds until it is back.
 - Total stored over time, and each repository's storage bar.
 - **The map** draws the backup flow in three columns: each host's folders, the jobs backing them up, and the
   repositories they write to under the hosts storing them. Lines take their target's health, and hovering a box
-  follows its folders through to their repositories.
+  lights everything upstream and downstream of it, such as a folder's jobs and the repositories they write to.
 
 ## Hosts
 
