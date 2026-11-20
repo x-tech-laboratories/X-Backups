@@ -59,8 +59,11 @@ The Apps workflow builds both on every pull request and push to `main` and keeps
 ```sh
 npm run build   # type-check both halves and build the page
 npm test
+npm run coverage   # tests with a coverage floor
 npm run lint
 ```
+
+The coverage floor in `vite.config.ts` only rises; CI fails when coverage drops below it or a raised floor is not committed.
 
 ## Production
 
