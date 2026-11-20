@@ -14,8 +14,10 @@ import { current_route, link, replace_query } from "@x-tech-laboratories/x-libs/
 import type { Theme } from "@x-tech-laboratories/x-libs/web/theme";
 import { useEffect, useRef, useState } from "react";
 import { timer_problem } from "../attention.ts";
+import { daemon_fetch } from "../daemon.ts";
 import { api, ApiError, query, send, type ConfigInfo, type EventRow, type RepositorySummary, type Setting, type TaskView, type TimerRow, type TimerRun } from "../api.ts";
 import { theme, use_changes } from "../ui.tsx";
+import { ConnectionsSection } from "./connections.tsx";
 import { EntityPanels } from "./entity_config.tsx";
 import { event_levels, EventsList, TimersTable, touches } from "./shared.tsx";
 import { task_label, TasksTable } from "./tasks.tsx";
@@ -272,7 +274,7 @@ const source_text: Record<Setting["source"], [label: string, title: string]> = {
 const theme_options: [value: Theme, text: string][] = [["system", "Follow the system"], ["light", "Light"], ["dark", "Dark"]];
 
 // The state database's backups; changing them needs an admin.
-const backups = backup_client(create_api());
+const backups = backup_client(create_api({ fetch: daemon_fetch }));
 
 export function SettingsView() {
   const [chosen, set_chosen] = useState(theme.get);
@@ -283,10 +285,11 @@ export function SettingsView() {
   return (
     <div className="page">
       <h1>Settings</h1>
+      <ConnectionsSection />
       <Section title="Appearance">
         <div>
           <Select label="Theme" options={theme_options} value={chosen} on_change={(value) => theme.set(value)} />
-          <p className="muted small">Kept in this browser only.</p>
+          <p className="muted small">Kept on this device only.</p>
         </div>
       </Section>
       <div className="stack"><Loaded resource={config} lines={4}>{(info) => <ConfigurationPanel info={info} saved={() => config.reload(true)} />}</Loaded></div>

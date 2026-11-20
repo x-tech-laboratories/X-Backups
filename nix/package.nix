@@ -18,7 +18,9 @@ buildNpmPackage {
       ../tsconfig.json
       ../tsconfig.server.json
       ../tsconfig.web.json
+      ../tsconfig.desktop.json
       ../vite.config.ts
+      ../electron.vite.config.ts
       ../src
     ];
   };
@@ -27,6 +29,8 @@ buildNpmPackage {
   # Read from package-lock.json, so there is no deps hash to keep in step with it.
   npmDeps = importNpmLock { npmRoot = ../.; };
   npmConfigHook = importNpmLock.npmConfigHook;
+  # The server needs no Electron; its package is only there to type-check the desktop app.
+  env.ELECTRON_SKIP_BINARY_DOWNLOAD = "1";
 
   nativeBuildInputs = [ makeWrapper ];
 
@@ -48,7 +52,7 @@ buildNpmPackage {
   '';
 
   meta = {
-    description = "A web platform for managing borg backups";
+    description = "A platform for managing borg backups";
     license = lib.licenses.gpl3Plus;
     mainProgram = "x-backups";
   };

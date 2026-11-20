@@ -10,6 +10,10 @@ version.
 
 ## Unreleased
 
+### 2026-11-19
+
+- feat: desktop and Android apps as portals onto an X-Backups server, chosen under Settings → Connections
+
 ### 2026-11-14
 
 - refactor(web): draw the Overview's map with X-Libs' FlowMap and Halon's styles

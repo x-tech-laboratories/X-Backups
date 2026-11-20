@@ -89,3 +89,18 @@ Run the agent on other hosts as described in [Agents](/user/agents/).
 
 Open the page and sign in as the admin. The Overview shows every target's health as soon as the first polls finish,
 and the Hosts page shows which agents have connected. From there, see [Using the page](/user/using-the-page/).
+
+## Desktop and Android apps
+
+The same page also comes as a Linux desktop app (an AppImage or a Flatpak) and an Android app, built by CI from every
+push to `main`. Neither runs a server of its own: each shows the X-Backups server you point it at, wherever it runs.
+
+1. Open the app. With no server chosen yet it opens on Settings → Connections.
+2. Enter the server's address, such as `https://backups.example.org` (`https://` is added when you leave it out), your
+   user name and password, and the code if you use a second factor, then press **Add daemon**.
+3. The app signs this device in for a token of its own, named "X-Backups on <device>", and opens the Overview. The
+   token appears among your tokens on the Account page, where you can revoke it.
+
+A server with a self-signed certificate asks once whether to trust it. Add more servers the same way and switch with
+**Connect**; **Remove**, or Sign out, forgets the server in use and gives its token back. The Android app talks to the
+server straight from the phone, so the server must be reachable from it.

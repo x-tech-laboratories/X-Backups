@@ -1,0 +1,8 @@
+{
+  "appId": "com.xtechlaboratories.xbackups",
+  "appName": "X-Backups",
+  "webDir": "out/android",
+  "android": {
+    "allowMixedContent": true
+  }
+}

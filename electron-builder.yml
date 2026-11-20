@@ -1,0 +1,39 @@
+# Linux packages of the desktop app: `npm run dist` writes an AppImage and a Flatpak bundle to dist-desktop/.
+appId: com.xtechlaboratories.xbackups
+productName: X-Backups
+executableName: x-backups
+copyright: X-Tech Laboratories
+directories:
+  output: dist-desktop
+files:
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
+  - resources/icon.png
+  - package.json
+linux:
+  target: [AppImage, flatpak]
+  category: System
+  icon: resources/icon.png
+  synopsis: Borg backups on your servers
+  desktop:
+    entry:
+      Name: X-Backups
+      Comment: Borg backups on your servers
+      Categories: System;Archiving;
+appImage:
+  artifactName: x-backups-${arch}.AppImage
+flatpak:
+  artifactName: x-backups-${arch}.flatpak
+  runtimeVersion: '25.08'
+  baseVersion: '25.08'
+  finishArgs:
+    - --share=ipc
+    - --share=network
+    - --socket=x11
+    - --socket=wayland
+    - --device=dri
+    # VSCode's terminal exports this, which makes Electron run as bare node.
+    - --unset-env=ELECTRON_RUN_AS_NODE
+    # The same profile the other builds use, so switching between them keeps the servers added.
+    - --filesystem=xdg-config/x-backups:create

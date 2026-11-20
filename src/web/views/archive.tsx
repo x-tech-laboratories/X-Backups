@@ -13,6 +13,7 @@ import { sorting_from } from "@x-tech-laboratories/x-libs/web/tables";
 import { Fragment, useState, type MouseEvent } from "react";
 import { run_action, type ActionTarget } from "../actions.tsx";
 import { api, query, repository_path, type Archive, type BrowserRow, type Diff, type DiffChange, type Listing, type RepositoryDetail } from "../api.ts";
+import { host, is_portal, save_from_daemon } from "../daemon.ts";
 import { can } from "../session.ts";
 import { use_changes } from "../ui.tsx";
 import { delete_archive } from "./repository.tsx";
@@ -309,6 +310,15 @@ function FilesTab({ base, archive, restore_dir, target }: FilesTabProps) {
     const repository = await api<RepositoryDetail>(base).catch(() => null);
     if (repository?.running_run) {
       toast(`A ${repository.running_run.kind} is running on ${repository.name}; download once it ends.`, { tone: "warn" });
+      return;
+    }
+    if (host === "android") {
+      toast("The Android app cannot save downloads yet; download from the browser or the desktop app.", { tone: "warn" });
+      return;
+    }
+    // A portal's page has no session with the daemon for a plain link to use, so it fetches the file with the device's token.
+    if (is_portal) {
+      await save_from_daemon(anchor.getAttribute("href")!).catch((error: Error) => toast(error.message, { tone: "bad" }));
       return;
     }
     anchor.dataset.checked = "yes";

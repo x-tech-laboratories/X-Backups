@@ -18,3 +18,7 @@ state/
 result
 result-*
 .direnv/
+
+# Desktop and Android builds
+out/
+dist-desktop/

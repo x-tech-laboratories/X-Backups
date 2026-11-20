@@ -15,6 +15,7 @@ widgets and server pieces from [X-Libs](https://github.com/x-tech-laboratories/X
 
 ```
              browser page  ── /api, /api/stream (SSE) ──┐
+   desktop and Android apps ── same, with a device token ┤
    AI client (MCP)         ── /api/mcp ─────────────────┤
    X-Monitor, Prometheus   ── /api/health, /metrics ────┤
                                                         ▼
@@ -85,9 +86,13 @@ src/
     borg/            one borg repository: commands, output readers, actions, checks
     agents/          the agent hub, per-host tokens
   agent/             the agent each managed host runs
-  shared/            the agent protocol shared by server and agent
+  shared/            the agent protocol shared by server and agent, and what the portal apps share
   web/               the React page, built by Vite into dist/
+    daemon.ts        where the page's requests go: its own server, or the portal app's chosen one
     views/           one file per page
+  main/              the desktop app's Electron main process
+  preload/           the desktop page's bridge to the main process
+android/             the Android app's Capacitor project
 tests/               one *.test.ts per behaviour, mirroring src/
 nix/                 package.nix, agent-package.nix, borg2.nix, module.nix, agent-module.nix
 ```
@@ -231,6 +236,25 @@ Pages draw with X-Libs' React widgets (tables, dialogs, toasts, charts, layout, 
 and config changes; the page refetches after a reconnect and polls only while the stream is down and the tab is
 visible.
 
+## Desktop and Android apps
+
+The desktop app (Electron, built by `electron-vite`) and the Android app (Capacitor) draw the same `src/web` page. They
+are portals: X-Backups' server belongs on one host, where it reaches the agents, so neither app runs a server of its
+own. Each keeps a list of servers, like Deluge's connection manager, through X-Libs' `connections`: Settings →
+Connections adds one by its address, name and password, which signs the device in for a token of its own named
+"X-Backups on <host>" (the server's `POST /api/login` with `device`), and removing it gives the token back. The app
+opens on Settings → Connections until a server is chosen, and returns there when the server turns the token away.
+
+- On the desktop, the main process keeps the list and the tokens in `~/.config/x-backups/connections.json`, readable
+  by its user alone, and the page never sees a token. The page's requests and its change stream cross the preload
+  bridge (`electron/fetch` from X-Libs) and the main process sends them to the chosen server with the token, through
+  Chromium so a certificate the user trusted, such as a home server's self-signed one, is accepted.
+- On Android, the page keeps the list in the app's own storage and sends its requests straight to the server with the
+  token. The server allows any origin (`register_open_cors`), since such a request carries no cookie and still needs
+  the token. X-Libs' Android certificate plugin lets the WebView reach a server whose certificate the user trusted.
+- In both, `/api/stream` is read over fetch rather than an EventSource, which cannot send the token, and an archive
+  download is fetched and saved as a file rather than followed as a link. Signing out forgets the server in use.
+
 ## Packaging
 
 The flake exposes:
@@ -252,7 +276,7 @@ The flake exposes:
 stores and a cycle driver, so it is exercised without a host or a database; `tests/agents/` has a fake agent for the
 server's side and runs the real agent against the hub;
 `tests/app.test.ts` drives the routes with Fastify's `inject`. CI runs build, tests and lint on every push and pull
-request.
+request, and the Apps workflow builds the desktop AppImage and Flatpak and the Android APK as the run's artifacts.
 
 ## Settled decisions
 

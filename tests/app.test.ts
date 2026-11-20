@@ -133,6 +133,36 @@ describe("health check", () => {
   });
 });
 
+// ── Portal apps ──────────────────────────────────────────────────────────────
+
+describe("portal apps", () => {
+  const origin = "https://localhost";
+
+  it("lets the Android app's page ask from its own origin before sending its token", async () => {
+    const preflight = await app.inject({
+      method: "OPTIONS", url: "/api/config/defaults",
+      headers: { origin, "access-control-request-method": "PUT", "access-control-request-headers": "authorization,content-type" },
+    });
+
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers["access-control-allow-origin"]).toBe("*");
+    expect(String(preflight.headers["access-control-allow-methods"])).toContain("PUT");
+    expect(String(preflight.headers["access-control-allow-headers"])).toContain("authorization");
+  });
+
+  it("signs a device in for a token its requests carry in place of a session", async () => {
+    const login = await app.inject({ method: "POST", url: "/api/login", headers: { origin }, payload: { name: "admin", password: "correct horse", device: "X-Backups on Android" } });
+    const { token } = login.json() as { token: string };
+
+    const answer = await app.inject({ method: "GET", url: "/api/repositories", headers: { origin, authorization: `Bearer ${token}` } });
+
+    expect(login.statusCode).toBe(201);
+    expect(answer.statusCode).toBe(200);
+    expect(answer.headers["access-control-allow-origin"]).toBe("*");
+    expect(answer.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
+});
+
 // ── Repositories ─────────────────────────────────────────────────────────────
 
 describe("repositories", () => {

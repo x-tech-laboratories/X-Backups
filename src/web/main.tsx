@@ -8,14 +8,17 @@ import { StatusPill } from "@x-tech-laboratories/x-libs/web/react/badges";
 import { Shell, use_route, type ShellSection } from "@x-tech-laboratories/x-libs/web/react/shell";
 import { SignInForm } from "@x-tech-laboratories/x-libs/web/react/sign_in";
 import { Suggestions } from "@x-tech-laboratories/x-libs/web/react/suggestions";
+import { toast } from "@x-tech-laboratories/x-libs/web/react/toasts";
 import { current_route, link, type Route } from "@x-tech-laboratories/x-libs/web/router";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { api, LoginNeeded, query, type Run, type SearchResults } from "./api.ts";
+import { connections, is_portal, on_daemon_changed } from "./daemon.ts";
 import { connect, disconnect, stream_up } from "./live.ts";
 import { accounts, can, forget_me, load_me, type Me } from "./session.ts";
 import { theme, use_changes } from "./ui.tsx";
 import { ArchiveView } from "./views/archive.tsx";
+import { ConnectionsPage } from "./views/connections.tsx";
 import { entity_title, EntityView } from "./views/entity_config.tsx";
 import { HostsView, HostView } from "./views/hosts.tsx";
 import { JobsView, JobView } from "./views/jobs.tsx";
@@ -84,12 +87,17 @@ function moved(route: Route): Route {
 function App() {
   // Who is signed in, null on the sign-in page, and undefined until the first request tells whether a session is open.
   const [who, set_who] = useState<Me | null | undefined>(undefined);
+  // In a portal app, whether the chosen daemon turned this device's token away, rather than none being chosen yet.
+  const [refused, set_refused] = useState(false);
   const route = moved(use_route());
 
-  function show_login(): void {
+  // A portal app has no sign-in page of its own: it signs in to a daemon under Settings → Connections.
+  function show_login(was_refused = is_portal): void {
     disconnect();
     forget_me();
+    set_refused(was_refused);
     set_who(null);
+    if (is_portal && current_route().parts[0] !== "settings") location.hash = "#/settings";
   }
 
   async function start(): Promise<void> {
@@ -104,21 +112,42 @@ function App() {
       event.preventDefault();
       show_login();
     });
-    void load_me().then(start, (error) => {
-      if (error instanceof LoginNeeded) show_login();
-      else void start();
+    // Another daemon chosen in a portal app starts the page afresh on it.
+    const stop = on_daemon_changed(() => {
+      location.hash = "#/";
+      location.reload();
     });
+    void first_load();
+    return stop;
   }, []);
+
+  async function first_load(): Promise<void> {
+    if (connections !== null && (await connections.list_connections()).current === null) return show_login(false);
+    await load_me().then(start, (error) => {
+      if (error instanceof LoginNeeded) show_login();
+      // A portal's daemon out of reach leaves the user where they can pick another.
+      else if (is_portal) {
+        toast(error instanceof Error ? error.message : String(error), { tone: "bad" });
+        show_login(false);
+      } else void start();
+    });
+  }
 
   const page = who ? page_for(route.parts) : null;
   const view_key = `${route.parts.join("/")}?${route.query.toString()}`;
 
   useEffect(() => {
-    if (who === null) document.title = "Sign in · X-Backups";
+    if (who === null) document.title = is_portal ? "Settings · X-Backups" : "Sign in · X-Backups";
     else if (page) document.title = `${page.title} · X-Backups`;
   });
 
+  // Signing a portal app out forgets the daemon in use and gives its token back.
   async function sign_out(): Promise<void> {
+    if (connections !== null) {
+      const { current } = await connections.list_connections();
+      if (current !== null) await connections.remove_connection(current).catch(() => {});
+      return;
+    }
     await accounts.sign_out().catch(() => {});
     show_login();
   }
@@ -126,7 +155,7 @@ function App() {
   return (
     <Shell
       brand="X-Backups"
-      brand_icon="/icon.svg"
+      brand_icon={`${import.meta.env.BASE_URL}icon.svg`}
       sections={sections.filter((section) => section.id !== "users" || can("admin"))}
       active={(route.parts[0] === "new-repository" ? "repositories" : route.parts[0]) ?? ""}
       theme={theme}
@@ -138,7 +167,8 @@ function App() {
       settings={{ href: "#/settings" }}
       view_key={who ? view_key : "login"}
     >
-      {who === null && <SignInForm client={accounts} title="X-Backups" on_signed_in={async () => {
+      {who === null && is_portal && <ConnectionsPage refused={refused} />}
+      {who === null && !is_portal && <SignInForm client={accounts} title="X-Backups" on_signed_in={async () => {
         window.dispatchEvent(new HashChangeEvent("hashchange"));
         await start();
       }} />}
