@@ -1,6 +1,7 @@
 // Who is signed in, so views show only what that role may do; the server checks every request again regardless.
 
 import { create_accounts_client, type Me as AccountMe } from "@x-tech-laboratories/x-libs/web/accounts";
+import { daemon_fetch } from "./daemon.ts";
 
 export type Role = "viewer" | "operator" | "admin";
 
@@ -15,7 +16,7 @@ export interface Me extends AccountMe {
 
 const roles: Role[] = ["viewer", "operator", "admin"];
 
-export const accounts = create_accounts_client();
+export const accounts = create_accounts_client({ fetch: daemon_fetch });
 
 let current: Me | null = null;
 

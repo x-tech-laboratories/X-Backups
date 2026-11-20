@@ -1,6 +1,7 @@
 // The shapes the server answers with, and one fetch helper that notices when a login is needed.
 
 import { LoginNeeded } from "@x-tech-laboratories/x-libs/web/states";
+import { daemon_fetch } from "./daemon.ts";
 
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
@@ -413,7 +414,7 @@ export class ApiError extends Error {
 }
 
 export async function api<Answer>(path: string, body?: object): Promise<Answer> {
-  const response = await fetch(path, body === undefined ? {} : {
+  const response = await daemon_fetch(path, body === undefined ? {} : {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -423,7 +424,7 @@ export async function api<Answer>(path: string, body?: object): Promise<Answer> 
 
 // The same for a request that changes or removes something, which the server takes as PUT or DELETE.
 export async function send<Answer>(method: "PUT" | "DELETE", path: string, body?: object): Promise<Answer> {
-  const response = await fetch(path, body === undefined ? { method } : {
+  const response = await daemon_fetch(path, body === undefined ? { method } : {
     method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

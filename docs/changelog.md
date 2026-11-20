@@ -12,6 +12,7 @@ version.
 
 ### 2026-11-19
 
+- feat: desktop and Android apps as portals onto an X-Backups server, chosen under Settings → Connections
 - ci: measure test coverage against a floor that only rises
 - test: set the starting coverage floor
 

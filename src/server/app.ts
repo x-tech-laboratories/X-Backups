@@ -11,6 +11,7 @@ import type { OidcClient } from "@x-tech-laboratories/x-libs/server/oidc";
 import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
 import { EventStream } from "@x-tech-laboratories/x-libs/server/events";
 import { send_error } from "@x-tech-laboratories/x-libs/server/replies";
+import { register_open_cors } from "@x-tech-laboratories/x-libs/server/cors";
 import { register_web_folder } from "@x-tech-laboratories/x-libs/server/web_folder";
 import { acts_on_whole_repository, repository_actions, scope_of, sees, sees_whole_repository, writers, type Scope, type World } from "./access.ts";
 import type { AgentHub } from "./agents/hub.ts";
@@ -152,6 +153,8 @@ export async function build_app(options: app_options): Promise<FastifyInstance> 
   // What the viewer sees, or null for everything.
   const scope = (request: FastifyRequest): Scope | null => scope_of(grants_of(request), world());
 
+  // The Android app's page calls from an origin of its own with this device's token; a browser sends no cookie with such a call.
+  await register_open_cors(app, { methods: ["GET", "POST", "PUT", "DELETE"] });
   await register_auth(app, {
     accounts, oidc: options.oidc, proxy: options.proxy,
     sees_target: (request, target_id) => sees(scope(request), { kind: "target", target_id }),

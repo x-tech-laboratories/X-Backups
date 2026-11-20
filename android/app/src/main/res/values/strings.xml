@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">X-Backups</string>
+    <string name="title_activity_main">X-Backups</string>
+    <string name="package_name">com.xtechlaboratories.xbackups</string>
+    <string name="custom_url_scheme">com.xtechlaboratories.xbackups</string>
+</resources>

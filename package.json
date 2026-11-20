@@ -2,7 +2,7 @@
   "name": "x-backups",
   "private": true,
   "version": "0.3.0",
-  "description": "A web platform for managing borg backups",
+  "description": "A platform for managing borg backups: a server, its agents, and web, desktop and Android apps onto it",
   "license": "GPL-3.0-or-later",
   "type": "module",
   "engines": {
@@ -11,37 +11,51 @@
   "scripts": {
     "dev:server": "X_BACKUPS_CONFIG=${X_BACKUPS_CONFIG:-config.example.json} X_BACKUPS_PASSWORD_HASH_FILE=${X_BACKUPS_PASSWORD_HASH_FILE:-password.hash} node --watch src/server/main.ts",
     "dev:web": "vite",
+    "dev": "electron-vite dev",
     "build": "tsc -b && vite build",
+    "build:desktop": "tsc -b && electron-vite build",
+    "dist": "npm run build:desktop && electron-builder --linux --publish never",
+    "build:android": "tsc -b && vite build --base ./ --outDir ../../out/android && cap sync android",
     "start": "NODE_ENV=production node src/server/main.ts",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "hash-password": "node src/server/hash_password.ts",
     "import-x-monitor": "node src/server/import_x_monitor.ts",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "icons": "x-libs-icons"
   },
   "dependencies": {
+    "@capacitor/core": "^8.6.2",
     "@fastify/cookie": "^11.1.5",
+    "@fastify/cors": "^11.4.3",
     "@fastify/formbody": "^9.0.1",
     "@fastify/rate-limit": "^11.2.2",
     "@fastify/session": "^11.1.6",
     "@fastify/static": "^10.1.7",
     "@fastify/websocket": "^11.3.4",
     "@modelcontextprotocol/server": "^2.4.0",
-    "@x-tech-laboratories/halon": "^0.20.0",
-    "@x-tech-laboratories/x-libs": "^0.50.0",
+    "@x-tech-laboratories/halon": "^0.27.0",
+    "@x-tech-laboratories/x-libs": "^0.66.0",
     "fastify": "^5.12.7",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/cli": "^8.6.2",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
     "@vitest/coverage-v8": "^5.1.1",
+    "electron": "^43.8.12",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
     "oxlint": "^1.89.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
-  }
+  },
+  "main": "./out/main/index.js"
 }

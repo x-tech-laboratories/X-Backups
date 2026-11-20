@@ -107,6 +107,9 @@ and paged.
 
 ## Settings
 
+In the desktop and Android apps, Settings starts with Connections: the X-Backups servers this device knows, the one
+in use marked Connected, and a form to add one (see [Getting started](/user/getting-started/#desktop-and-android-apps)).
+
 The defaults, each host, repository, source and job as written, and for admins the Backups section for the
 X-Backups database itself (see [Monitoring and integrations](/user/monitoring/)). Whether entities can be changed here
 depends on the config mode; see [Editing from the page](/user/editing-from-the-page/).
