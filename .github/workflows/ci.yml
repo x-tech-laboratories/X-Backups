@@ -18,5 +18,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      - run: npm run coverage
+      - run: git diff --exit-code vite.config.ts
       - run: npm run lint

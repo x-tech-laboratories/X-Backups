@@ -10,6 +10,10 @@ version.
 
 ## Unreleased
 
+### 2026-11-19
+
+- ci: measure test coverage against a floor that only rises
+
 ### 2026-11-14
 
 - refactor(web): draw the Overview's map with X-Libs' FlowMap and Halon's styles

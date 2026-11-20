@@ -20,5 +20,16 @@ export default defineConfig({
     // Tests live in tests/, outside the web page's root.
     root: import.meta.dirname,
     include: ["tests/**/*.test.ts"],
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      thresholds: {
+        autoUpdate: (new_threshold) => Math.floor(new_threshold),
+        lines: 0,
+        statements: 0,
+        functions: 0,
+        branches: 0,
+      },
+    },
   },
 });
