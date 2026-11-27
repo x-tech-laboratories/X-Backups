@@ -36,6 +36,16 @@ describe("api guard", () => {
     await app.close();
   });
 
+  it("turns away a protected api route without a session, percent-encoded or not", async () => {
+    const app = await make_app();
+
+    expect((await app.inject({ method: "GET", url: "/api/repositories" })).statusCode).toBe(401);
+    // The router decodes %61 to a, so the guard refuses this spelling as a path that reads two ways.
+    expect((await app.inject({ method: "GET", url: "/%61pi/repositories" })).statusCode).toBe(400);
+
+    await app.close();
+  });
+
   it("refuses a wrong password", async () => {
     const app = await make_app();
 
