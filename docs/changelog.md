@@ -10,6 +10,10 @@ version.
 
 ## Unreleased
 
+### 2026-11-26
+
+- fix(deps): bump x-libs to 0.90.0 for the sign-in guard fix
+
 ### 2026-11-19
 
 - ci: measure test coverage against a floor that only rises

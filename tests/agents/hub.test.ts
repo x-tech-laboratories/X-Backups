@@ -8,6 +8,7 @@ import { finished } from "node:stream/promises";
 import fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { encode_message } from "@x-tech-laboratories/x-libs/agent/protocol";
+import { admission_refused } from "@x-tech-laboratories/x-libs/server/agents/hub";
 import { LocalAgent } from "@x-tech-laboratories/x-libs/server/agents/local";
 import { register_agent_route } from "@x-tech-laboratories/x-libs/server/agents/route";
 import { command_runner, start_agent, type RunningAgent } from "../../src/agent/agent.ts";
@@ -359,13 +360,13 @@ describe("agent key login", () => {
   });
 
   it("refuses a key login for a host with no declared key", () => {
-    expect(hub.admit({ [key_host_header]: "thor" })).toEqual({ error: "Host 'thor' has no declared agent key." });
+    expect(hub.admit({ [key_host_header]: "thor" })).toEqual({ error: admission_refused, reason: "The key login named a host with no declared agent key." });
   });
 
   it("refuses a token login for a host with a declared key, even with a valid token", async () => {
     const token = readFileSync(token_file, "utf8").trim();
 
-    expect(hub.admit({ authorization: `Bearer ${token}` })).toEqual({ error: "Host 'odin' has a declared agent key, so it logs in with that key, not a token." });
+    expect(hub.admit({ authorization: `Bearer ${token}` })).toEqual({ error: admission_refused, reason: "The token belongs to odin, which has a declared agent key and logs in with that key." });
     start_test_agent();
     await sleep(300);
     expect(hub.is_connected("odin")).toBe(false);
